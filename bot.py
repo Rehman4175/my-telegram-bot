@@ -83,7 +83,7 @@ def now_str():       return datetime.now().strftime("%H:%M")
 def yesterday_str(): return (date.today() - timedelta(days=1)).isoformat()
 
 # ══════════════════════════════════════════════
-# CHAT HISTORY - SABSE PEHLE DEFINE KIYA HAI
+# CHAT HISTORY CLASS — SABSE PEHLE (Error fix yahan hai)
 # ══════════════════════════════════════════════
 class ChatHistory:
     def __init__(self):
@@ -277,7 +277,7 @@ class CalendarManager:
         self.save_data()
 
 # ══════════════════════════════════════════════
-# INIT ALL — Ab sab classes define ho chuke hain
+# INIT ALL — Sab classes define hone ke baad
 # ══════════════════════════════════════════════
 chat_hist = ChatHistory()
 mem       = Memory()
@@ -298,7 +298,7 @@ calendar  = CalendarManager()
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Dost"
     await update.message.reply_text(
-        f"🕌 *Assalamualaikum {name}!*\nMain tumhara Personal AI Dost hoon.\nKya madad karun?", 
+        f"🕌 *Assalamualaikum {name}!*\nMain tumhara Personal AI Dost hoon.\nKya madad karun aaj?", 
         parse_mode="Markdown"
     )
 
@@ -311,7 +311,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
 
-    log.info("✅ Bot successfully started! Use /start on Telegram.")
+    log.info("✅ Bot successfully started!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
