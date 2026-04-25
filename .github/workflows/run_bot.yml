@@ -1,0 +1,29 @@
+name: Sakibur Bot 24/7
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'   # Har 5 ghante mein auto-restart
+  workflow_dispatch:          # Manual start bhi kar sakte ho
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300      # 5 ghante chalega, phir auto-restart
+
+    steps:
+      - name: Repo checkout
+        uses: actions/checkout@v3
+
+      - name: Python setup
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Dependencies install
+        run: pip install -r requirements.txt
+
+      - name: Bot start
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python bot.py
