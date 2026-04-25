@@ -2,13 +2,13 @@ name: Sakibur Bot 24/7
 
 on:
   schedule:
-    - cron: '0 */5 * * *'   # Har 5 ghante mein auto-restart
-  workflow_dispatch:          # Manual start bhi kar sakte ho
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 300      # 5 ghante chalega, phir auto-restart
+    timeout-minutes: 300
 
     steps:
       - name: Repo checkout
