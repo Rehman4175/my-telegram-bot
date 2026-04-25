@@ -68,6 +68,9 @@ F_GOALS    = os.path.join(DATA, "goals.json")
 F_CHAT     = os.path.join(DATA, "chat_history.json")
 F_NEWS      = os.path.join(DATA, "news_cache.json")
 F_REMINDERS = os.path.join(DATA, "reminders.json")
+F_WATER     = os.path.join(DATA, "water.json")
+F_BILLS     = os.path.join(DATA, "bills.json")
+F_CALENDAR  = os.path.join(DATA, "calendar.json")
 
 # ══════════════════════════════════════════════
 # HELPERS
@@ -558,6 +561,180 @@ class Reminders:
         return self.data["list"]
 
 # ══════════════════════════════════════════════
+# WATER TRACKER
+# ══════════════════════════════════════════════
+class WaterTracker:
+    def __init__(self):
+        self.data = load(F_WATER, {"logs": {}, "goal_ml": 2000})
+
+    def save_data(self): save(F_WATER, self.data)
+
+    def add(self, ml: int = 250):
+        td = today_str()
+        if td not in self.data["logs"]:
+            self.data["logs"][td] = []
+        self.data["logs"][td].append({"ml": ml, "time": now_str()})
+        self.save_data()
+
+    def today_total(self) -> int:
+        return sum(e["ml"] for e in self.data["logs"].get(today_str(), []))
+
+    def today_count(self) -> int:
+        return len(self.data["logs"].get(today_str(), []))
+
+    def goal(self) -> int:
+        return self.data.get("goal_ml", 2000)
+
+    def set_goal(self, ml: int):
+        self.data["goal_ml"] = ml
+        self.save_data()
+
+    def today_entries(self):
+        return self.data["logs"].get(today_str(), [])
+
+    def week_summary(self) -> dict:
+        result = {}
+        for i in range(7):
+            d = (date.today() - timedelta(days=i)).isoformat()
+            result[d] = sum(e["ml"] for e in self.data["logs"].get(d, []))
+        return result
+
+
+# ══════════════════════════════════════════════
+# BILLS / EMI TRACKER
+# ══════════════════════════════════════════════
+class BillTracker:
+    def __init__(self):
+        self.data = load(F_BILLS, {"list": [], "counter": 0})
+
+    def save_data(self): save(F_BILLS, self.data)
+
+    def add(self, name: str, amount: float, due_day: int, bill_type: str = "bill", notes: str = "") -> dict:
+        """
+        due_day: 1-31 (har mahine ki tarikh)
+        bill_type: "emi" | "bill" | "subscription"
+        """
+        self.data["counter"] += 1
+        b = {
+            "id":       self.data["counter"],
+            "name":     name,
+            "amount":   amount,
+            "due_day":  due_day,
+            "type":     bill_type,
+            "notes":    notes,
+            "active":   True,
+            "paid_months": [],
+            "created":  today_str()
+        }
+        self.data["list"].append(b)
+        self.save_data()
+        return b
+
+    def all_active(self):
+        return [b for b in self.data["list"] if b["active"]]
+
+    def mark_paid(self, bid: int) -> bool:
+        ym = today_str()[:7]
+        for b in self.data["list"]:
+            if b["id"] == bid:
+                if ym not in b["paid_months"]:
+                    b["paid_months"].append(ym)
+                self.save_data()
+                return True
+        return False
+
+    def is_paid_this_month(self, bid: int) -> bool:
+        ym = today_str()[:7]
+        for b in self.data["list"]:
+            if b["id"] == bid:
+                return ym in b.get("paid_months", [])
+        return False
+
+    def delete(self, bid: int) -> bool:
+        before = len(self.data["list"])
+        self.data["list"] = [b for b in self.data["list"] if b["id"] != bid]
+        self.save_data()
+        return before != len(self.data["list"])
+
+    def due_soon(self, days_ahead: int = 3) -> list:
+        """Agle X dinon mein due bills"""
+        today_d = date.today()
+        result = []
+        for b in self.data["list"]:
+            if not b["active"]: continue
+            if self.is_paid_this_month(b["id"]): continue
+            due_day = b["due_day"]
+            # Is mahine ki due date
+            try:
+                due_date = date(today_d.year, today_d.month, due_day)
+            except ValueError:
+                due_date = date(today_d.year, today_d.month, 28)
+            if today_d <= due_date <= today_d + timedelta(days=days_ahead):
+                result.append({**b, "due_date": due_date.isoformat()})
+        return result
+
+    def month_total(self) -> float:
+        return sum(b["amount"] for b in self.data["list"] if b["active"])
+
+
+# ══════════════════════════════════════════════
+# GOOGLE CALENDAR (LOCAL — No OAuth needed)
+# ══════════════════════════════════════════════
+class CalendarManager:
+    def __init__(self):
+        self.data = load(F_CALENDAR, {"events": [], "counter": 0})
+
+    def save_data(self): save(F_CALENDAR, self.data)
+
+    def add(self, title: str, event_date: str, event_time: str = "", notes: str = "") -> dict:
+        """
+        event_date: YYYY-MM-DD format
+        event_time: HH:MM (optional)
+        """
+        self.data["counter"] += 1
+        e = {
+            "id":     self.data["counter"],
+            "title":  title,
+            "date":   event_date,
+            "time":   event_time,
+            "notes":  notes,
+            "created": today_str()
+        }
+        self.data["events"].append(e)
+        self.save_data()
+        return e
+
+    def delete(self, eid: int) -> bool:
+        before = len(self.data["events"])
+        self.data["events"] = [e for e in self.data["events"] if e["id"] != eid]
+        self.save_data()
+        return before != len(self.data["events"])
+
+    def upcoming(self, days: int = 7) -> list:
+        today_d = date.today()
+        cutoff  = today_d + timedelta(days=days)
+        result  = []
+        for e in self.data["events"]:
+            try:
+                ed = date.fromisoformat(e["date"])
+                if today_d <= ed <= cutoff:
+                    result.append(e)
+            except Exception:
+                pass
+        return sorted(result, key=lambda x: x["date"])
+
+    def today_events(self) -> list:
+        return [e for e in self.data["events"] if e["date"] == today_str()]
+
+    def all_events(self) -> list:
+        today_d = today_str()
+        return sorted(
+            [e for e in self.data["events"] if e["date"] >= today_d],
+            key=lambda x: (x["date"], x.get("time", ""))
+        )
+
+
+# ══════════════════════════════════════════════
 # INIT ALL
 # ══════════════════════════════════════════════
 chat_hist = ChatHistory()
@@ -569,6 +746,9 @@ notes     = Notes()
 expenses  = Expenses()
 goals     = Goals()
 reminders = Reminders()
+water     = WaterTracker()
+bills     = BillTracker()
+calendar  = CalendarManager()
 
 # ══════════════════════════════════════════════
 # SYSTEM PROMPT BUILDER
@@ -584,6 +764,10 @@ def build_system_prompt() -> str:
     exp_m = expenses.month_total()
     bl    = expenses.budget_left()
     msgs  = chat_hist.count()
+    water_today = water.today_total()
+    water_goal  = water.goal()
+    due_bills   = bills.due_soon(3)
+    cal_today   = calendar.today_events()
 
     tasks_s = "\n".join(f"  {'🔴' if t['priority']=='high' else '🟡' if t['priority']=='medium' else '🟢'} {t['title']}" for t in tp[:6]) or "  Koi nahi"
     yd_s    = "\n".join(f"  ✓ {t['title']}" for t in yd[:5]) or "  Koi nahi"
@@ -592,6 +776,9 @@ def build_system_prompt() -> str:
     goals_s = "\n".join(f"  🎯 {g['title']} ({g['progress']}%)" for g in ag[:4]) or "  Koi nahi"
     diary_s = "\n".join(f"  {e['time']} {e['text']}" for e in td_d[-3:]) or "  Kuch nahi"
     budget_s = f"Budget baaki: ₹{bl:.0f}" if bl is not None else ""
+    water_pct = int(water_today / water_goal * 100) if water_goal else 0
+    bills_s   = "\n".join(f"  ⚠️ {b['name']} ₹{b['amount']:.0f} — {b['due_date']}" for b in due_bills) or "  Koi nahi"
+    cal_s     = "\n".join(f"  📅 {e['time'] or ''} {e['title']}" for e in cal_today) or "  Koi nahi"
 
     return f"""Tu mera Personal AI Assistant hai — naam 'Dost'. Greet karte waqt "Assalamualaikum" bol.
 Hamesha Hindi/Hinglish mein baat kar. Bilkul close dost jaisa — warm, real, helpful.
@@ -616,6 +803,14 @@ Hamesha Hindi/Hinglish mein baat kar. Bilkul close dost jaisa — warm, real, he
 
 🎯 GOALS:
 {goals_s}
+
+💧 PAANI: {water_today}ml / {water_goal}ml ({water_pct}%)
+
+📅 AAJ KE CALENDAR EVENTS:
+{cal_s}
+
+💳 UPCOMING BILLS/EMI (3 din mein):
+{bills_s}
 
 ━━ YAADDASHT (chat clear bhi ho jai toh yeh safe hai) ━━
 {mem.context()}
@@ -1020,6 +1215,10 @@ def main_kb():
          InlineKeyboardButton("💰 Kharcha",           callback_data="expenses")],
         [InlineKeyboardButton("📰 News",              callback_data="news_menu"),
          InlineKeyboardButton("📝 Notes",             callback_data="notes")],
+        [InlineKeyboardButton("💧 Water Tracker",     callback_data="water_status"),
+         InlineKeyboardButton("💳 Bills/EMI",         callback_data="bills_menu")],
+        [InlineKeyboardButton("📅 Calendar",          callback_data="cal_menu"),
+         InlineKeyboardButton("📊 Weekly Report",     callback_data="weekly_report")],
         [InlineKeyboardButton("🧹 Chat Clear",        callback_data="clear_chat"),
          InlineKeyboardButton("🧠 Yaaddasht",         callback_data="memory")],
         [InlineKeyboardButton("📊 Kal Ka Summary",    callback_data="yesterday"),
@@ -1083,6 +1282,30 @@ async def send_briefing(msg_obj):
     txt += f"💰 *Kharcha:* Aaj ₹{exp_t:.0f} | Mahina ₹{exp_m:.0f}"
     if bl is not None: txt += f" | Baaki ₹{bl:.0f}"
     txt += "\n\n"
+
+    # Water tracker
+    water_t = water.today_total()
+    water_g = water.goal()
+    water_pct = min(100, int(water_t / water_g * 100)) if water_g else 0
+    water_bar = "💧" * (water_pct // 10) + "○" * (10 - water_pct // 10)
+    txt += f"💧 *Paani:* {water_t}ml / {water_g}ml\n{water_bar} {water_pct}%\n\n"
+
+    # Bills due soon
+    due_b = bills.due_soon(3)
+    if due_b:
+        txt += f"⚠️ *Bills Due (3 din mein):*\n"
+        for b in due_b:
+            txt += f"  💳 {b['name']} — ₹{b['amount']:.0f} ({b['due_date'][5:]})\n"
+        txt += "\n"
+
+    # Calendar today
+    cal_t = calendar.today_events()
+    if cal_t:
+        txt += f"📅 *Aaj Ke Events:*\n"
+        for e in cal_t:
+            time_s = f" {e['time']}" if e.get("time") else ""
+            txt += f"  ✨{time_s} {e['title']}\n"
+        txt += "\n"
 
     if td_d: txt += f"📖 Aaj {len(td_d)} diary entries likhi hain\n\n"
 
@@ -1169,7 +1392,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
            "🧠 *Smart Memory* — chat clear bhi ho toh yaad rahunga\n"
            "📋 Tasks | 📖 Diary | 💪 Habits\n"
            "💰 Kharcha | 🎯 Goals | 📰 Free News\n"
-           "🧹 Chat Clear | 💬 AI Chat\n\n"
+           "💧 Water Tracker | 💳 Bills/EMI\n"
+           "📅 Calendar | 📊 Weekly Report\n\n"
            "✅ *100% FREE | Google Gemini Multi-Model*\n"
            "_(503 error pe automatically doosra model try karta hoon!)_\n\n"
            "_Seedha kuch bhi type karo!_ 👇")
@@ -1456,7 +1680,7 @@ async def show_yesterday(msg_obj):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu")]]))
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    txt = """🤖 *COMMANDS — ADVANCED v3*
+    txt = """🤖 *COMMANDS — ADVANCED v4.0*
 
 *📋 TASKS:*
 `/task Kaam [high/low]` — Add
@@ -1488,6 +1712,28 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 `/goal Goal naam`
 `/gprogress 1 50` — 50% done
 
+*💧 WATER TRACKER:*
+`/water` — 250ml log karo
+`/water 500` — custom ml
+`/waterstatus` — Aaj ka status
+`/watergoal 2500` — Daily goal set karo
+
+*💳 BILLS & EMI:*
+`/bill Netflix 199 5` — Bill add karo (naam amount tarikh)
+`/bills` — Saare bills dekho
+`/billpaid 3` — Paid mark karo
+`/delbill 3` — Delete karo
+
+*📅 GOOGLE CALENDAR:*
+`/cal 2026-05-10 Meeting` — Event add karo
+`/cal aaj Doctor appointment` — Aaj ka event
+`/cal 15-05-2026 Birthday 14:00` — Time bhi
+`/calendar` — Upcoming events
+`/delcal 3` — Event delete karo
+
+*📊 WEEKLY REPORT:*
+`/weekly` — Poori hafte ki report
+
 *📰 NEWS (FREE):*
 `/news` — India, Tech, Business, World, Sports
 
@@ -1508,7 +1754,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 `/yesterday` — Kal kya hua
 
 *💬 Seedha kuch bhi type karo!* 😊
-_503 error pe auto fallback — 4 models try karta hoon!_"""
+_503 error pe auto fallback — 3 models try karta hoon!_"""
     await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb())
 
 # ══════════════════════════════════════════════
@@ -1567,6 +1813,99 @@ async def callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🔒 Memory, Tasks, Habits — sab safe hai!\n\n"
             f"_Ab fresh start karo!_ 🚀",
             parse_mode="Markdown", reply_markup=main_kb())
+
+    # ── WATER ────────────────────────────────────
+    elif d == "water_status":
+        await cmd_water_status(update, None)
+
+    elif d.startswith("water_") and d.split("_")[1].isdigit():
+        ml = int(d.split("_")[1])
+        water.add(ml)
+        total = water.today_total()
+        goal  = water.goal()
+        pct   = min(100, int(total / goal * 100)) if goal else 0
+        bar   = "💧" * (pct // 10) + "○" * (10 - pct // 10)
+        msg   = f"💧 *+{ml}ml log ho gaya!*\n\nAaj total: *{total}ml / {goal}ml*\n{bar} {pct}%"
+        if total >= goal:
+            msg += "\n\n🎉 *Goal pura ho gaya!* 🏆"
+        await q.message.reply_text(msg, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💧 +250ml", callback_data="water_250"),
+                 InlineKeyboardButton("💧 +500ml", callback_data="water_500")],
+                [InlineKeyboardButton("🏠 Menu", callback_data="menu")]
+            ]))
+
+    elif d == "water_set_goal":
+        await q.message.reply_text(
+            "🎯 *Water Goal Set Karo*\n\n`/watergoal 2500` — 2.5L daily goal",
+            parse_mode="Markdown")
+
+    # ── BILLS ────────────────────────────────────
+    elif d == "bills_menu":
+        all_b = bills.all_active()
+        if not all_b:
+            await q.message.reply_text(
+                "💳 *Koi bill nahi!*\n\n`/bill Netflix 199 5` se add karo",
+                parse_mode="Markdown")
+            return
+        txt = f"💳 *BILLS & EMI ({len(all_b)})*\n\n"
+        type_icons = {"emi": "🏦", "bill": "📄", "subscription": "📺"}
+        kb2 = []
+        for b in all_b:
+            paid  = bills.is_paid_this_month(b["id"])
+            icon  = type_icons.get(b["type"], "💳")
+            status = "✅" if paid else "⏳"
+            txt += f"{icon} {status} *{b['name']}* — ₹{b['amount']:.0f} | {b['due_day']} tarikh\n"
+            if not paid:
+                kb2.append([InlineKeyboardButton(
+                    f"✅ Paid: {b['name'][:25]}", callback_data=f"billpaid_{b['id']}")])
+        txt += f"\n💰 Monthly Total: ₹{bills.month_total():.0f}"
+        kb2.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+        await q.message.reply_text(txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb2))
+
+    elif d.startswith("billpaid_"):
+        bid = int(d.split("_")[1])
+        ok  = bills.mark_paid(bid)
+        b   = next((x for x in bills.all_active() if x["id"] == bid), None)
+        if ok and b:
+            await q.message.reply_text(
+                f"✅ *{b['name']} — Paid!*\n₹{b['amount']:.0f} is mahine ka done 🎉",
+                parse_mode="Markdown")
+        else:
+            await q.message.reply_text(f"✅ Bill #{bid} paid mark ho gaya!", parse_mode="Markdown")
+
+    # ── CALENDAR ─────────────────────────────────
+    elif d == "cal_menu":
+        upcoming = calendar.upcoming(30)
+        if not upcoming:
+            await q.message.reply_text(
+                f"📅 *Koi upcoming event nahi!*\n\n`/cal {today_str()} Meeting` se add karo",
+                parse_mode="Markdown")
+            return
+        txt = "📅 *UPCOMING EVENTS (30 din)*\n\n"
+        kb3 = []
+        for e in upcoming:
+            td = today_str()
+            day_label = "🔴 Aaj" if e["date"] == td else f"📆 {e['date'][5:]}"
+            time_s = f" ⏰{e['time']}" if e.get("time") else ""
+            txt += f"{day_label}{time_s} — *{e['title']}*\n"
+            kb3.append([InlineKeyboardButton(
+                f"🗑 {e['title'][:35]}", callback_data=f"delcal_{e['id']}")])
+        kb3.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+        await q.message.reply_text(txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb3))
+
+    elif d.startswith("delcal_"):
+        eid = int(d.split("_")[1])
+        ok  = calendar.delete(eid)
+        await q.message.reply_text(
+            f"🗑 *Event #{eid} delete ho gaya!*" if ok else f"❌ Event #{eid} nahi mila.",
+            parse_mode="Markdown")
+
+    # ── WEEKLY REPORT ─────────────────────────────
+    elif d == "weekly_report":
+        class _FakeUpdate:
+            def __init__(self, msg): self.message = msg; self.effective_chat = msg
+        await cmd_weekly_report(_FakeUpdate(q.message), None)
 
     elif d == "clear_done_tasks":
         count = tasks.clear_done()
@@ -1878,7 +2217,490 @@ async def reminder_job(context):
 
 
 # ══════════════════════════════════════════════
-# TELEGRAM MESSAGES DELETE — NUKE FUNCTION
+# WATER TRACKER COMMANDS
+# ══════════════════════════════════════════════
+async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Paani peena track karo"""
+    ml = 250  # default
+    if ctx.args:
+        try:
+            ml = int(ctx.args[0])
+        except:
+            pass
+    water.add(ml)
+    total = water.today_total()
+    goal  = water.goal()
+    pct   = min(100, int(total / goal * 100))
+    filled = pct // 10
+    bar = "💧" * filled + "○" * (10 - filled)
+
+    msg = f"💧 *Paani Log Ho Gaya!*\n\n"
+    msg += f"Abhi piya: *{ml}ml*\n"
+    msg += f"Aaj total: *{total}ml / {goal}ml*\n"
+    msg += f"{bar} *{pct}%*\n\n"
+    if total >= goal:
+        msg += "🎉 *Wah! Aaj ka goal pura ho gaya!* 🏆"
+    else:
+        remaining = goal - total
+        msg += f"_Aur {remaining}ml peena hai aaj!_"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💧 +250ml", callback_data="water_250"),
+         InlineKeyboardButton("💧 +500ml", callback_data="water_500")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu")]
+    ])
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_water_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Aaj ka paani status dekho"""
+    total = water.today_total()
+    goal  = water.goal()
+    pct   = min(100, int(total / goal * 100)) if goal else 0
+    filled = pct // 10
+    bar   = "💧" * filled + "○" * (10 - filled)
+    entries = water.today_entries()
+    week  = water.week_summary()
+
+    txt = f"💧 *WATER TRACKER*\n\n"
+    txt += f"🎯 Goal: *{goal}ml*\n"
+    txt += f"✅ Aaj piya: *{total}ml*\n"
+    txt += f"{bar} *{pct}%*\n\n"
+
+    if entries:
+        txt += "*Aaj ki entries:*\n"
+        for e in entries:
+            txt += f"  {e['time']} — {e['ml']}ml\n"
+        txt += "\n"
+
+    txt += "*Is hafte:*\n"
+    for d, ml in sorted(week.items(), reverse=True)[:5]:
+        d_label = "Aaj" if d == today_str() else d[5:]
+        bar_w = "█" * min(10, int(ml / goal * 10)) if goal else ""
+        txt += f"  {d_label}: {ml}ml {bar_w}\n"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💧 +250ml", callback_data="water_250"),
+         InlineKeyboardButton("💧 +500ml", callback_data="water_500"),
+         InlineKeyboardButton("💧 +1000ml", callback_data="water_1000")],
+        [InlineKeyboardButton("🎯 Goal Set Karo", callback_data="water_set_goal"),
+         InlineKeyboardButton("🏠 Menu", callback_data="menu")]
+    ])
+    await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_water_goal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Daily water goal set karo"""
+    if not ctx.args:
+        await update.message.reply_text(
+            f"💧 *Water Goal Set Karo*\n\n"
+            f"Current goal: *{water.goal()}ml*\n\n"
+            "`/watergoal 2500` — 2.5 liter set karo",
+            parse_mode="Markdown")
+        return
+    try:
+        ml = int(ctx.args[0])
+        water.set_goal(ml)
+        await update.message.reply_text(
+            f"✅ *Daily Water Goal Set!*\n\n💧 *{ml}ml* ({ml//1000}.{(ml%1000)//100}L) per day",
+            parse_mode="Markdown")
+    except:
+        await update.message.reply_text("❌ `/watergoal 2000` format use karo", parse_mode="Markdown")
+
+
+# ══════════════════════════════════════════════
+# BILLS / EMI COMMANDS
+# ══════════════════════════════════════════════
+async def cmd_bill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Bill/EMI add karo"""
+    if not ctx.args or len(ctx.args) < 3:
+        await update.message.reply_text(
+            "💳 *Bill/EMI Add Karo*\n\n"
+            "Format: `/bill [naam] [amount] [tarikh]`\n\n"
+            "*Examples:*\n"
+            "`/bill Netflix 199 5` — har 5 tarikh ko\n"
+            "`/bill Home EMI 15000 1` — har 1 tarikh ko\n"
+            "`/bill Bijli 800 15` — 15 tarikh ko\n\n"
+            "_Tarikh = 1 se 31 (har mahine ki)_",
+            parse_mode="Markdown")
+        return
+    try:
+        name     = ctx.args[0]
+        amount   = float(ctx.args[1])
+        due_day  = int(ctx.args[2])
+        # Type detect karo
+        bill_type = "emi" if "emi" in name.lower() or "loan" in name.lower() else "bill"
+        if "subscription" in name.lower() or name.lower() in ["netflix","amazon","hotstar","spotify"]:
+            bill_type = "subscription"
+
+        if not (1 <= due_day <= 31):
+            raise ValueError("Invalid day")
+
+        b = bills.add(name, amount, due_day, bill_type)
+        type_icons = {"emi": "🏦", "bill": "📄", "subscription": "📺"}
+        icon = type_icons.get(bill_type, "💳")
+        await update.message.reply_text(
+            f"✅ *{icon} {bill_type.upper()} Add Ho Gaya!*\n\n"
+            f"📌 *{name}*\n"
+            f"💰 Amount: ₹{amount:.0f}\n"
+            f"📅 Due date: Har mahine ki *{due_day} tarikh*\n\n"
+            f"_ID #{b['id']} — `/billpaid {b['id']}` se paid mark karo_",
+            parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ Format: `/bill Netflix 199 5`\n(Tarikh 1-31 honi chahiye)", parse_mode="Markdown")
+
+
+async def cmd_bills_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Saare bills/EMI dekho"""
+    all_bills = bills.all_active()
+    if not all_bills:
+        await update.message.reply_text(
+            "💳 *Koi bill nahi!*\n\n`/bill Netflix 199 5` se add karo",
+            parse_mode="Markdown")
+        return
+
+    txt = f"💳 *BILLS & EMI ({len(all_bills)})*\n\n"
+    total_monthly = bills.month_total()
+    kb = []
+
+    type_icons = {"emi": "🏦", "bill": "📄", "subscription": "📺"}
+
+    for b in all_bills:
+        paid  = bills.is_paid_this_month(b["id"])
+        icon  = type_icons.get(b["type"], "💳")
+        status = "✅ Paid" if paid else "⏳ Due"
+        txt += f"{icon} *#{b['id']}* {b['name']} — ₹{b['amount']:.0f}\n"
+        txt += f"   📅 Har {b['due_day']} tarikh | {status}\n\n"
+        if not paid:
+            kb.append([InlineKeyboardButton(
+                f"✅ Paid: {b['name'][:25]}", callback_data=f"billpaid_{b['id']}")])
+
+    txt += f"💰 *Monthly Total: ₹{total_monthly:.0f}*"
+    kb.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+    await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def cmd_bill_paid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Bill paid mark karo"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "✅ `/billpaid 3` — bill ka ID daalo\n`/bills` se ID dekho",
+            parse_mode="Markdown")
+        return
+    try:
+        bid = int(ctx.args[0])
+        ok = bills.mark_paid(bid)
+        bill_item = next((b for b in bills.all_active() if b["id"] == bid), None)
+        if ok and bill_item:
+            await update.message.reply_text(
+                f"✅ *Bill Paid Mark Ho Gaya!*\n\n"
+                f"💳 *{bill_item['name']}* — ₹{bill_item['amount']:.0f}\n"
+                f"📅 Is mahine ka payment done! 🎉",
+                parse_mode="Markdown")
+        elif ok:
+            await update.message.reply_text(f"✅ *Bill #{bid} Paid Mark Ho Gaya!*", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ Bill #{bid} nahi mila.", parse_mode="Markdown")
+    except:
+        await update.message.reply_text("❌ `/billpaid 3` format use karo", parse_mode="Markdown")
+
+
+async def cmd_del_bill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Bill delete karo"""
+    if not ctx.args:
+        await update.message.reply_text("`/delbill 3` — bill ka ID daalo", parse_mode="Markdown"); return
+    try:
+        bid = int(ctx.args[0])
+        ok = bills.delete(bid)
+        await update.message.reply_text(
+            f"🗑 *Bill #{bid} Delete Ho Gaya!*" if ok else f"❌ Bill #{bid} nahi mila.",
+            parse_mode="Markdown")
+    except:
+        await update.message.reply_text("❌ `/delbill 3` format use karo", parse_mode="Markdown")
+
+
+# ══════════════════════════════════════════════
+# CALENDAR COMMANDS
+# ══════════════════════════════════════════════
+async def cmd_cal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Calendar mein event add karo"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "📅 *Calendar Event Add Karo*\n\n"
+            "Format: `/cal [YYYY-MM-DD] [naam]`\n"
+            "Ya: `/cal [DD-MM-YYYY] [naam]`\n\n"
+            "*Examples:*\n"
+            f"`/cal {today_str()} Doctor appointment`\n"
+            "`/cal 2026-05-10 Maa ka birthday`\n"
+            "`/cal 15-05-2026 Office meeting 14:00`\n\n"
+            "_Time include karna optional hai_",
+            parse_mode="Markdown")
+        return
+
+    import re as _re2
+    args_str = " ".join(ctx.args)
+
+    # Date parse karo — multiple formats support
+    date_str = None
+    title    = args_str
+    event_time = ""
+
+    # YYYY-MM-DD format
+    m = _re2.match(r'^(\d{4}-\d{2}-\d{2})\s+(.*)', args_str)
+    if m:
+        date_str = m.group(1); title = m.group(2)
+
+    # DD-MM-YYYY format
+    if not date_str:
+        m = _re2.match(r'^(\d{2})-(\d{2})-(\d{4})\s+(.*)', args_str)
+        if m:
+            date_str = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"; title = m.group(4)
+
+    # "aaj" ya "kal"
+    if not date_str:
+        if args_str.lower().startswith("aaj "):
+            date_str = today_str(); title = args_str[4:].strip()
+        elif args_str.lower().startswith("kal "):
+            date_str = (date.today() + timedelta(days=1)).isoformat(); title = args_str[4:].strip()
+
+    if not date_str:
+        await update.message.reply_text(
+            "❌ Date format samajh nahi aaya!\n\n"
+            f"Sahi format:\n`/cal {today_str()} Meeting`\n`/cal 10-05-2026 Birthday`",
+            parse_mode="Markdown")
+        return
+
+    # Time extract karo title se (HH:MM pattern)
+    t_match = _re2.search(r'(\d{1,2}:\d{2})', title)
+    if t_match:
+        event_time = t_match.group(1)
+        title = title.replace(event_time, "").strip()
+
+    try:
+        date.fromisoformat(date_str)  # validate
+    except:
+        await update.message.reply_text("❌ Invalid date! Format: YYYY-MM-DD", parse_mode="Markdown")
+        return
+
+    e = calendar.add(title, date_str, event_time)
+    day_label = "Aaj" if date_str == today_str() else "Kal" if date_str == (date.today()+timedelta(days=1)).isoformat() else date_str
+    await update.message.reply_text(
+        f"📅 *Calendar Event Add Ho Gaya!*\n\n"
+        f"✨ *{title}*\n"
+        f"📆 Date: *{day_label}*" + (f" | ⏰ *{event_time}*" if event_time else "") + f"\n\n"
+        f"_ID #{e['id']} — `/delcal {e['id']}` se hatao_",
+        parse_mode="Markdown")
+
+
+async def cmd_cal_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Upcoming calendar events dekho"""
+    upcoming = calendar.upcoming(30)
+    if not upcoming:
+        await update.message.reply_text(
+            "📅 *Koi upcoming event nahi!*\n\n"
+            f"`/cal {today_str()} Meeting` se add karo",
+            parse_mode="Markdown")
+        return
+
+    txt = f"📅 *CALENDAR — Agle 30 Din*\n\n"
+    kb = []
+    today_d = today_str()
+    for e in upcoming:
+        day_label = "🔴 Aaj" if e["date"] == today_d else f"📆 {e['date'][5:]}"
+        time_s = f" ⏰{e['time']}" if e.get("time") else ""
+        txt += f"{day_label}{time_s} — *{e['title']}*\n"
+        kb.append([InlineKeyboardButton(
+            f"🗑 {e['title'][:35]}", callback_data=f"delcal_{e['id']}")])
+
+    kb.append([InlineKeyboardButton("🏠 Menu", callback_data="menu")])
+    await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def cmd_del_cal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Calendar event delete karo"""
+    if not ctx.args:
+        await update.message.reply_text("`/delcal 3` — event ka ID daalo", parse_mode="Markdown"); return
+    try:
+        eid = int(ctx.args[0])
+        ok = calendar.delete(eid)
+        await update.message.reply_text(
+            f"🗑 *Event #{eid} Delete Ho Gaya!*" if ok else f"❌ Event #{eid} nahi mila.",
+            parse_mode="Markdown")
+    except:
+        await update.message.reply_text("❌ `/delcal 3` format use karo", parse_mode="Markdown")
+
+
+# ══════════════════════════════════════════════
+# WEEKLY REPORT
+# ══════════════════════════════════════════════
+async def cmd_weekly_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Poori hafte ki report"""
+    await update.message.reply_text("📊 *Weekly report ban rahi hai...*", parse_mode="Markdown")
+
+    today_d  = date.today()
+    week_ago = today_d - timedelta(days=6)
+    txt = f"📊 *WEEKLY REPORT*\n"
+    txt += f"_{week_ago.strftime('%d %b')} — {today_d.strftime('%d %b %Y')}_\n"
+    txt += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    # ── Tasks ──────────────────────────────────
+    all_tasks_done = []
+    for i in range(7):
+        d = (today_d - timedelta(days=i)).isoformat()
+        all_tasks_done.extend(tasks.done_on(d))
+    pending_count = len(tasks.pending())
+    txt += f"📋 *TASKS*\n"
+    txt += f"  ✅ Hafte mein {len(all_tasks_done)} complete kiye\n"
+    txt += f"  ⏳ {pending_count} abhi pending hain\n\n"
+
+    # ── Habits ─────────────────────────────────
+    all_h = habits.all()
+    if all_h:
+        txt += f"💪 *HABITS*\n"
+        for h in all_h[:5]:
+            streak = h.get("streak", 0)
+            best   = h.get("best_streak", 0)
+            txt += f"  {h['emoji']} {h['name']}: 🔥{streak} streak | Best: {best}\n"
+        txt += "\n"
+
+    # ── Expenses ───────────────────────────────
+    week_exp = 0
+    for i in range(7):
+        d = (today_d - timedelta(days=i)).isoformat()
+        week_exp += sum(e["amount"] for e in expenses.today_list()
+                        if e["date"] == d)
+    # Recalc properly
+    week_exp = sum(
+        e["amount"] for e in expenses.data["list"]
+        if e["date"] >= week_ago.isoformat()
+    )
+    month_exp = expenses.month_total()
+    bl = expenses.budget_left()
+    txt += f"💰 *KHARCHA*\n"
+    txt += f"  Hafte mein: ₹{week_exp:.0f}\n"
+    txt += f"  Is mahine: ₹{month_exp:.0f}\n"
+    if bl is not None:
+        txt += f"  Budget baaki: ₹{bl:.0f}\n"
+    txt += "\n"
+
+    # ── Water ──────────────────────────────────
+    week_water = water.week_summary()
+    avg_water  = int(sum(week_water.values()) / max(1, len(week_water)))
+    best_water = max(week_water.values()) if week_water else 0
+    goal_days  = sum(1 for ml in week_water.values() if ml >= water.goal())
+    txt += f"💧 *PAANI*\n"
+    txt += f"  Daily average: {avg_water}ml\n"
+    txt += f"  Best day: {best_water}ml\n"
+    txt += f"  Goal achieve kiya: {goal_days}/7 din\n\n"
+
+    # ── Bills due ──────────────────────────────
+    due = bills.due_soon(7)
+    if due:
+        txt += f"💳 *BILLS (Agle 7 din mein due)*\n"
+        for b in due:
+            txt += f"  ⚠️ {b['name']} — ₹{b['amount']:.0f} ({b['due_date'][5:]})\n"
+        txt += "\n"
+
+    # ── Goals ──────────────────────────────────
+    ag = goals.active()
+    if ag:
+        txt += f"🎯 *GOALS*\n"
+        for g in ag[:4]:
+            bar = "█"*(g["progress"]//10) + "░"*(10-g["progress"]//10)
+            txt += f"  {bar} {g['title']} {g['progress']}%\n"
+        txt += "\n"
+
+    # ── Calendar ───────────────────────────────
+    upcoming_cal = calendar.upcoming(7)
+    if upcoming_cal:
+        txt += f"📅 *UPCOMING EVENTS*\n"
+        for e in upcoming_cal[:4]:
+            time_s = f" {e['time']}" if e.get("time") else ""
+            txt += f"  {e['date'][5:]}{time_s} — {e['title']}\n"
+        txt += "\n"
+
+    txt += "━━━━━━━━━━━━━━━━━━━━━━\n"
+    txt += "💪 *Agli hafte aur badiya karna hai!* 🚀"
+
+    await update.message.reply_text(txt, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu")]]))
+
+
+# ══════════════════════════════════════════════
+# BILL DUE CHECK JOB (Daily morning alert)
+# ══════════════════════════════════════════════
+async def bill_due_alert_job(context):
+    """Roz subah check karo — koi bill due toh nahi?"""
+    now_time = datetime.now().strftime("%H:%M")
+    if now_time != "09:00":
+        return  # Sirf 9 baje alert
+
+    due = bills.due_soon(3)
+    if not due:
+        return
+
+    # Saare active chat IDs ko alert karo (reminders se le lo)
+    chat_ids = set(r["chat_id"] for r in reminders.all_active())
+    # Agar koi reminder nahi — skip
+    if not chat_ids:
+        return
+
+    txt = "💳 *BILL DUE REMINDER*\n\n"
+    for b in due:
+        txt += f"⚠️ *{b['name']}* — ₹{b['amount']:.0f}\n"
+        txt += f"   📅 Due: {b['due_date']} | `/billpaid {b['id']}` se paid mark karo\n\n"
+    txt += "_Paid ho gaya? `/billpaid [ID]` se mark karo!_"
+
+    for cid in chat_ids:
+        try:
+            await context.bot.send_message(chat_id=cid, text=txt, parse_mode="Markdown")
+        except Exception as e:
+            log.warning(f"Bill alert send error: {e}")
+
+
+# ══════════════════════════════════════════════
+# WATER REMINDER JOB (Har 2 ghante)
+# ══════════════════════════════════════════════
+async def water_reminder_job(context):
+    """Har 2 ghante check karo — paani peena remind karo"""
+    now_h = datetime.now().hour
+    # Sirf 8 AM se 10 PM ke beech
+    if not (8 <= now_h <= 22):
+        return
+    # Sirf har 2 ghante (even hours)
+    if now_h % 2 != 0:
+        return
+
+    chat_ids = set(r["chat_id"] for r in reminders.all_active())
+    if not chat_ids:
+        return
+
+    total = water.today_total()
+    goal  = water.goal()
+    if total >= goal:
+        return  # Goal pura ho gaya — disturb mat karo
+
+    remaining = goal - total
+    pct = int(total / goal * 100) if goal else 0
+
+    txt = (f"💧 *Paani Peena Yaad Hai?*\n\n"
+           f"Aaj: {total}ml / {goal}ml ({pct}%)\n"
+           f"Aur {remaining}ml baaki hai!\n\n"
+           f"`/water` se log karo 💧")
+
+    for cid in chat_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=cid, text=txt, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💧 +250ml", callback_data="water_250"),
+                    InlineKeyboardButton("💧 +500ml", callback_data="water_500")
+                ]])
+            )
+        except Exception as e:
+            log.warning(f"Water reminder error: {e}")
+
+
 # ══════════════════════════════════════════════
 async def delete_telegram_messages(bot, tracked_ids: list) -> tuple:
     """Bot ke bheje Telegram messages delete karo. Returns (deleted, failed)"""
@@ -1922,7 +2744,7 @@ async def cmd_nuke(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ══════════════════════════════════════════════
 def main():
-    log.info("🤖 Personal AI Bot v3.0 — Advanced — Starting...")
+    log.info("🤖 Personal AI Bot v4.0 — Advanced — Starting...")
     log.info(f"📡 Models (fallback order): {', '.join(GEMINI_MODELS)}")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -1954,6 +2776,21 @@ def main():
         ("reminders",   cmd_reminders_list),
         ("delremind",   cmd_delremind),
         ("yesterday",   lambda u,c: show_yesterday(u.message)),
+        # Water Tracker
+        ("water",       cmd_water),
+        ("waterstatus", cmd_water_status),
+        ("watergoal",   cmd_water_goal),
+        # Bills / EMI
+        ("bill",        cmd_bill),
+        ("bills",       cmd_bills_list),
+        ("billpaid",    cmd_bill_paid),
+        ("delbill",     cmd_del_bill),
+        # Calendar
+        ("cal",         cmd_cal),
+        ("calendar",    cmd_cal_list),
+        ("delcal",      cmd_del_cal),
+        # Weekly Report
+        ("weekly",      cmd_weekly_report),
     ]
     for cmd, handler in handlers:
         app.add_handler(CommandHandler(cmd, handler))
@@ -1965,7 +2802,11 @@ def main():
     job_queue = app.job_queue
     if job_queue is not None:
         job_queue.run_repeating(reminder_job, interval=30, first=5)
+        job_queue.run_repeating(bill_due_alert_job, interval=3600, first=60)   # Har ghante check
+        job_queue.run_repeating(water_reminder_job, interval=3600, first=300)  # Har ghante check
         log.info("⏰ Reminder job queue started — har 30 second check hoga!")
+        log.info("💳 Bill due alert job started — har ghante check hoga!")
+        log.info("💧 Water reminder job started — har ghante check hoga!")
     else:
         log.warning("⚠️ JobQueue nahi mila! Reminder kaam nahi karenge.")
         log.warning("Fix karo: pip install \"python-telegram-bot[job-queue]\"")
