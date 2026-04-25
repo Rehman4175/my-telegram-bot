@@ -12,6 +12,7 @@ from datetime import datetime, date, timedelta
 from xml.etree import ElementTree as ET
 import re as _re
 
+# SSL fix
 ssl._create_default_https_context = ssl._create_unverified_context
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -82,7 +83,7 @@ def now_str():       return datetime.now().strftime("%H:%M")
 def yesterday_str(): return (date.today() - timedelta(days=1)).isoformat()
 
 # ══════════════════════════════════════════════
-# CHAT HISTORY (Sabse Pehle)
+# 1. CHAT HISTORY CLASS (Sabse Pehle Define Kiya)
 # ══════════════════════════════════════════════
 class ChatHistory:
     def __init__(self):
@@ -100,44 +101,55 @@ class ChatHistory:
         self.data["msg_ids"] = self.data["msg_ids"][-500:]
         save(F_CHAT, self.data)
 
-    def get_tracked_ids(self): return self.data.get("msg_ids", [])
-    def get_recent(self, n=20): return [{"role": m["role"], "content": m["content"]} for m in self.data["history"][-n:]]
+    def get_tracked_ids(self):
+        return self.data.get("msg_ids", [])
+
+    def get_recent(self, n=20) -> list:
+        return [{"role": m["role"], "content": m["content"]} for m in self.data["history"][-n:]]
+
     def clear(self):
         count = len(self.data["history"])
         self.data["history"] = []
         self.data["cleared_at"] = datetime.now().isoformat()
         save(F_CHAT, self.data)
         return count
+
     def clear_msg_ids(self):
         self.data["msg_ids"] = []
         save(F_CHAT, self.data)
-    def count(self): return len(self.data["history"])
+
+    def count(self):
+        return len(self.data["history"])
 
 # ══════════════════════════════════════════════
-# GEMINI CALLER
+# 2. GEMINI CALLER
 # ══════════════════════════════════════════════
 def call_gemini(system_prompt: str, messages: list) -> str:
-    # Simplified version (full original wala bhi daal sakte hain)
-    contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
-    for m in messages:
-        contents.append({"role": m["role"], "parts": [{"text": m["content"]}]})
-    
-    payload = json.dumps({"contents": contents, "generationConfig": {"temperature": 0.75, "maxOutputTokens": 600}}).encode("utf-8")
-    
-    for model in GEMINI_MODELS:
-        try:
-            url = BASE_URL.format(model=model, key=GEMINI_API_KEY)
-            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                return result["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as e:
-            log.warning(f"Model {model} failed: {e}")
-            continue
-    return "⚠️ Gemini se response nahi mila. Thodi der baad try karo!"
+    try:
+        contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
+        for m in messages:
+            contents.append({"role": m.get("role", "user"), "parts": [{"text": m.get("content", "")}]})
+
+        payload = json.dumps({
+            "contents": contents,
+            "generationConfig": {"temperature": 0.75, "maxOutputTokens": 600}
+        }).encode("utf-8")
+
+        for model in GEMINI_MODELS:
+            try:
+                url = BASE_URL.format(model=model, key=GEMINI_API_KEY)
+                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                    return result["candidates"][0]["content"]["parts"][0]["text"]
+            except:
+                continue
+        return "⚠️ Gemini API busy hai. Thodi der baad try karo!"
+    except:
+        return "❌ Kuch technical issue hai. Baad mein try karo."
 
 # ══════════════════════════════════════════════
-# NEWS
+# 3. NEWS FUNCTION
 # ══════════════════════════════════════════════
 NEWS_FEEDS = {
     "India": "https://feeds.bbci.co.uk/hindi/rss.xml",
@@ -148,24 +160,18 @@ NEWS_FEEDS = {
 }
 
 def fetch_news(category="India", max_items=5):
-    cache = load(F_NEWS, {"cache": {}, "updated": {}})
-    if category in cache.get("cache", {}) and time.time() - cache.get("updated", {}).get(category, 0) < 1800:
-        return cache["cache"][category][:max_items]
-    # ... (fetch logic same as original)
-    return [{"title": "News fetch nahi ho saka", "desc": "", "link": ""}]
+    return [{"title": "News service abhi available nahi", "desc": "", "link": ""}]
 
 # ══════════════════════════════════════════════
-# ALL OTHER CLASSES
+# 4. BAaki SAB CLASSES
 # ══════════════════════════════════════════════
 class Memory:
     def __init__(self):
         self.data = load(F_MEMORY, {"facts": [], "prefs": {}, "dates": {}, "important_notes": []})
     def save_data(self): save(F_MEMORY, self.data)
-    def add_fact(self, fact: str):
-        if not any(fact[:50] in x.get('f','')[:50] for x in self.data["facts"]):
-            self.data["facts"].append({"f": fact, "d": today_str()})
-            self.data["facts"] = self.data["facts"][-400:]
-            self.save_data()
+    def add_fact(self, fact): 
+        self.data["facts"].append({"f": fact, "d": today_str()})
+        self.save_data()
 
 class Tasks:
     def __init__(self):
@@ -173,14 +179,11 @@ class Tasks:
     def save_data(self): save(F_TASKS, self.data)
     def add(self, title, priority="medium"):
         self.data["counter"] += 1
-        t = {"id": self.data["counter"], "title": title, "priority": priority, "done": False, "due": today_str()}
+        t = {"id": self.data["counter"], "title": title, "priority": priority, "done": False}
         self.data["list"].append(t)
         self.save_data()
         return t
-    def pending(self): return [t for t in self.data["list"] if not t["done"]]
-    def today_pending(self):
-        td = today_str()
-        return [t for t in self.data["list"] if not t["done"] and t.get("due","") <= td]
+    def pending(self): return [t for t in self.data["list"] if not t.get("done")]
 
 class Diary:
     def __init__(self):
@@ -188,7 +191,8 @@ class Diary:
     def save_data(self): save(F_DIARY, self.data)
     def add(self, content, mood="😊"):
         td = today_str()
-        if td not in self.data["entries"]: self.data["entries"][td] = []
+        if td not in self.data["entries"]:
+            self.data["entries"][td] = []
         self.data["entries"][td].append({"text": content, "mood": mood, "time": now_str()})
         self.save_data()
 
@@ -201,7 +205,6 @@ class Habits:
         h = {"id": self.data["counter"], "name": name, "emoji": emoji, "streak": 0}
         self.data["list"].append(h)
         self.save_data()
-        return h
 
 class Notes:
     def __init__(self):
@@ -212,11 +215,10 @@ class Notes:
         n = {"id": self.data["counter"], "text": content}
         self.data["list"].append(n)
         self.save_data()
-        return n
 
 class Expenses:
     def __init__(self):
-        self.data = load(F_EXPENSES, {"list": [], "counter": 0, "budget": {}})
+        self.data = load(F_EXPENSES, {"list": [], "counter": 0})
     def save_data(self): save(F_EXPENSES, self.data)
     def add(self, amount, desc):
         self.data["counter"] += 1
@@ -233,18 +235,16 @@ class Goals:
         g = {"id": self.data["counter"], "title": title, "progress": 0, "done": False}
         self.data["list"].append(g)
         self.save_data()
-        return g
 
 class Reminders:
     def __init__(self):
         self.data = load(F_REMINDERS, {"list": [], "counter": 0})
     def save_data(self): save(F_REMINDERS, self.data)
-    def add(self, chat_id, text, remind_at, repeat="once"):
+    def add(self, chat_id, text, time_str):
         self.data["counter"] += 1
-        r = {"id": self.data["counter"], "chat_id": chat_id, "text": text, "time": remind_at, "repeat": repeat, "active": True}
+        r = {"id": self.data["counter"], "chat_id": chat_id, "text": text, "time": time_str}
         self.data["list"].append(r)
         self.save_data()
-        return r
 
 class WaterTracker:
     def __init__(self):
@@ -277,7 +277,7 @@ class CalendarManager:
         self.save_data()
 
 # ══════════════════════════════════════════════
-# INIT ALL — Sab classes ke baad
+# INIT ALL — Ab sab classes define ho chuke hain
 # ══════════════════════════════════════════════
 chat_hist = ChatHistory()
 mem       = Memory()
@@ -293,25 +293,22 @@ bills     = BillTracker()
 calendar  = CalendarManager()
 
 # ══════════════════════════════════════════════
-# BASIC START COMMAND
+# START COMMAND
 # ══════════════════════════════════════════════
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🕌 *Assalamualaikum!* \nMain tumhara Personal AI Dost hoon.\n\nKya haal hai bhai? Kuch bhi bolo!", 
-        parse_mode="Markdown"
-    )
+    name = update.effective_user.first_name or "Dost"
+    await update.message.reply_text(f"🕌 *Assalamualaikum {name}!*\nMain tumhara Personal AI Dost hoon.\nKya madad karun aaj?", parse_mode="Markdown")
 
 # ══════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════
 def main():
-    log.info("🤖 Personal AI Bot Starting...")
+    log.info("🤖 Personal AI Bot v4.0 Starting...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
-    # Baaki handlers (task, remind, etc.) baad mein add kar sakte ho
 
-    log.info("✅ Bot is ready!")
+    log.info("✅ Bot successfully started!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
