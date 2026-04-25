@@ -83,7 +83,7 @@ def now_str():       return datetime.now().strftime("%H:%M")
 def yesterday_str(): return (date.today() - timedelta(days=1)).isoformat()
 
 # ══════════════════════════════════════════════
-# 1. CHAT HISTORY CLASS (Sabse Pehle Define Kiya)
+# CHAT HISTORY - SABSE PEHLE DEFINE KIYA HAI
 # ══════════════════════════════════════════════
 class ChatHistory:
     def __init__(self):
@@ -122,14 +122,14 @@ class ChatHistory:
         return len(self.data["history"])
 
 # ══════════════════════════════════════════════
-# 2. GEMINI CALLER
+# GEMINI CALLER
 # ══════════════════════════════════════════════
 def call_gemini(system_prompt: str, messages: list) -> str:
     try:
         contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
         for m in messages:
             contents.append({"role": m.get("role", "user"), "parts": [{"text": m.get("content", "")}]})
-
+        
         payload = json.dumps({
             "contents": contents,
             "generationConfig": {"temperature": 0.75, "maxOutputTokens": 600}
@@ -146,10 +146,10 @@ def call_gemini(system_prompt: str, messages: list) -> str:
                 continue
         return "⚠️ Gemini API busy hai. Thodi der baad try karo!"
     except:
-        return "❌ Kuch technical issue hai. Baad mein try karo."
+        return "❌ Technical issue hai. Baad mein try karo."
 
 # ══════════════════════════════════════════════
-# 3. NEWS FUNCTION
+# NEWS
 # ══════════════════════════════════════════════
 NEWS_FEEDS = {
     "India": "https://feeds.bbci.co.uk/hindi/rss.xml",
@@ -160,16 +160,16 @@ NEWS_FEEDS = {
 }
 
 def fetch_news(category="India", max_items=5):
-    return [{"title": "News service abhi available nahi", "desc": "", "link": ""}]
+    return [{"title": "News abhi available nahi", "desc": "", "link": ""}]
 
 # ══════════════════════════════════════════════
-# 4. BAaki SAB CLASSES
+# BAaki SAB CLASSES
 # ══════════════════════════════════════════════
 class Memory:
     def __init__(self):
         self.data = load(F_MEMORY, {"facts": [], "prefs": {}, "dates": {}, "important_notes": []})
     def save_data(self): save(F_MEMORY, self.data)
-    def add_fact(self, fact): 
+    def add_fact(self, fact: str):
         self.data["facts"].append({"f": fact, "d": today_str()})
         self.save_data()
 
@@ -240,9 +240,9 @@ class Reminders:
     def __init__(self):
         self.data = load(F_REMINDERS, {"list": [], "counter": 0})
     def save_data(self): save(F_REMINDERS, self.data)
-    def add(self, chat_id, text, time_str):
+    def add(self, chat_id, text, remind_at):
         self.data["counter"] += 1
-        r = {"id": self.data["counter"], "chat_id": chat_id, "text": text, "time": time_str}
+        r = {"id": self.data["counter"], "chat_id": chat_id, "text": text, "time": remind_at, "active": True}
         self.data["list"].append(r)
         self.save_data()
 
@@ -297,18 +297,21 @@ calendar  = CalendarManager()
 # ══════════════════════════════════════════════
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Dost"
-    await update.message.reply_text(f"🕌 *Assalamualaikum {name}!*\nMain tumhara Personal AI Dost hoon.\nKya madad karun aaj?", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"🕌 *Assalamualaikum {name}!*\nMain tumhara Personal AI Dost hoon.\nKya madad karun?", 
+        parse_mode="Markdown"
+    )
 
 # ══════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════
 def main():
-    log.info("🤖 Personal AI Bot v4.0 Starting...")
+    log.info("🤖 Personal AI Bot v4.0 — Starting...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
 
-    log.info("✅ Bot successfully started!")
+    log.info("✅ Bot successfully started! Use /start on Telegram.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
