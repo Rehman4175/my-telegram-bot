@@ -1230,7 +1230,8 @@ async def callback_handler(update:Update,ctx:ContextTypes.DEFAULT_TYPE):
     elif d.startswith("goal_"): await q.message.reply_text(f"📊 `/gprogress {d.split('_')[1]} 50`")
     elif d.startswith("remind_done_"):
         reminders.mark_fired(int(d.split("_")[2]))
-        await q.message.reply_text("✅ Done!"); try: await q.message.delete()
+        await q.message.reply_text("✅ Done!")
+        try: await q.message.delete()
         except: pass
     elif d.startswith("remind_snooze_"):
         rid=int(d.split("_")[2]); snooze=(now_ist()+timedelta(minutes=10)).strftime("%H:%M")
