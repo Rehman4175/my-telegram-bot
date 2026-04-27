@@ -1,31 +1,29 @@
 name: Sakibur Bot 24/7
-
 on:
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
+
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 290
-
+    timeout-minutes: 280
     steps:
-      - name: Repo checkout
-        uses: actions/checkout@v4
-
-      - name: Python setup
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Dependencies install
-        run: pip install -r requirements.txt
-
+      - run: pip install -r requirements.txt
       - name: Bot start
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDS }}
         run: python bot.py
