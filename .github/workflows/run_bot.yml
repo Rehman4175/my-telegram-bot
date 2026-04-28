@@ -42,4 +42,5 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
           GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python bot.py
