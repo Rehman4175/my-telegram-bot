@@ -1,4 +1,5 @@
 name: Sakibur Bot 24/7
+
 on:
   schedule:
     - cron: '*/5 * * * *'
@@ -12,17 +13,33 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 280
+    
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - name: Bot start
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Debug - Check secret exists
+        run: |
+          if [ -n "$GOOGLE_CREDS_JSON" ]; then
+            echo "✅ GOOGLE_CREDS_JSON found! Length: ${#GOOGLE_CREDS_JSON}"
+            echo "First 50 chars: ${GOOGLE_CREDS_JSON:0:50}"
+          else
+            echo "❌ GOOGLE_CREDS_JSON NOT found!"
+          fi
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
+      
+      - name: Start Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.Telegram_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.Gemini_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
-          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}  # ✅ Changed
+          GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
         run: python bot.py
