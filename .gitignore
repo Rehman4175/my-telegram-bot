@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Bot local data (JSON fallback files — don't commit these)
+data/
+*.json
+
+# Credentials — KABHI COMMIT MAT KARNA
+credentials.json
+service_account.json
+google_creds*.json
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
