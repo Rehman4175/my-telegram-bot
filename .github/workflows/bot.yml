@@ -2,45 +2,59 @@ name: Sakibur Bot 24/7
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+    - cron: '*/5 * * * *'   # Har 5 min pe restart — agar crash ho to
+  workflow_dispatch:          # Manual trigger bhi
 
 concurrency:
   group: telegram-bot
-  cancel-in-progress: true
+  cancel-in-progress: true    # Naya run aaya to purana band karo
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 280
-    
+    timeout-minutes: 280      # ~4.6 ghante, phir cron restart karta hai
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: pip install -r requirements.txt
-      
-      - name: Debug - Check secret exists
+
+      - name: Debug - Check secrets
+        env:
+          GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
           if [ -n "$GOOGLE_CREDS_JSON" ]; then
             echo "✅ GOOGLE_CREDS_JSON found! Length: ${#GOOGLE_CREDS_JSON}"
-            echo "First 50 chars: ${GOOGLE_CREDS_JSON:0:50}"
           else
             echo "❌ GOOGLE_CREDS_JSON NOT found!"
           fi
-        env:
-          GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
-      
+          if [ -n "$MONGO_URI" ]; then
+            echo "✅ MONGO_URI found!"
+          else
+            echo "❌ MONGO_URI NOT found! Data will reset on restart!"
+          fi
+
       - name: Start Bot
         env:
-          TELEGRAM_TOKEN: ${{ secrets.Telegram_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.Gemini_API_KEY }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          MONGO_URI: ${{ secrets.MONGO_URI }}
+          TELEGRAM_TOKEN:    ${{ secrets.Telegram_TOKEN }}
+          GEMINI_API_KEY:    ${{ secrets.Gemini_API_KEY }}
+          HF_TOKEN:          ${{ secrets.HF_TOKEN }}
+          MONGO_URI:         ${{ secrets.MONGO_URI }}
           GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY:      ${{ secrets.GROQ_API_KEY }}
+          ADMIN_CHAT_ID:     ${{ secrets.ADMIN_CHAT_ID }}
         run: python bot.py
