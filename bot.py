@@ -1150,14 +1150,15 @@ class GoogleSheetsDB:
         try:
             existing = ws.get_all_values()
             if not existing:
-                ws.append_row([str(c) for c in (rows[0] if rows else [])])
+                if rows:
+                    ws.append_row([str(c) for c in rows[0]])
                 existing = ws.get_all_values()
-            existing_ids = {str(row[id_col]): idx+1 for idx, row in enumerate(existing[1:], 1) if row}
+            existing_ids = {str(row[id_col]): idx+1 for idx, row in enumerate(existing[1:], 1) if len(row) > id_col and row[id_col]}
             updated, added = 0, 0
             for row in rows:
                 key = str(row[id_col])
                 if key in existing_ids:
-                    ws.update(f'A{existing_ids[key]+1}', [row])
+                    ws.update(f'A{existing_ids[key]}', [row])
                     updated += 1
                 else:
                     ws.append_row(row, value_input_option="USER_ENTERED")
@@ -1205,7 +1206,7 @@ class GoogleSheetsDB:
             existing_keys = set()
             for row in existing[1:]:
                 if len(row) >= 4:
-                    existing_keys.add(f"{row[0]}|{row[1]}|{row[3][:30]}")
+                    existing_keys.add(f"{row[0]}|{row[1]}|{str(row[3])[:30]}")
             new_rows = []
             for row in rows:
                 key = f"{row[0]}|{row[1]}|{str(row[3])[:30]}"
@@ -1238,8 +1239,8 @@ class GoogleSheetsDB:
         try:
             ws = self.sheet.worksheet("Memory")
             existing = ws.get_all_values()
-            existing_facts = set(row[1][:50] for row in existing[1:] if len(row) > 1)
-            new_rows = [[f["d"], f["f"]] for f in facts if f["f"][:50] not in existing_facts]
+            existing_facts = set(str(row[1])[:50] for row in existing[1:] if len(row) > 1 and row[1])
+            new_rows = [[f["d"], f["f"]] for f in facts if str(f["f"])[:50] not in existing_facts]
             for row in new_rows:
                 ws.append_row(row, value_input_option="USER_ENTERED")
             return True
@@ -1316,13 +1317,15 @@ class GoogleSheetsDB:
             existing_keys = set()
             for row in existing[1:]:
                 if len(row) >= 1 and row[0]:
-                    text_col = row[3][:50] if len(row) > 3 else ""
-                    existing_keys.add(f"{row[0]}|{row[1] if len(row)>1 else ''}|{text_col}")
+                    text_col = str(row[3])[:50] if len(row) > 3 else ""
+                    time_col = str(row[1]) if len(row) > 1 else ""
+                    existing_keys.add(f"{row[0]}|{time_col}|{text_col}")
             new_rows = []
             for entry_date in sorted(all_entries_dict.keys()):
                 for entry in all_entries_dict[entry_date]:
-                    text_key = entry.get("text", "")[:50]
-                    key = f"{entry_date}|{entry.get('time','')}|{text_key}"
+                    text_key = str(entry.get("text", ""))[:50]
+                    time_col = str(entry.get("time", ""))
+                    key = f"{entry_date}|{time_col}|{text_key}"
                     if key not in existing_keys:
                         new_rows.append([entry_date, entry.get("time",""),
                                          entry.get("mood","📝"), entry.get("text","")])
@@ -1401,46 +1404,59 @@ class GoogleSheetsDB:
         restored = []
         log.info("🔄 Restoring from Google Sheets...")
 
-        # Tasks
+        # Helper function to safely get values from rows
+        def get_val(row, *keys):
+            for key in keys:
+                val = row.get(key, "")
+                if val:
+                    return val
+            return row.get(keys[0], "") if keys else ""
+
+        # ═══════════ Tasks Restore ═══════════
         try:
             ws = self.sheet.worksheet("Tasks")
             rows = ws.get_all_records()
             task_list = []
             for r in rows:
-                if not r.get("ID") and not r.get("Title"):
+                tid = get_val(r, "ID", "id")
+                title = get_val(r, "Title", "title")
+                if not tid and not title:
                     continue
                 task_list.append({
-                    "id": int(r["ID"]) if str(r.get("ID","")).isdigit() else 0,
-                    "title": r.get("Title", ""),
-                    "priority": r.get("Priority", "medium"),
-                    "done": r.get("Status", "") == "Done",
-                    "created": r.get("Created At", today_str()),
-                    "done_at": r.get("Completed At", ""),
+                    "id": int(tid) if str(tid).isdigit() else 0,
+                    "title": title,
+                    "priority": get_val(r, "Priority", "priority") or "medium",
+                    "done": str(get_val(r, "Status", "status")).lower() == "done",
+                    "created": get_val(r, "Created At", "created_at", "Created", "created") or today_str(),
+                    "done_at": get_val(r, "Completed At", "completed_at", "Completed", "done_at") or "",
+                    "due": get_val(r, "Due", "due") or today_str(),
                 })
             if task_list:
                 max_id = max((t["id"] for t in task_list), default=0)
-                db.save("tasks", {"list": task_list, "counter": max_id, "failed": []})
+                db.save("tasks", {"list": task_list, "counter": max_id})
                 restored.append(f"📋 {len(task_list)} tasks")
         except Exception as e:
             log.warning(f"Tasks restore: {e}")
 
-        # Reminders
+        # ═══════════ Reminders Restore ═══════════
         try:
             ws = self.sheet.worksheet("Reminders")
             rows = ws.get_all_records()
             rem_list = []
             for r in rows:
-                if not r.get("ID") and not r.get("Text"):
+                rid = get_val(r, "ID", "id")
+                text = get_val(r, "Text", "text")
+                if not rid and not text:
                     continue
                 rem_list.append({
-                    "id": int(r["ID"]) if str(r.get("ID","")).isdigit() else 0,
-                    "time": r.get("Time (HH:MM)", ""),
-                    "text": r.get("Text", ""),
-                    "repeat": r.get("Repeat", "once"),
-                    "active": r.get("Status", "Active") == "Active",
+                    "id": int(rid) if str(rid).isdigit() else 0,
+                    "time": get_val(r, "Time", "Time (HH:MM)", "time") or "",
+                    "text": text,
+                    "repeat": get_val(r, "Repeat", "repeat") or "once",
+                    "active": str(get_val(r, "Status", "status")).lower() != "inactive",
                     "fired_today": False,
-                    "date": r.get("Created Date", today_str()),
-                    "created": r.get("Created At", ""),
+                    "date": get_val(r, "Date", "Created Date", "date") or today_str(),
+                    "created": get_val(r, "Created", "Created At", "created") or "",
                     "chat_id": int(os.environ.get("ADMIN_CHAT_ID", 0)),
                 })
             if rem_list:
@@ -1450,20 +1466,26 @@ class GoogleSheetsDB:
         except Exception as e:
             log.warning(f"Reminders restore: {e}")
 
-        # Expenses
+        # ═══════════ Expenses Restore ═══════════
         try:
             ws = self.sheet.worksheet("Expenses")
             rows = ws.get_all_records()
             exp_list = []
             for r in rows:
-                if not r.get("Amount (Rs)") and not r.get("Description"):
+                amount = get_val(r, "Amount", "Amount (Rs)", "amount") or "0"
+                desc = get_val(r, "Description", "Desc", "description", "desc") or ""
+                try:
+                    amount_val = float(amount)
+                    if amount_val <= 0:
+                        continue
+                except:
                     continue
                 exp_list.append({
-                    "date": r.get("Date", today_str()),
-                    "amount": float(r.get("Amount (Rs)", 0) or 0),
-                    "desc": r.get("Description", ""),
-                    "category": r.get("Category", "general"),
-                    "time": r.get("Time", ""),
+                    "date": get_val(r, "Date", "date") or today_str(),
+                    "amount": amount_val,
+                    "desc": desc,
+                    "category": get_val(r, "Category", "category") or "general",
+                    "time": get_val(r, "Time", "time") or "",
                 })
             if exp_list:
                 db.save("expenses", {"list": exp_list, "budget": None})
@@ -1471,21 +1493,23 @@ class GoogleSheetsDB:
         except Exception as e:
             log.warning(f"Expenses restore: {e}")
 
-        # Habits
+        # ═══════════ Habits Restore ═══════════
         try:
             ws = self.sheet.worksheet("Habits")
             rows = ws.get_all_records()
             hab_list = []
             for r in rows:
-                if not r.get("Habit Name"):
+                name = get_val(r, "Habit Name", "Name", "name", "habit_name") or ""
+                hid = get_val(r, "ID", "id")
+                if not name and not hid:
                     continue
                 hab_list.append({
-                    "id": int(r["ID"]) if str(r.get("ID","")).isdigit() else 0,
-                    "name": r.get("Habit Name", ""),
-                    "emoji": r.get("Emoji", "✅"),
-                    "streak": int(r.get("Current Streak", 0) or 0),
-                    "best_streak": int(r.get("Best Streak", 0) or 0),
-                    "created": r.get("Created", today_str()),
+                    "id": int(hid) if str(hid).isdigit() else 0,
+                    "name": name or f"Habit {hid}",
+                    "emoji": get_val(r, "Emoji", "emoji") or "✅",
+                    "streak": int(get_val(r, "Current Streak", "Streak", "current_streak", "streak") or 0),
+                    "best_streak": int(get_val(r, "Best Streak", "best_streak") or 0),
+                    "created": get_val(r, "Created", "created") or today_str(),
                 })
             if hab_list:
                 max_id = max((h["id"] for h in hab_list), default=0)
@@ -1494,32 +1518,41 @@ class GoogleSheetsDB:
         except Exception as e:
             log.warning(f"Habits restore: {e}")
 
-        # Memory
+        # ═══════════ Memory Restore ═══════════
         try:
             ws = self.sheet.worksheet("Memory")
             rows = ws.get_all_records()
-            facts = [{"d": r.get("Date",""), "f": r.get("Fact","")} for r in rows if r.get("Fact")]
+            facts = []
+            for r in rows:
+                fact = get_val(r, "Fact", "f", "fact") or ""
+                if fact:
+                    facts.append({
+                        "d": get_val(r, "Date", "d", "date") or "",
+                        "f": fact
+                    })
             if facts:
-                db.save("memory", {"facts": facts, "prefs": {}, "important": [], "dates": {}})
+                db.save("memory", {"facts": facts, "prefs": {}, "important_notes": [], "dates": {}})
                 restored.append(f"🧠 {len(facts)} memories")
         except Exception as e:
             log.warning(f"Memory restore: {e}")
 
-        # Goals
+        # ═══════════ Goals Restore ═══════════
         try:
             ws = self.sheet.worksheet("Goals")
             rows = ws.get_all_records()
             goal_list = []
             for r in rows:
-                if not r.get("Title"):
+                title = get_val(r, "Title", "title") or ""
+                gid = get_val(r, "ID", "id")
+                if not title and not gid:
                     continue
                 goal_list.append({
-                    "id": int(r["ID"]) if str(r.get("ID","")).isdigit() else 0,
-                    "title": r.get("Title",""),
-                    "progress": int(r.get("Progress %", 0) or 0),
-                    "done": r.get("Status","") == "Done",
-                    "deadline": r.get("Deadline",""),
-                    "created": r.get("Created",""),
+                    "id": int(gid) if str(gid).isdigit() else 0,
+                    "title": title or f"Goal {gid}",
+                    "progress": int(get_val(r, "Progress", "Progress %", "progress") or 0),
+                    "done": str(get_val(r, "Status", "status")).lower() == "done",
+                    "deadline": get_val(r, "Deadline", "deadline") or "",
+                    "created": get_val(r, "Created", "created") or "",
                 })
             if goal_list:
                 max_id = max((g["id"] for g in goal_list), default=0)
@@ -1528,19 +1561,68 @@ class GoogleSheetsDB:
         except Exception as e:
             log.warning(f"Goals restore: {e}")
 
-        # Diary
+        # ═══════════ Bills Restore ═══════════
+        try:
+            ws = self.sheet.worksheet("Bills")
+            rows = ws.get_all_records()
+            bill_list = []
+            for r in rows:
+                name = get_val(r, "Name", "name") or ""
+                bid = get_val(r, "ID", "id")
+                if not name and not bid:
+                    continue
+                bill_list.append({
+                    "id": int(bid) if str(bid).isdigit() else 0,
+                    "name": name or f"Bill {bid}",
+                    "amount": float(get_val(r, "Amount", "amount") or "0"),
+                    "due_day": int(get_val(r, "Due Day", "due_day", "DueDay") or "1"),
+                    "active": str(get_val(r, "Status", "Active", "status", "active")).lower() != "inactive",
+                    "created": get_val(r, "Created", "created") or "",
+                })
+            if bill_list:
+                max_id = max((b["id"] for b in bill_list), default=0)
+                db.save("bills", {"list": bill_list, "paid": {}, "counter": max_id})
+                restored.append(f"💳 {len(bill_list)} bills")
+        except Exception as e:
+            log.warning(f"Bills restore: {e}")
+
+        # ═══════════ Calendar Restore ═══════════
+        try:
+            ws = self.sheet.worksheet("Calendar")
+            rows = ws.get_all_records()
+            events = []
+            for r in rows:
+                title = get_val(r, "Title", "title") or ""
+                eid = get_val(r, "ID", "id")
+                if not title and not eid:
+                    continue
+                events.append({
+                    "id": int(eid) if str(eid).isdigit() else 0,
+                    "title": title or f"Event {eid}",
+                    "date": get_val(r, "Date", "date") or "",
+                    "time": get_val(r, "Time", "time") or "",
+                    "created": get_val(r, "Created", "created") or "",
+                })
+            if events:
+                max_id = max((e["id"] for e in events), default=0)
+                db.save("calendar", {"events": events, "counter": max_id})
+                restored.append(f"📅 {len(events)} calendar events")
+        except Exception as e:
+            log.warning(f"Calendar restore: {e}")
+
+        # ═══════════ Diary Restore ═══════════
         try:
             ws = self.sheet.worksheet("Diary")
             rows = ws.get_all_records()
             entries = {}
             for r in rows:
-                d = r.get("Date", "")
+                d = get_val(r, "Date", "date") or ""
                 if not d:
                     continue
                 entries.setdefault(d, []).append({
-                    "text": r.get("Entry Text", ""),
-                    "mood": r.get("Mood", "📝"),
-                    "time": r.get("Time", ""),
+                    "text": get_val(r, "Entry Text", "Text", "entry_text", "text") or "",
+                    "mood": get_val(r, "Mood", "mood") or "📝",
+                    "time": get_val(r, "Time", "time") or "",
                 })
             if entries:
                 db.save("diary", {"entries": entries})
@@ -3261,17 +3343,6 @@ async def daily_log_job(context):
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, google_sheets.save_daily_log)
     log.info(f"📅 Daily log: {result}")
-
-async def delete_telegram_messages(bot, tracked_ids):
-    deleted, failed = 0, 0
-    for entry in tracked_ids:
-        try:
-            await bot.delete_message(chat_id=entry["chat_id"], message_id=entry["msg_id"])
-            deleted += 1
-        except:
-            failed += 1
-        await asyncio.sleep(0.1)
-    return deleted, failed
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN
