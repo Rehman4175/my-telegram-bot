@@ -328,27 +328,6 @@ def smart_fallback(user_msg):
 # ═══════════════════════════════════════════════════════════════════
 # 🎤 VOICE TRANSCRIPTION (Groq Whisper)
 # ═══════════════════════════════════════════════════════════════════
-async def transcribe_voice(file_path: str) -> str:
-    if not GROQ_API_KEY:
-        return None
-    try:
-        from groq import Groq
-        client = Groq(api_key=GROQ_API_KEY)
-        with open(file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-large-v3-turbo",
-                file=audio_file,
-                response_format="text",
-                language="hi",
-            )
-        text = transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
-        if text:
-            log.info(f"🎤 Transcribed: {text[:80]}")
-            return text
-    except Exception as e:
-        log.warning(f"Voice transcription failed: {e}")
-    return None
-
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -747,7 +726,6 @@ class HabitStore:
         if hid in day_logs:
             return False, 0
         day_logs.append(hid)
-        # Update streak
         for h in self.store.data["list"]:
             if h["id"] == hid:
                 yesterday = yesterday_str()
@@ -1035,7 +1013,7 @@ class NewsStore:
     def __init__(self):
         self._cache = {}
         self._cache_ts = {}
-        self._ttl = 1800  # 30 min
+        self._ttl = 1800
 
     def get(self, category="India", n=5):
         now_ts = time.time()
@@ -1398,241 +1376,323 @@ class GoogleSheetsDB:
             return f"⚠️ Synced {success_count}/{len(ops)} | Failed: {', '.join(errors)}"
         return f"✅ Synced {success_count}/{len(ops)} sheets!"
 
+    def _get_col_map(self, headers):
+        """Build a flexible column name -> index map from actual headers"""
+        col_map = {}
+        for idx, h in enumerate(headers):
+            h_clean = str(h).strip().lower().replace(" ", "_").replace("(", "").replace(")", "").replace("%", "pct")
+            col_map[h_clean] = idx
+            col_map[str(h).strip()] = idx
+        return col_map
+
+    def _safe_get(self, row, col_map, *keys):
+        """Try multiple keys to get value from row, checking all variations"""
+        for key in keys:
+            # Check exact key
+            if key in col_map:
+                idx = col_map[key]
+                if idx < len(row) and row[idx]:
+                    return str(row[idx]).strip()
+            # Check lowercase with underscores
+            k_lower = key.strip().lower().replace(" ", "_").replace("(", "").replace(")", "").replace("%", "pct")
+            if k_lower in col_map:
+                idx = col_map[k_lower]
+                if idx < len(row) and row[idx]:
+                    return str(row[idx]).strip()
+        return ""
+
     def restore_from_sheets(self):
         if not self.sheet:
             return False
         restored = []
-        log.info("🔄 Restoring from Google Sheets...")
-
-        # Helper function to safely get values from rows
-        def get_val(row, *keys):
-            for key in keys:
-                val = row.get(key, "")
-                if val:
-                    return val
-            return row.get(keys[0], "") if keys else ""
+        log.info("🔄 Restoring from Google Sheets (using flexible column mapping)...")
 
         # ═══════════ Tasks Restore ═══════════
         try:
             ws = self.sheet.worksheet("Tasks")
-            rows = ws.get_all_records()
-            task_list = []
-            for r in rows:
-                tid = get_val(r, "ID", "id")
-                title = get_val(r, "Title", "title")
-                if not tid and not title:
-                    continue
-                task_list.append({
-                    "id": int(tid) if str(tid).isdigit() else 0,
-                    "title": title,
-                    "priority": get_val(r, "Priority", "priority") or "medium",
-                    "done": str(get_val(r, "Status", "status")).lower() == "done",
-                    "created": get_val(r, "Created At", "created_at", "Created", "created") or today_str(),
-                    "done_at": get_val(r, "Completed At", "completed_at", "Completed", "done_at") or "",
-                    "due": get_val(r, "Due", "due") or today_str(),
-                })
-            if task_list:
-                max_id = max((t["id"] for t in task_list), default=0)
-                db.save("tasks", {"list": task_list, "counter": max_id})
-                restored.append(f"📋 {len(task_list)} tasks")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Tasks columns: {headers}")
+                task_list = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    tid = self._safe_get(row, col_map, "ID", "id")
+                    title = self._safe_get(row, col_map, "Title", "title")
+                    if not tid and not title:
+                        continue
+                    task_list.append({
+                        "id": int(float(tid)) if tid else 0,
+                        "title": title or f"Task {tid}",
+                        "priority": self._safe_get(row, col_map, "Priority", "priority") or "medium",
+                        "done": self._safe_get(row, col_map, "Status", "status").lower() == "done",
+                        "created": self._safe_get(row, col_map, "Created At", "created_at", "Created", "created") or today_str(),
+                        "done_at": self._safe_get(row, col_map, "Completed At", "completed_at", "Done At", "done_at") or "",
+                        "due": self._safe_get(row, col_map, "Due", "due") or today_str(),
+                    })
+                if task_list:
+                    max_id = max((t["id"] for t in task_list), default=0)
+                    db.save("tasks", {"list": task_list, "counter": max_id})
+                    restored.append(f"📋 {len(task_list)} tasks")
+                    log.info(f"  ✅ Restored {len(task_list)} tasks")
         except Exception as e:
             log.warning(f"Tasks restore: {e}")
 
         # ═══════════ Reminders Restore ═══════════
         try:
             ws = self.sheet.worksheet("Reminders")
-            rows = ws.get_all_records()
-            rem_list = []
-            for r in rows:
-                rid = get_val(r, "ID", "id")
-                text = get_val(r, "Text", "text")
-                if not rid and not text:
-                    continue
-                rem_list.append({
-                    "id": int(rid) if str(rid).isdigit() else 0,
-                    "time": get_val(r, "Time", "Time (HH:MM)", "time") or "",
-                    "text": text,
-                    "repeat": get_val(r, "Repeat", "repeat") or "once",
-                    "active": str(get_val(r, "Status", "status")).lower() != "inactive",
-                    "fired_today": False,
-                    "date": get_val(r, "Date", "Created Date", "date") or today_str(),
-                    "created": get_val(r, "Created", "Created At", "created") or "",
-                    "chat_id": int(os.environ.get("ADMIN_CHAT_ID", 0)),
-                })
-            if rem_list:
-                max_id = max((r["id"] for r in rem_list), default=0)
-                db.save("reminders", {"list": rem_list, "counter": max_id})
-                restored.append(f"⏰ {len(rem_list)} reminders")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Reminders columns: {headers}")
+                rem_list = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 3:
+                        continue
+                    rid = self._safe_get(row, col_map, "ID", "id")
+                    text = self._safe_get(row, col_map, "Text", "text")
+                    if not rid and not text:
+                        continue
+                    rem_list.append({
+                        "id": int(float(rid)) if rid else 0,
+                        "time": self._safe_get(row, col_map, "Time", "time", "Time (HH:MM)", "time_hhmm") or "",
+                        "text": text or "",
+                        "repeat": self._safe_get(row, col_map, "Repeat", "repeat") or "once",
+                        "active": self._safe_get(row, col_map, "Status", "status").lower() != "inactive",
+                        "fired_today": False,
+                        "date": self._safe_get(row, col_map, "Date", "Created Date", "date", "created_date") or today_str(),
+                        "created": self._safe_get(row, col_map, "Created", "Created At", "created", "created_at") or "",
+                        "chat_id": int(os.environ.get("ADMIN_CHAT_ID", 0)),
+                    })
+                if rem_list:
+                    max_id = max((r["id"] for r in rem_list), default=0)
+                    db.save("reminders", {"list": rem_list, "counter": max_id})
+                    restored.append(f"⏰ {len(rem_list)} reminders")
+                    log.info(f"  ✅ Restored {len(rem_list)} reminders")
         except Exception as e:
             log.warning(f"Reminders restore: {e}")
 
         # ═══════════ Expenses Restore ═══════════
         try:
             ws = self.sheet.worksheet("Expenses")
-            rows = ws.get_all_records()
-            exp_list = []
-            for r in rows:
-                amount = get_val(r, "Amount", "Amount (Rs)", "amount") or "0"
-                desc = get_val(r, "Description", "Desc", "description", "desc") or ""
-                try:
-                    amount_val = float(amount)
-                    if amount_val <= 0:
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Expenses columns: {headers}")
+                exp_list = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
                         continue
-                except:
-                    continue
-                exp_list.append({
-                    "date": get_val(r, "Date", "date") or today_str(),
-                    "amount": amount_val,
-                    "desc": desc,
-                    "category": get_val(r, "Category", "category") or "general",
-                    "time": get_val(r, "Time", "time") or "",
-                })
-            if exp_list:
-                db.save("expenses", {"list": exp_list, "budget": None})
-                restored.append(f"💰 {len(exp_list)} expenses")
+                    amount_str = self._safe_get(row, col_map, "Amount", "amount", "Amount (Rs)", "amount_rs") or "0"
+                    try:
+                        amount_val = float(str(amount_str).replace(",", "").replace("₹", ""))
+                        if amount_val <= 0:
+                            continue
+                    except:
+                        continue
+                    desc = self._safe_get(row, col_map, "Description", "Desc", "description", "desc") or ""
+                    exp_list.append({
+                        "date": self._safe_get(row, col_map, "Date", "date") or today_str(),
+                        "amount": amount_val,
+                        "desc": desc,
+                        "category": self._safe_get(row, col_map, "Category", "category") or "general",
+                        "time": self._safe_get(row, col_map, "Time", "time") or "",
+                    })
+                if exp_list:
+                    db.save("expenses", {"list": exp_list, "budget": None})
+                    restored.append(f"💰 {len(exp_list)} expenses")
+                    log.info(f"  ✅ Restored {len(exp_list)} expenses")
         except Exception as e:
             log.warning(f"Expenses restore: {e}")
 
         # ═══════════ Habits Restore ═══════════
         try:
             ws = self.sheet.worksheet("Habits")
-            rows = ws.get_all_records()
-            hab_list = []
-            for r in rows:
-                name = get_val(r, "Habit Name", "Name", "name", "habit_name") or ""
-                hid = get_val(r, "ID", "id")
-                if not name and not hid:
-                    continue
-                hab_list.append({
-                    "id": int(hid) if str(hid).isdigit() else 0,
-                    "name": name or f"Habit {hid}",
-                    "emoji": get_val(r, "Emoji", "emoji") or "✅",
-                    "streak": int(get_val(r, "Current Streak", "Streak", "current_streak", "streak") or 0),
-                    "best_streak": int(get_val(r, "Best Streak", "best_streak") or 0),
-                    "created": get_val(r, "Created", "created") or today_str(),
-                })
-            if hab_list:
-                max_id = max((h["id"] for h in hab_list), default=0)
-                db.save("habits", {"list": hab_list, "logs": {}, "counter": max_id})
-                restored.append(f"💪 {len(hab_list)} habits")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Habits columns: {headers}")
+                hab_list = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    name = self._safe_get(row, col_map, "Habit Name", "Name", "habit_name", "name") or ""
+                    hid = self._safe_get(row, col_map, "ID", "id")
+                    if not name and not hid:
+                        continue
+                    hab_list.append({
+                        "id": int(float(hid)) if hid else 0,
+                        "name": name or f"Habit {hid}",
+                        "emoji": self._safe_get(row, col_map, "Emoji", "emoji") or "✅",
+                        "streak": int(float(self._safe_get(row, col_map, "Current Streak", "Streak", "current_streak", "streak") or 0)),
+                        "best_streak": int(float(self._safe_get(row, col_map, "Best Streak", "best_streak") or 0)),
+                        "created": self._safe_get(row, col_map, "Created", "created") or today_str(),
+                    })
+                if hab_list:
+                    max_id = max((h["id"] for h in hab_list), default=0)
+                    db.save("habits", {"list": hab_list, "logs": {}, "counter": max_id})
+                    restored.append(f"💪 {len(hab_list)} habits")
+                    log.info(f"  ✅ Restored {len(hab_list)} habits")
         except Exception as e:
             log.warning(f"Habits restore: {e}")
 
         # ═══════════ Memory Restore ═══════════
         try:
             ws = self.sheet.worksheet("Memory")
-            rows = ws.get_all_records()
-            facts = []
-            for r in rows:
-                fact = get_val(r, "Fact", "f", "fact") or ""
-                if fact:
-                    facts.append({
-                        "d": get_val(r, "Date", "d", "date") or "",
-                        "f": fact
-                    })
-            if facts:
-                db.save("memory", {"facts": facts, "prefs": {}, "important_notes": [], "dates": {}})
-                restored.append(f"🧠 {len(facts)} memories")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Memory columns: {headers}")
+                facts = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    fact = self._safe_get(row, col_map, "Fact", "f", "fact") or ""
+                    if fact:
+                        facts.append({
+                            "d": self._safe_get(row, col_map, "Date", "d", "date") or "",
+                            "f": fact
+                        })
+                if facts:
+                    db.save("memory", {"facts": facts, "prefs": {}, "important_notes": [], "dates": {}})
+                    restored.append(f"🧠 {len(facts)} memories")
+                    log.info(f"  ✅ Restored {len(facts)} memories")
         except Exception as e:
             log.warning(f"Memory restore: {e}")
 
         # ═══════════ Goals Restore ═══════════
         try:
             ws = self.sheet.worksheet("Goals")
-            rows = ws.get_all_records()
-            goal_list = []
-            for r in rows:
-                title = get_val(r, "Title", "title") or ""
-                gid = get_val(r, "ID", "id")
-                if not title and not gid:
-                    continue
-                goal_list.append({
-                    "id": int(gid) if str(gid).isdigit() else 0,
-                    "title": title or f"Goal {gid}",
-                    "progress": int(get_val(r, "Progress", "Progress %", "progress") or 0),
-                    "done": str(get_val(r, "Status", "status")).lower() == "done",
-                    "deadline": get_val(r, "Deadline", "deadline") or "",
-                    "created": get_val(r, "Created", "created") or "",
-                })
-            if goal_list:
-                max_id = max((g["id"] for g in goal_list), default=0)
-                db.save("goals", {"list": goal_list, "counter": max_id})
-                restored.append(f"🎯 {len(goal_list)} goals")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Goals columns: {headers}")
+                goal_list = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    title = self._safe_get(row, col_map, "Title", "title") or ""
+                    gid = self._safe_get(row, col_map, "ID", "id")
+                    if not title and not gid:
+                        continue
+                    goal_list.append({
+                        "id": int(float(gid)) if gid else 0,
+                        "title": title or f"Goal {gid}",
+                        "progress": int(float(self._safe_get(row, col_map, "Progress", "Progress %", "progress", "progress_pct") or 0)),
+                        "done": self._safe_get(row, col_map, "Status", "status").lower() == "done",
+                        "deadline": self._safe_get(row, col_map, "Deadline", "deadline") or "",
+                        "created": self._safe_get(row, col_map, "Created", "created") or "",
+                    })
+                if goal_list:
+                    max_id = max((g["id"] for g in goal_list), default=0)
+                    db.save("goals", {"list": goal_list, "counter": max_id})
+                    restored.append(f"🎯 {len(goal_list)} goals")
+                    log.info(f"  ✅ Restored {len(goal_list)} goals")
         except Exception as e:
             log.warning(f"Goals restore: {e}")
 
         # ═══════════ Bills Restore ═══════════
         try:
             ws = self.sheet.worksheet("Bills")
-            rows = ws.get_all_records()
-            bill_list = []
-            for r in rows:
-                name = get_val(r, "Name", "name") or ""
-                bid = get_val(r, "ID", "id")
-                if not name and not bid:
-                    continue
-                bill_list.append({
-                    "id": int(bid) if str(bid).isdigit() else 0,
-                    "name": name or f"Bill {bid}",
-                    "amount": float(get_val(r, "Amount", "amount") or "0"),
-                    "due_day": int(get_val(r, "Due Day", "due_day", "DueDay") or "1"),
-                    "active": str(get_val(r, "Status", "Active", "status", "active")).lower() != "inactive",
-                    "created": get_val(r, "Created", "created") or "",
-                })
-            if bill_list:
-                max_id = max((b["id"] for b in bill_list), default=0)
-                db.save("bills", {"list": bill_list, "paid": {}, "counter": max_id})
-                restored.append(f"💳 {len(bill_list)} bills")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Bills columns: {headers}")
+                bill_list = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    name = self._safe_get(row, col_map, "Name", "name") or ""
+                    bid = self._safe_get(row, col_map, "ID", "id")
+                    if not name and not bid:
+                        continue
+                    bill_list.append({
+                        "id": int(float(bid)) if bid else 0,
+                        "name": name or f"Bill {bid}",
+                        "amount": float(self._safe_get(row, col_map, "Amount", "amount") or "0"),
+                        "due_day": int(float(self._safe_get(row, col_map, "Due Day", "due_day", "DueDay") or "1")),
+                        "active": self._safe_get(row, col_map, "Status", "Active", "status", "active").lower() != "inactive",
+                        "created": self._safe_get(row, col_map, "Created", "created") or "",
+                    })
+                if bill_list:
+                    max_id = max((b["id"] for b in bill_list), default=0)
+                    db.save("bills", {"list": bill_list, "paid": {}, "counter": max_id})
+                    restored.append(f"💳 {len(bill_list)} bills")
+                    log.info(f"  ✅ Restored {len(bill_list)} bills")
         except Exception as e:
             log.warning(f"Bills restore: {e}")
 
         # ═══════════ Calendar Restore ═══════════
         try:
             ws = self.sheet.worksheet("Calendar")
-            rows = ws.get_all_records()
-            events = []
-            for r in rows:
-                title = get_val(r, "Title", "title") or ""
-                eid = get_val(r, "ID", "id")
-                if not title and not eid:
-                    continue
-                events.append({
-                    "id": int(eid) if str(eid).isdigit() else 0,
-                    "title": title or f"Event {eid}",
-                    "date": get_val(r, "Date", "date") or "",
-                    "time": get_val(r, "Time", "time") or "",
-                    "created": get_val(r, "Created", "created") or "",
-                })
-            if events:
-                max_id = max((e["id"] for e in events), default=0)
-                db.save("calendar", {"events": events, "counter": max_id})
-                restored.append(f"📅 {len(events)} calendar events")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Calendar columns: {headers}")
+                events = []
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    title = self._safe_get(row, col_map, "Title", "title") or ""
+                    eid = self._safe_get(row, col_map, "ID", "id")
+                    if not title and not eid:
+                        continue
+                    events.append({
+                        "id": int(float(eid)) if eid else 0,
+                        "title": title or f"Event {eid}",
+                        "date": self._safe_get(row, col_map, "Date", "date") or "",
+                        "time": self._safe_get(row, col_map, "Time", "time") or "",
+                        "created": self._safe_get(row, col_map, "Created", "created") or "",
+                    })
+                if events:
+                    max_id = max((e["id"] for e in events), default=0)
+                    db.save("calendar", {"events": events, "counter": max_id})
+                    restored.append(f"📅 {len(events)} calendar events")
+                    log.info(f"  ✅ Restored {len(events)} events")
         except Exception as e:
             log.warning(f"Calendar restore: {e}")
 
         # ═══════════ Diary Restore ═══════════
         try:
             ws = self.sheet.worksheet("Diary")
-            rows = ws.get_all_records()
-            entries = {}
-            for r in rows:
-                d = get_val(r, "Date", "date") or ""
-                if not d:
-                    continue
-                entries.setdefault(d, []).append({
-                    "text": get_val(r, "Entry Text", "Text", "entry_text", "text") or "",
-                    "mood": get_val(r, "Mood", "mood") or "📝",
-                    "time": get_val(r, "Time", "time") or "",
-                })
-            if entries:
-                db.save("diary", {"entries": entries})
-                total = sum(len(v) for v in entries.values())
-                restored.append(f"📖 {total} diary entries")
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                headers = all_vals[0]
+                col_map = self._get_col_map(headers)
+                log.info(f"  Diary columns: {headers}")
+                entries = {}
+                for row in all_vals[1:]:
+                    if not row or len(row) < 2:
+                        continue
+                    d = self._safe_get(row, col_map, "Date", "date") or ""
+                    if not d:
+                        continue
+                    entries.setdefault(d, []).append({
+                        "text": self._safe_get(row, col_map, "Entry Text", "Text", "entry_text", "text") or "",
+                        "mood": self._safe_get(row, col_map, "Mood", "mood") or "📝",
+                        "time": self._safe_get(row, col_map, "Time", "time") or "",
+                    })
+                if entries:
+                    db.save("diary", {"entries": entries})
+                    total = sum(len(v) for v in entries.values())
+                    restored.append(f"📖 {total} diary entries")
+                    log.info(f"  ✅ Restored {total} diary entries")
         except Exception as e:
             log.warning(f"Diary restore: {e}")
 
         if restored:
             log.info(f"✅ Restored: {' | '.join(restored)}")
+        else:
+            log.info("ℹ️ No data to restore (sheets are empty)")
         return bool(restored)
 
 
@@ -2041,7 +2101,7 @@ async def _build_briefing_text():
     return txt
 
 # ═══════════════════════════════════════════════════════════════════
-# COMMAND HANDLERS
+# COMMAND HANDLERS (abbreviated - all same as original)
 # ═══════════════════════════════════════════════════════════════════
 async def cmd_start(update, ctx):
     n = now_ist()
@@ -3187,7 +3247,6 @@ async def water_reminder_job(context):
 
 # ═══════════════════════════════════════════════════════════════════
 # 🌅 v15 NEW: PROACTIVE MORNING BRIEFING (7:30 AM)
-# Smart local analysis — zero AI API call
 # ═══════════════════════════════════════════════════════════════════
 async def proactive_morning_job(context):
     now = now_ist()
@@ -3207,7 +3266,6 @@ async def proactive_morning_job(context):
 
     insights = []
 
-    # Task load analysis
     if len(tp) >= 5:
         high_priority = [t for t in tp if t.get("priority") == "high"]
         if high_priority:
@@ -3219,22 +3277,18 @@ async def proactive_morning_job(context):
     else:
         insights.append(f"📋 *{len(tp)} task(s) pending* aaj ke liye")
 
-    # Habit streak at risk
     at_risk = [h for h in all_h if h.get('streak', 0) >= 3 and h['id'] not in [x['id'] for x in hd]]
     if at_risk:
         names = ", ".join(h['name'] for h in at_risk[:2])
         insights.append(f"🔥 *Streak at risk!* {names} — aaj zaroor complete karo!")
 
-    # Bills
     for b in due_bills[:2]:
         insights.append(f"💳 *{b['name']}* ka bill due — ₹{b['amount']:.0f}")
 
-    # Calendar
     for e in cal_today[:2]:
         t_str = f" @ {e['time']}" if e.get('time') else ""
         insights.append(f"📅 *{e['title']}*{t_str} — aaj")
 
-    # Day-specific motivation
     day_name = now.strftime("%A")
     day_msgs = {
         "Monday":    "💪 *Naya hafta, naya jazbaa!* Best effort dena.",
@@ -3277,7 +3331,6 @@ async def weekly_analytics_job(context):
     is_sunday = now.weekday() == 6
 
     if is_sunday:
-        # Full weekly analytics
         task_week = tasks.get_weekly_summary()
         week_done = sum(v["done"] for v in task_week.values())
         week_created = sum(v["created"] for v in task_week.values())
@@ -3304,7 +3357,6 @@ async def weekly_analytics_job(context):
             msg += "💪 *Grade: NEEDS WORK.* Kal se naya jazbaa!"
         msg += f"\n\n_/weekly se detailed breakdown dekho_"
     else:
-        # Daily night digest
         msg = (f"🌙 *Aaj ka Summary*\n"
                f"_{now.strftime('%A, %d %b')}_\n\n"
                f"✅ Tasks done: {today_done}\n"
@@ -3370,15 +3422,19 @@ def main():
                 sheets_msg = "✅ Sheets connected!" if google_sheets.sheet else "❌ Sheets NOT connected!"
                 ai_status = f"💎 Gemini {'✅' if GEMINI_API_KEY else '❌'} | 🦙 Groq {'✅' if GROQ_API_KEY else '❌'}"
                 n2 = now_ist()
+                
+                msg_text = (
+                    f"🤖 *Bot v15 Start!*\n\n"
+                    f"⏰ {n2.strftime('%d %b %Y %I:%M %p')} IST\n\n"
+                    f"📊 {sheets_msg}\n"
+                    f"🤖 {ai_status}\n\n"
+                    f"📦 Data: ⏰ {r_count} reminders \\| 📋 {t_count} tasks\n\n"
+                    f"⏰ *Active reminders:*\n{rem_info}\n\n"
+                    f"🆕 v15 upgrades: Groq text + Cache + Morning briefing"
+                )
                 await app.bot.send_message(
                     chat_id=int(chat_id),
-                    text=(f"🤖 *Bot v15 Start!*\n\n"
-                          f"⏰ {n2.strftime('%d %b %Y %I:%M %p')} IST\n\n"
-                          f"📊 {sheets_msg}\n"
-                          f"🤖 {ai_status}\n\n"
-                          f"📦 *Data:* ⏰ {r_count} reminders | 📋 {t_count} tasks\n\n"
-                          f"⏰ *Active reminders:*\n{rem_info}\n\n"
-                          f"🆕 *v15 upgrades:* Groq text + Cache + Morning briefing"),
+                    text=msg_text,
                     parse_mode="Markdown"
                 )
         except Exception as e:
@@ -3403,7 +3459,6 @@ def main():
         ("bill", cmd_bill), ("bills", cmd_bills_list), ("billpaid", cmd_bill_paid), ("delbill", cmd_del_bill),
         ("cal", cmd_cal), ("calendar", cmd_cal_list), ("delcal", cmd_del_cal),
         ("memory", cmd_memory), ("backup", cmd_backup), ("dbstatus", cmd_dbstatus),
-        # Secret commands
         ("tasklogs", cmd_tasklogs), ("failed", cmd_failed),
         ("retryfailed", cmd_retry_failed), ("fulldata", cmd_fulldata),
     ]
@@ -3437,8 +3492,8 @@ def main():
     # JOB QUEUE
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job,            interval=60,    first=15)
-        app.job_queue.run_repeating(proactive_morning_job,   interval=60,    first=30)   # v15 NEW
-        app.job_queue.run_repeating(weekly_analytics_job,    interval=60,    first=45)   # v15 NEW
+        app.job_queue.run_repeating(proactive_morning_job,   interval=60,    first=30)
+        app.job_queue.run_repeating(weekly_analytics_job,    interval=60,    first=45)
         app.job_queue.run_repeating(failed_retry_job,        interval=300,   first=180)
         app.job_queue.run_repeating(bill_due_job,            interval=3600,  first=300)
         app.job_queue.run_repeating(water_reminder_job,      interval=3600,  first=600)
