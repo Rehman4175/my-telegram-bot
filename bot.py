@@ -1993,14 +1993,16 @@ def main():
 
     async def post_init(app):
         try:
-            if ADMIN_CHAT_ID:
-                n2 = now_ist()
-                await app.bot.send_message(
-                    chat_id=int(ADMIN_CHAT_ID),
-                    text=f"🤖 *Bot Restart!*\n⏰ {n2.strftime('%d %b %Y %I:%M %p')} IST\n📊 Sheets: {'✅' if google_sheets.sheet else '❌'}",
-                    parse_mode="Markdown")
+        if ADMIN_CHAT_ID:
+            n2 = now_ist()
+            time_str = n2.strftime('%d %b %Y %I:%M %p')
+            sheets_status = 'CONNECTED' if google_sheets.sheet else 'NOT CONNECTED'
+            await app.bot.send_message(
+                chat_id=int(ADMIN_CHAT_ID),
+                text=f"🤖 Bot Restart!\n\n⏰ {time_str} IST\n📊 Sheets: {sheets_status}\n\n✅ Ready!"
+            )
         except Exception as e:
-            log.warning(f"Startup notification: {e}")
+        log.warning(f"Startup notification: {e}")
 
     app.post_init = post_init
 
