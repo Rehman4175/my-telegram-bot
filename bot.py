@@ -1992,7 +1992,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     async def post_init(app):
-    try:
+    pass
         if ADMIN_CHAT_ID:
             n2 = now_ist()
             time_str = n2.strftime('%d %b %Y %I:%M %p')
