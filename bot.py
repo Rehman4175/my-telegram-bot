@@ -1896,7 +1896,7 @@ def main():
         except Exception as e:
             log.warning(f"Startup notification failed: {e}")
 
-    app.post_init = post_init
+    app.post_init = lambda app: None
 
     # Commands
     cmds = [
