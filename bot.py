@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     PERSONAL AI ASSISTANT — v17.0 FINAL FIXED VERSION          ║
+║     PERSONAL AI ASSISTANT — v17.1 FINAL FIXED VERSION          ║
+║  + STARTUP NOTIFICATION DISABLED                                 ║
+║  + DIARY PASSWORD FIXED                                          ║
 ║  + DIARY AUTO-DELETE AFTER BACKUP                               ║
 ║  + COMPLETE CHAT LOGS IN MISCELLANEOUS SHEET                   ║
 ║  + AUTO-BACKUP ON EVERY ACTION                                  ║
-║  + STARTUP NOTIFICATION FIXED                                   ║
 ║  + ZERO BUTTONS (only alarm)                                    ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -21,7 +22,6 @@ from collections import defaultdict
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# Optional imports
 try:
     import requests as req_lib
     HAS_REQUESTS = True
@@ -196,10 +196,9 @@ def _sync_transcribe(file_path: str) -> str:
             )
         text = transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
         if text:
-            log.info(f"🎤 Transcribed: {text[:80]}")
             return text
-    except Exception as e:
-        log.warning(f"Groq error: {e}")
+    except:
+        pass
     return None
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -226,7 +225,6 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Samajh nahi aaya — text mein likh do!", parse_mode="Markdown")
             return
         await status_msg.edit_text(f"🎤 *Suna:* _{text}_", parse_mode="Markdown")
-        await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         reply = await ai_chat(text, update.effective_chat.id)
         try:
             await update.message.reply_text(reply, parse_mode="Markdown")
@@ -564,21 +562,17 @@ calendar = CalendarStore()
 chat_hist = ChatHistoryStore()
 
 # ═══════════════════════════════════════════════════════════════════
-# GOOGLE SHEETS BACKUP — EXACT HEADERS
+# GOOGLE SHEETS BACKUP
 # ═══════════════════════════════════════════════════════════════════
 
 class GoogleSheetsBackup:
     def __init__(self):
         self.sheet = None
         if not HAS_GSHEETS:
-            log.warning("⚠️ gspread not installed!")
             return
-        
         creds_json = GOOGLE_CREDS_JSON
         if not creds_json:
-            log.warning("⚠️ GOOGLE_CREDS_JSON not found!")
             return
-        
         try:
             creds_dict = json.loads(creds_json)
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -593,7 +587,6 @@ class GoogleSheetsBackup:
     def ensure_worksheets(self):
         if not self.sheet:
             return
-        
         sheet_configs = {
             "Reminders": ["ID", "Time", "Text", "Repeat", "Status", "Created Date", "Chat ID", "Last Fired", "Remarks"],
             "Tasks": ["ID", "Title", "Priority", "Status", "Created Date", "Completed Date", "Due Date", "Tags"],
@@ -608,17 +601,15 @@ class GoogleSheetsBackup:
             "Diary": ["Date", "Time", "Content", "Mood"],
             "Miscellaneous": ["Timestamp", "Date", "Role", "User", "Message"],
         }
-        
         existing_ws = {ws.title: ws for ws in self.sheet.worksheets()}
-        
         for name, headers in sheet_configs.items():
             if name not in existing_ws:
                 try:
                     ws = self.sheet.add_worksheet(title=name, rows=1000, cols=len(headers))
                     ws.update('A1', [headers])
                     log.info(f"📊 Created: {name}")
-                except Exception as e:
-                    log.warning(f"Create {name}: {e}")
+                except:
+                    pass
 
     def _upsert_by_id(self, ws, rows, id_col=0):
         try:
@@ -642,10 +633,8 @@ class GoogleSheetsBackup:
                 ws.batch_update(batch)
             for row in appends:
                 ws.append_row(row, value_input_option="USER_ENTERED")
-            return len(updates), len(appends)
-        except Exception as e:
-            log.error(f"Upsert: {e}")
-            return 0, 0
+        except:
+            pass
 
     def _append_unique(self, ws, rows, key_cols):
         try:
@@ -662,10 +651,8 @@ class GoogleSheetsBackup:
                     existing_keys.add(key)
             for row in new_rows:
                 ws.append_row(row, value_input_option="USER_ENTERED")
-            return len(new_rows)
-        except Exception as e:
-            log.error(f"Append: {e}")
-            return 0
+        except:
+            pass
 
     def save_tasks(self):
         try:
@@ -676,8 +663,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._upsert_by_id(ws, rows, 0)
             return True
-        except Exception as e:
-            log.error(f"Tasks: {e}")
+        except:
             return False
 
     def save_reminders(self):
@@ -689,8 +675,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._upsert_by_id(ws, rows, 0)
             return True
-        except Exception as e:
-            log.error(f"Reminders: {e}")
+        except:
             return False
 
     def save_expenses(self):
@@ -701,8 +686,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._append_unique(ws, rows, [0, 1, 2])
             return True
-        except Exception as e:
-            log.error(f"Expenses: {e}")
+        except:
             return False
 
     def save_habits(self):
@@ -713,8 +697,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._upsert_by_id(ws, rows, 0)
             return True
-        except Exception as e:
-            log.error(f"Habits: {e}")
+        except:
             return False
 
     def save_memory(self):
@@ -724,8 +707,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._append_unique(ws, rows, [0, 2])
             return True
-        except Exception as e:
-            log.error(f"Memory: {e}")
+        except:
             return False
 
     def save_goals(self):
@@ -737,8 +719,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._upsert_by_id(ws, rows, 0)
             return True
-        except Exception as e:
-            log.error(f"Goals: {e}")
+        except:
             return False
 
     def save_bills(self):
@@ -750,8 +731,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._upsert_by_id(ws, rows, 0)
             return True
-        except Exception as e:
-            log.error(f"Bills: {e}")
+        except:
             return False
 
     def save_calendar(self):
@@ -763,8 +743,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._append_unique(ws, rows, [0, 2])
             return True
-        except Exception as e:
-            log.error(f"Calendar: {e}")
+        except:
             return False
 
     def save_water(self):
@@ -780,8 +759,7 @@ class GoogleSheetsBackup:
             if rows:
                 self._upsert_by_id(ws, rows, 0)
             return True
-        except Exception as e:
-            log.error(f"Water: {e}")
+        except:
             return False
 
     def save_daily_log(self):
@@ -801,8 +779,7 @@ class GoogleSheetsBackup:
             if not found:
                 ws.append_row(row, value_input_option="USER_ENTERED")
             return True
-        except Exception as e:
-            log.error(f"Daily_Log: {e}")
+        except:
             return False
 
     def save_diary(self):
@@ -823,14 +800,12 @@ class GoogleSheetsBackup:
             for row in new_rows:
                 ws.append_row(row, value_input_option="USER_ENTERED")
             if new_rows:
-                log.info(f"📖 Diary: {len(new_rows)} new entries")
+                log.info(f"📖 Diary: {len(new_rows)} new")
             return True
-        except Exception as e:
-            log.error(f"Diary: {e}")
+        except:
             return False
 
     def save_chat_history(self):
-        """Save ALL chat messages to Miscellaneous sheet"""
         try:
             ws = self.sheet.worksheet("Miscellaneous")
             existing = ws.get_all_values()
@@ -838,56 +813,29 @@ class GoogleSheetsBackup:
             for row in existing[1:]:
                 if row and row[0]:
                     existing_keys.add(f"{row[0]}|{row[2]}|{row[4][:50] if len(row)>4 else ''}")
-            
             new_rows = []
-            for h in chat_hist.get_all()[-50:]:  # Last 50 messages
+            for h in chat_hist.get_all()[-50:]:
                 key = f"{h.get('timestamp','')}|{h.get('role','')}|{h.get('message','')[:50]}"
                 if key not in existing_keys:
                     new_rows.append([h.get("timestamp",""), h.get("date",""), 
                                      h.get("role",""), h.get("user",""), h.get("message","")])
                     existing_keys.add(key)
-            
             for row in new_rows:
                 ws.append_row(row, value_input_option="USER_ENTERED")
-            if new_rows:
-                log.info(f"💬 Chat history: {len(new_rows)} new messages saved")
             return True
-        except Exception as e:
-            log.error(f"Chat history: {e}")
+        except:
             return False
 
     def full_sync(self):
         if not self.sheet:
             return "❌ Sheets not connected!"
-        
         ops = [
-            ("Tasks", self.save_tasks),
-            ("Reminders", self.save_reminders),
-            ("Expenses", self.save_expenses),
-            ("Habits", self.save_habits),
-            ("Memory", self.save_memory),
-            ("Goals", self.save_goals),
-            ("Bills", self.save_bills),
-            ("Calendar", self.save_calendar),
-            ("Water", self.save_water),
-            ("Daily_Log", self.save_daily_log),
-            ("Diary", self.save_diary),
-            ("Chat_History", self.save_chat_history),
+            self.save_tasks, self.save_reminders, self.save_expenses,
+            self.save_habits, self.save_memory, self.save_goals,
+            self.save_bills, self.save_calendar, self.save_water,
+            self.save_daily_log, self.save_diary, self.save_chat_history,
         ]
-        
-        success, errors = 0, []
-        for name, fn in ops:
-            try:
-                if fn():
-                    success += 1
-                else:
-                    errors.append(name)
-            except Exception as e:
-                log.error(f"Sync [{name}]: {e}")
-                errors.append(name)
-        
-        if errors:
-            return f"⚠️ {success}/{len(ops)} | Failed: {', '.join(errors)}"
+        success = sum(1 for fn in ops if fn())
         return f"✅ {success}/{len(ops)} synced"
 
 google_sheets = GoogleSheetsBackup()
@@ -905,106 +853,57 @@ def build_system_prompt():
     bl = expenses.budget_left()
     water_today = water.today_total()
     water_goal = water.goal()
-
     tasks_s = "\n".join(f"  {'🔴' if t['priority']=='high' else '🟡' if t['priority']=='medium' else '🟢'} {t['title']}" for t in tp[:5]) or "  Koi nahi"
     h_done = ", ".join(f"{h['emoji']}{h['name']}" for h in hd) or "Koi nahi"
     h_pend = ", ".join(f"{h['name']}" for h in hp) or "Sab ho gaye!"
     goals_s = "\n".join(f"  🎯 {g['title']} ({g['progress']}%)" for g in ag[:4]) or "  Koi nahi"
     budget_s = f"Budget baaki: ₹{bl:.0f}" if bl is not None else ""
-
     return f"""Tu mera Personal AI Assistant hai — naam 'Dost'. Hamesha Hindi/Hinglish mein baat kar.
-
-⚠️ REAL TIME: {now_label}
-• Aaj: {today_str()}
-
-📋 AAJ KE TASKS ({len(tp)}):
-{tasks_s}
-
+⚠️ REAL TIME: {now_label} • Aaj: {today_str()}
+📋 AAJ KE TASKS ({len(tp)}):\n{tasks_s}
 💪 HABITS: Done: {h_done} | Baaki: {h_pend}
-
 💰 KHARCHA: Aaj ₹{exp_t} | Mahina ₹{exp_m} {budget_s}
-
-🎯 GOALS ({len(ag)}):
-{goals_s}
-
+🎯 GOALS ({len(ag)}):\n{goals_s}
 💧 PAANI: {water_today}ml/{water_goal}ml
-
-🧠 YAADDASHT:
-{memory.context()}
-
-RULES:
-- Dost ki tarah baat kar
-- Hindi/Hinglish mein SHORT jawab (2-4 lines)
-- Time puche toh EXACT time batana
-"""
+🧠 YAADDASHT:\n{memory.context()}
+RULES: Dost ki tarah baat kar, Hindi/Hinglish mein SHORT jawab (2-4 lines), Time puche toh EXACT time batana."""
 
 # ═══════════════════════════════════════════════════════════════════
 # ACTION SYSTEM
 # ═══════════════════════════════════════════════════════════════════
-
 ACTION_SYSTEM_PROMPT = """You are a JSON router. Return ONLY raw JSON.
-
 Current time: {current_time}, Today: {today}
-
 JSON format: {{"action":"ACTION","params":{{...}}}}
-
-ACTIONS:
-REMIND — {{"time":"HH:MM","text":"...","repeat":"once"}}
-ADD_TASK — {{"title":"...","priority":"high/medium/low"}}
-ADD_EXPENSE — {{"amount":number,"desc":"..."}}
-ADD_DIARY — {{"text":"...","mood":"📝"}}
-ADD_MEMORY — {{"fact":"..."}}
-ADD_HABIT — {{"name":"..."}}
-COMPLETE_TASK — {{"title_hint":"..."}}
-SHOW_TASKS — {{}}
-SHOW_REMINDERS — {{}}
-CHAT — {{}} (default)
-"""
+ACTIONS: REMIND, ADD_TASK, ADD_EXPENSE, ADD_DIARY, ADD_MEMORY, ADD_HABIT, COMPLETE_TASK, SHOW_TASKS, SHOW_REMINDERS, CHAT"""
 
 def _regex_fallback(user_msg):
     lower = user_msg.lower()
     now = now_ist()
-    
-    remind_words = ["alarm", "reminder", "yaad dila", "remind", "notify", "minute baad", "min baad", "ghante baad", "baje"]
-    if any(w in lower for w in remind_words):
+    if any(w in lower for w in ["alarm", "reminder", "yaad dila", "remind", "minute baad", "ghante baad"]):
         time_str = None
         m = _re.search(r'(\d+)\s*(?:minute|min|mins)', lower)
         if m:
             time_str = (now + timedelta(minutes=int(m.group(1)))).strftime("%H:%M")
         if not time_str:
-            m = _re.search(r'(\d+)\s*(?:ghante|ghanta|hour|hr)', lower)
-            if m:
-                time_str = (now + timedelta(hours=int(m.group(1)))).strftime("%H:%M")
-        if not time_str:
             m = _re.search(r'(\d{1,2}):(\d{2})', lower)
-            if m:
-                h, mn = int(m.group(1)), int(m.group(2))
-                if 0 <= h <= 23 and 0 <= mn <= 59:
-                    time_str = f"{h:02d}:{mn:02d}"
+            if m and 0 <= int(m.group(1)) <= 23:
+                time_str = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
         if time_str:
-            text = _re.sub(r'\d+\s*(?:minute|min|mins|ghante|ghanta|hour|hr)', '', user_msg, flags=_re.I)
-            text = _re.sub(r'(?:alarm|reminder|yaad dila|remind|laga do|set karo|baad|notify)\s*', '', text, flags=_re.I).strip()
+            text = _re.sub(r'(?:alarm|reminder|yaad dila|remind|set karo|notify)\s*', '', user_msg, flags=_re.I).strip()
             return {"action": "REMIND", "params": {"time": time_str, "text": text or "⏰ Reminder!", "repeat": "once"}}
-    
-    if any(w in lower for w in ["karna hai", "task add", "kaam add", "to-do", "todo"]):
+    if any(w in lower for w in ["karna hai", "task", "todo"]):
         return {"action": "ADD_TASK", "params": {"title": user_msg[:80], "priority": "medium"}}
-    
-    if any(w in lower for w in ["rs ", "rupaye", "kharcha", "spend"]):
+    if any(w in lower for w in ["rs ", "rupaye", "kharcha"]):
         m = _re.search(r'(\d+)', lower)
-        amount = float(m.group(1)) if m else 0
-        if amount > 0:
-            return {"action": "ADD_EXPENSE", "params": {"amount": amount, "desc": user_msg[:60]}}
-    
+        if m:
+            return {"action": "ADD_EXPENSE", "params": {"amount": float(m.group(1)), "desc": user_msg[:60]}}
     return {"action": "CHAT", "params": {}}
 
 def call_gemini_action(user_msg):
-    now = now_ist()
-    prompt = ACTION_SYSTEM_PROMPT.format(current_time=now.strftime("%H:%M"), today=today_str())
+    prompt = ACTION_SYSTEM_PROMPT.format(current_time=now_ist().strftime("%H:%M"), today=today_str())
     full_msg = f"{prompt}\n\nUser: {user_msg}"
-
     payload = json.dumps({"contents": [{"role": "user", "parts": [{"text": full_msg}]}], "generationConfig": {"temperature": 0.0, "maxOutputTokens": 200}}).encode("utf-8")
-
-    for model in ["gemini-2.5-flash-lite", "gemini-2.5-flash"]:
+    for model in GEMINI_MODELS:
         try:
             url = GEMINI_URL.format(model=model, key=GEMINI_API_KEY)
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
@@ -1031,35 +930,26 @@ async def execute_action(action_data, chat_id, user_msg, user_name=""):
         if not time_str or not _re.match(r'^\d{2}:\d{2}$', time_str):
             return f"⏰ Format galat! Abhi *{now.strftime('%H:%M')}* hue hain."
         r = reminders.add(chat_id, text, time_str, repeat)
-        return f"✅ Reminder set! ⏰ *{time_str}* — {text}\n🆔 `#{r['id']}` | `/delremind {r['id']}`"
-
+        return f"✅ Reminder set! ⏰ *{time_str}* — {text}\n🆔 `#{r['id']}`"
     elif action == "ADD_TASK":
-        title = params.get("title", user_msg[:80])
-        priority = params.get("priority", "medium")
-        t = tasks.add(title, priority)
+        t = tasks.add(params.get("title", user_msg[:80]), params.get("priority", "medium"))
         icons = {"high": "🔴", "medium": "🟡", "low": "🟢"}
-        return f"✅ Task: {icons.get(priority,'🟡')} *{t['title']}*\n🆔 `#{t['id']}`"
-
+        return f"✅ Task: {icons.get(params.get('priority','medium'),'🟡')} *{t['title']}*\n🆔 `#{t['id']}`"
     elif action == "ADD_EXPENSE":
         amount = float(params.get("amount", 0))
-        desc = params.get("desc", "Kharcha")
         if amount <= 0:
             return "💰 Amount batao?"
-        expenses.add(amount, desc)
-        return f"✅ ₹{amount:.0f} — {desc}\n📊 Aaj: ₹{expenses.today_total():.0f}"
-
+        expenses.add(amount, params.get("desc", "Kharcha"))
+        return f"✅ ₹{amount:.0f}\n📊 Aaj: ₹{expenses.today_total():.0f}"
     elif action == "ADD_DIARY":
         diary.add(params.get("text", user_msg[:100]), params.get("mood", "📝"))
         return f"📖 Diary saved! 🕐 {now_str()}"
-
     elif action == "ADD_MEMORY":
         memory.add_fact(params.get("fact", user_msg[:200]))
         return "🧠 Yaad kar liya! ✅"
-
     elif action == "ADD_HABIT":
         h = habits.add(params.get("name", user_msg[:50]))
         return f"💪 Habit: {h['emoji']} *{h['name']}*\n`/hdone {h['id']}`"
-
     elif action == "COMPLETE_TASK":
         hint = params.get("title_hint", "").lower()
         pending = tasks.pending()
@@ -1071,29 +961,18 @@ async def execute_action(action_data, chat_id, user_msg, user_name=""):
         if matched:
             tasks.complete(matched["id"])
             return f"✅ *{matched['title']}* — done! 🎉"
-        return "❓ Kaunsa task? ID ya naam batao."
-
+        return "❓ Kaunsa task?"
     elif action == "SHOW_TASKS":
         pending = tasks.today_pending()
         if not pending:
             return "🎉 No pending tasks!"
-        txt = f"📋 *PENDING ({len(pending)})*\n\n"
-        for t in pending[:8]:
-            txt += f"{'🔴' if t['priority']=='high' else '🟡' if t['priority']=='medium' else '🟢'} *#{t['id']}* {t['title']}\n"
-        return txt
-
+        return f"📋 *PENDING ({len(pending)})*\n\n" + "\n".join(f"{'🔴' if t['priority']=='high' else '🟡'} *#{t['id']}* {t['title']}" for t in pending[:8])
     elif action == "SHOW_REMINDERS":
         active = reminders.all_active()
         if not active:
-            return "⏰ No reminders!\n`/remind 30m Kaam` se set karo"
-        txt = f"⏰ *REMINDERS ({len(active)})*\n\n"
-        for r in active:
-            icon = "🔁" if r["repeat"] == "daily" else "📅" if r["repeat"] == "weekly" else "1️⃣"
-            txt += f"*#{r['id']}* {icon} `{r['time']}` — {r['text']}\n"
-        return txt
-
+            return "⏰ No reminders!\n`/remind 30m Kaam`"
+        return f"⏰ *REMINDERS ({len(active)})*\n\n" + "\n".join(f"*#{r['id']}* `{r['time']}` — {r['text']}" for r in active)
     else:
-        # CHAT
         chat_hist.add("user", user_msg, user_name)
         reply = call_gemini(build_system_prompt() + "\n\nUser: " + user_msg + "\n\nShort Hindi reply:")
         if not reply:
@@ -1103,49 +982,38 @@ async def execute_action(action_data, chat_id, user_msg, user_name=""):
 
 async def ai_chat(user_msg, chat_id=None, user_name=""):
     if chat_id and GEMINI_API_KEY:
-        action_data = call_gemini_action(user_msg)
-        return await execute_action(action_data, chat_id, user_msg, user_name)
-    else:
-        reply = call_gemini(build_system_prompt() + "\n\nUser: " + user_msg + "\n\nShort Hindi reply:")
-        if not reply:
-            reply = smart_fallback(user_msg)
-        return reply
+        return await execute_action(call_gemini_action(user_msg), chat_id, user_msg, user_name)
+    reply = call_gemini(build_system_prompt() + "\n\nUser: " + user_msg + "\n\nShort Hindi reply:")
+    return reply or smart_fallback(user_msg)
 
 # ═══════════════════════════════════════════════════════════════════
 # AUTO-BACKUP
 # ═══════════════════════════════════════════════════════════════════
 _last_auto_backup = 0
-_BACKUP_THROTTLE_SECS = 15
-
 async def auto_backup_to_sheets():
     global _last_auto_backup
     now_ts = time.time()
-    if now_ts - _last_auto_backup < _BACKUP_THROTTLE_SECS:
+    if now_ts - _last_auto_backup < 15:
         return
     _last_auto_backup = now_ts
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, google_sheets.full_sync)
-        log.info(f"📤 Auto-backup: {result}")
-    except Exception as e:
-        log.error(f"Auto-backup: {e}")
+        log.info(f"📤 {result}")
+    except:
+        pass
 
 # ═══════════════════════════════════════════════════════════════════
 # COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════════════════
-
 async def cmd_start(update, ctx):
     n = now_ist()
     name = update.effective_user.first_name or "Dost"
     await update.message.reply_text(
-        f"🕌 *Assalamualaikum {name}!* 🥰\n\n"
-        f"⏰ {n.strftime('%I:%M %p')} IST | 📅 {n.strftime('%d %b %Y')}\n\n"
+        f"🕌 *Assalamualaikum {name}!*\n\n⏰ {n.strftime('%I:%M %p')} IST | 📅 {n.strftime('%d %b %Y')}\n\n"
         f"Main aapka AI dost hoon! Jo marzi likho, main jawab dunga.\n\n"
-        f"📋 *Commands:* `/task` `/done` `/habit` `/hdone` `/remind` `/kharcha` `/diary` `/help`",
+        f"📋 `/task` `/done` `/habit` `/hdone` `/remind` `/kharcha` `/diary` `/help`",
         parse_mode="Markdown")
-    # Log to chat history
-    chat_hist.add("user", "/start", name)
-    chat_hist.add("assistant", "Welcome message sent", "Bot")
     await auto_backup_to_sheets()
 
 async def cmd_help(update, ctx):
@@ -1155,24 +1023,21 @@ async def cmd_help(update, ctx):
         "`/habit` `/hdone` `/delhabit` — Habits\n"
         "`/remind` `/reminders` `/delremind` — Reminders\n"
         "`/kharcha` `/budget` — Expenses\n"
-        "`/diary` — Diary\n"
+        "`/diary` — Diary (password: Rk1996)\n"
         "`/remember` `/recall` — Memory\n"
         "`/goal` `/gprogress` — Goals\n"
         "`/bill` `/bills` `/billpaid` `/delbill` — Bills\n"
         "`/cal` `/calendar` `/delcal` — Calendar\n"
         "`/water` `/waterstatus` `/watergoal` — Water\n"
         "`/news` — News\n"
-        "`/briefing` — Daily summary\n"
-        "`/weekly` — Weekly report\n"
-        "`/report YYYY-MM-DD` — Date report\n"
-        "`/yesterday` — Yesterday\n"
+        "`/briefing` `/weekly` `/report` `/yesterday` — Reports\n"
         "`/alltasks` `/completed` — Views\n"
         "`/backup` `/dbstatus` — Utils",
         parse_mode="Markdown")
 
 async def cmd_task(update, ctx):
     if not ctx.args:
-        await update.message.reply_text("📋 `/task Kaam [high/low]`\nExample: `/task Gym jana high`", parse_mode="Markdown")
+        await update.message.reply_text("📋 `/task Kaam [high/low]`", parse_mode="Markdown")
         return
     args = " ".join(ctx.args)
     priority = "medium"
@@ -1182,24 +1047,20 @@ async def cmd_task(update, ctx):
         priority = "low"; args = args[:-4].strip()
     t = tasks.add(args, priority)
     e = "🔴" if priority == "high" else "🟡" if priority == "medium" else "🟢"
-    await update.message.reply_text(f"✅ {e} *{t['title']}*\n🆔 `#{t['id']}`\n_Done: `/done {t['id']}`_", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ {e} *{t['title']}*\n🆔 `#{t['id']}`", parse_mode="Markdown")
     await auto_backup_to_sheets()
 
 async def cmd_done(update, ctx):
     if not ctx.args:
         pending = tasks.pending()
         if pending:
-            msg = "📋 *Pending:*\n" + "\n".join(f"`/done {t['id']}` → {t['title']}" for t in pending[:15])
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await update.message.reply_text("📋 *Pending:*\n" + "\n".join(f"`/done {t['id']}` → {t['title']}" for t in pending[:15]), parse_mode="Markdown")
         else:
-            await update.message.reply_text("🎉 No pending tasks!")
+            await update.message.reply_text("🎉 No pending!")
         return
     try:
         t = tasks.complete(int(ctx.args[0]))
-        if t:
-            await update.message.reply_text(f"🎉 *Done!* {t['title']} ✅", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Not found!")
+        await update.message.reply_text(f"🎉 *Done!* {t['title']} ✅" if t else "❌ Not found!", parse_mode="Markdown")
         await auto_backup_to_sheets()
     except:
         await update.message.reply_text("❌ Invalid ID!")
@@ -1208,20 +1069,17 @@ async def cmd_deltask(update, ctx):
     if not ctx.args:
         await update.message.reply_text("`/deltask <id>`")
         return
-    try:
-        tasks.delete(int(ctx.args[0]))
-        await update.message.reply_text("🗑 Deleted!")
-        await auto_backup_to_sheets()
-    except:
-        await update.message.reply_text("❌ Invalid ID")
+    tasks.delete(int(ctx.args[0]))
+    await update.message.reply_text("🗑 Deleted!")
+    await auto_backup_to_sheets()
 
+# 🔥 FIXED: Diary — Text hai toh direct save, nahi toh password maango
 async def cmd_diary(update, ctx):
     args = ctx.args
-    # Write mode
-    if args and args[0] not in ("date", "all", "week", "view"):
+    # Agar kuch text diya hai (date/all/week ke alawa) → DIRECT SAVE, no password
+    if args and args[0] not in ("date", "all", "week", "view", "today"):
         text = " ".join(args)
         diary.add(text, mood="📝")
-        # 🔥 Backup + Delete
         loop = asyncio.get_event_loop()
         loop.create_task(auto_backup_to_sheets())
         try:
@@ -1229,9 +1087,7 @@ async def cmd_diary(update, ctx):
         except:
             pass
         sent = await update.effective_chat.send_message(
-            f"📖 *Diary saved!* 🕐 {now_str()}\n\n_{text[:150]}_",
-            parse_mode="Markdown"
-        )
+            f"📖 *Diary saved!* 🕐 {now_str()}\n\n_{text[:150]}_", parse_mode="Markdown")
         await asyncio.sleep(3)
         try:
             await sent.delete()
@@ -1239,15 +1095,13 @@ async def cmd_diary(update, ctx):
             pass
         return ConversationHandler.END
 
-    # View mode - password required
+    # Bina text ya view mode → PASSWORD MAANGO
     if args and args[0] == "date" and len(args) >= 2:
         ctx.user_data["diary_view"] = ("date", args[1])
     elif args and args[0] == "all":
         ctx.user_data["diary_view"] = ("all", None)
     elif args and args[0] == "week":
         ctx.user_data["diary_view"] = ("week", None)
-    elif args and args[0] == "view":
-        ctx.user_data["diary_view"] = ("today", None)
     else:
         ctx.user_data["diary_view"] = ("today", None)
 
@@ -1255,9 +1109,8 @@ async def cmd_diary(update, ctx):
     return DIARY_AWAIT_PASS
 
 async def diary_password_check(update, ctx):
-    entered = update.message.text.strip()
-    if entered != DIARY_PASSWORD:
-        await update.message.reply_text("❌ *Galat password!* Diary access nahi hua.\n_Diary likhne ke liye: `/diary Aaj ka din acha tha`_", parse_mode="Markdown")
+    if update.message.text.strip() != DIARY_PASSWORD:
+        await update.message.reply_text("❌ *Galat password!*", parse_mode="Markdown")
         return ConversationHandler.END
     view_type, view_arg = ctx.user_data.get("diary_view", ("today", None))
     await _show_diary(update, view_type, view_arg)
@@ -1266,19 +1119,17 @@ async def diary_password_check(update, ctx):
 async def diary_conv_cancel(update, ctx):
     try:
         if update.message:
-            await update.message.reply_text("⏱ Diary session expired.")
+            await update.message.reply_text("⏱ Expired.")
     except:
         pass
     return ConversationHandler.END
 
 async def _show_diary(update, view_type, view_arg):
     if view_type == "today":
-        entries = diary.get(today_str())
-        all_entries = {today_str(): entries} if entries else {}
+        all_entries = {today_str(): diary.get(today_str())}
         title = "📖 *Aaj Ki Diary*"
     elif view_type == "date":
-        entries = diary.get(view_arg)
-        all_entries = {view_arg: entries} if entries else {}
+        all_entries = {view_arg: diary.get(view_arg)}
         title = f"📖 *Diary — {view_arg}*"
     elif view_type == "week":
         n = now_ist()
@@ -1291,18 +1142,19 @@ async def _show_diary(update, view_type, view_arg):
         title = "📖 *Is Hafte Ki Diary*"
     elif view_type == "all":
         all_entries = diary.get_all_entries()
-        title = f"📖 *Puri Diary*"
+        title = "📖 *Puri Diary*"
     else:
         all_entries = {}
         title = "📖 *Diary*"
 
-    if not all_entries:
-        await update.message.reply_text(f"{title}\n\n_Koi entry nahi._\n_/diary text se likho_", parse_mode="Markdown")
+    if not all_entries or not any(all_entries.values()):
+        await update.message.reply_text(f"{title}\n\n_Koi entry nahi._", parse_mode="Markdown")
         return
 
-    chunks = []
-    current = f"{title}\n{'━'*25}\n\n"
+    chunks, current = [], f"{title}\n{'━'*25}\n\n"
     for dk in sorted(all_entries.keys(), reverse=True):
+        if not all_entries[dk]:
+            continue
         block = f"📅 *{dk}*\n"
         for e in all_entries[dk]:
             block += f"{e.get('mood','📝')} `{e.get('time','')}` — {e.get('text','')}\n"
@@ -1322,34 +1174,30 @@ async def _show_diary(update, view_type, view_arg):
 
 async def cmd_habit(update, ctx):
     if not ctx.args:
-        await update.message.reply_text("💪 `/habit Naam`\nExample: `/habit Exercise`", parse_mode="Markdown")
+        await update.message.reply_text("💪 `/habit Naam`", parse_mode="Markdown")
         return
     h = habits.add(" ".join(ctx.args))
-    await update.message.reply_text(f"💪 {h['emoji']} *{h['name']}*\n_Done: `/hdone {h['id']}`_", parse_mode="Markdown")
+    await update.message.reply_text(f"💪 {h['emoji']} *{h['name']}*\n`/hdone {h['id']}`", parse_mode="Markdown")
     await auto_backup_to_sheets()
 
 async def cmd_hdone(update, ctx):
     if not ctx.args:
         _, pending = habits.today_status()
         if pending:
-            msg = "💪 *Pending:*\n" + "\n".join(f"`/hdone {h['id']}` → {h['name']}" for h in pending)
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await update.message.reply_text("💪 *Pending:*\n" + "\n".join(f"`/hdone {h['id']}` → {h['name']}" for h in pending), parse_mode="Markdown")
         else:
             await update.message.reply_text("🎊 Sab done!")
         return
     try:
         ok, streak = habits.log(int(ctx.args[0]))
-        if ok:
-            await update.message.reply_text(f"💪 *Done!* 🔥 {streak} days!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("✅ Already done!")
+        await update.message.reply_text(f"💪 *Done!* 🔥 {streak}d!" if ok else "✅ Already done!", parse_mode="Markdown")
         await auto_backup_to_sheets()
     except:
-        await update.message.reply_text("❌ Invalid ID!")
+        await update.message.reply_text("❌ Invalid!")
 
 async def cmd_kharcha(update, ctx):
     if not ctx.args or len(ctx.args) < 2:
-        await update.message.reply_text("💰 `/kharcha amount desc`\nExample: `/kharcha 50 Chai`", parse_mode="Markdown")
+        await update.message.reply_text("💰 `/kharcha amount desc`")
         return
     try:
         amount = float(ctx.args[0])
@@ -1362,27 +1210,22 @@ async def cmd_kharcha(update, ctx):
 
 async def cmd_budget(update, ctx):
     if not ctx.args:
-        b = expenses.store.data.get("budget", "Not set")
-        await update.message.reply_text(f"💳 Budget: ₹{b}\n`/budget 5000`", parse_mode="Markdown")
+        await update.message.reply_text(f"💳 Budget: ₹{expenses.store.data.get('budget','Not set')}\n`/budget 5000`", parse_mode="Markdown")
         return
-    try:
-        expenses.set_budget(float(ctx.args[0]))
-        await update.message.reply_text(f"💳 Budget set to ₹{ctx.args[0]}")
-        await auto_backup_to_sheets()
-    except:
-        pass
+    expenses.set_budget(float(ctx.args[0]))
+    await update.message.reply_text(f"💳 Budget: ₹{ctx.args[0]}")
+    await auto_backup_to_sheets()
 
 async def cmd_goal(update, ctx):
     if not ctx.args:
         active = goals.active()
         if active:
-            msg = "🎯 *ACTIVE*\n\n" + "\n".join(f"#{g['id']} {g['title']} — {g['progress']}%" for g in active)
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await update.message.reply_text("🎯 *ACTIVE*\n\n" + "\n".join(f"#{g['id']} {g['title']} — {g['progress']}%" for g in active), parse_mode="Markdown")
         else:
             await update.message.reply_text("🎯 `/goal Description`")
         return
     g = goals.add(" ".join(ctx.args))
-    await update.message.reply_text(f"🎯 Goal set! #{g['id']} {g['title']}\n_Progress: `/gprogress {g['id']} 50`_", parse_mode="Markdown")
+    await update.message.reply_text(f"🎯 Goal set! #{g['id']} {g['title']}", parse_mode="Markdown")
     await auto_backup_to_sheets()
 
 async def cmd_gprogress(update, ctx):
@@ -1391,10 +1234,7 @@ async def cmd_gprogress(update, ctx):
         return
     try:
         g = goals.update_progress(int(ctx.args[0]), int(ctx.args[1]))
-        if g:
-            await update.message.reply_text(f"📊 *{g['title']}* — {g['progress']}%", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Not found!")
+        await update.message.reply_text(f"📊 *{g['title']}* — {g['progress']}%" if g else "❌ Not found!", parse_mode="Markdown")
         await auto_backup_to_sheets()
     except:
         await update.message.reply_text("❌ Invalid!")
@@ -1412,13 +1252,12 @@ async def cmd_recall(update, ctx):
     if not facts:
         await update.message.reply_text("🧠 Kuch yaad nahi.")
         return
-    txt = "🧠 *MEMORY*\n\n" + "\n".join(f"📌 {f['f']}" for f in facts[-15:])
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text("🧠 *MEMORY*\n\n" + "\n".join(f"📌 {f['f']}" for f in facts[-15:]), parse_mode="Markdown")
 
 async def cmd_briefing(update, ctx):
+    n = now_ist()
     tp = tasks.today_pending()
     hd, hp = habits.today_status()
-    n = now_ist()
     txt = f"🌅 *BRIEFING*\n⏰ {n.strftime('%I:%M %p')} | 📅 {n.strftime('%d %b')}\n\n"
     txt += f"📋 Pending: {len(tp)}\n💪 Habits done: {len(hd)}\n"
     txt += f"💰 Aaj: ₹{expenses.today_total():.0f} | Mahina: ₹{expenses.month_total():.0f}\n"
@@ -1429,16 +1268,15 @@ async def cmd_briefing(update, ctx):
 async def cmd_weekly(update, ctx):
     n = now_ist()
     ws = n.date() - timedelta(days=n.weekday())
-    msg = f"📊 *WEEKLY REPORT*\n📅 {ws.strftime('%d %b')} - {n.strftime('%d %b %Y')}\n\n"
     tw = tasks.get_weekly_summary()
-    msg += f"📋 Tasks done: {sum(v['done'] for v in tw.values())}\n"
-    msg += f"💰 Month: ₹{expenses.month_total():.0f}\n"
-    msg += f"💧 Water today: {water.today_total()}ml"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(
+        f"📊 *WEEKLY*\n📅 {ws.strftime('%d %b')} - {n.strftime('%d %b %Y')}\n\n"
+        f"📋 Done: {sum(v['done'] for v in tw.values())}\n"
+        f"💰 Month: ₹{expenses.month_total():.0f}\n💧 Today: {water.today_total()}ml", parse_mode="Markdown")
 
 async def cmd_report(update, ctx):
     if not ctx.args:
-        await update.message.reply_text("📋 `/report YYYY-MM-DD`", parse_mode="Markdown")
+        await update.message.reply_text("📋 `/report YYYY-MM-DD`")
         return
     target = ctx.args[0]
     try:
@@ -1446,68 +1284,51 @@ async def cmd_report(update, ctx):
     except:
         await update.message.reply_text("❌ Invalid date!")
         return
-    msg = f"📋 *REPORT {target}*\n\n"
-    msg += f"📋 Tasks done: {len(tasks.done_on(target))}\n"
-    exp = expenses.get_by_date(target)
-    msg += f"💰 Expenses: ₹{sum(e['amount'] for e in exp):.0f}\n"
-    di = diary.get(target)
-    msg += f"📖 Diary entries: {len(di)}\n"
+    exp_t = sum(e["amount"] for e in expenses.get_by_date(target))
     hl = habits.get_logs_by_date(target)
     hd = [h for h in habits.all() if h["id"] in hl]
-    msg += f"💪 Habits: {len(hd)}\n"
-    we = water.get_by_date(target)
-    msg += f"💧 Water: {sum(w['ml'] for w in we)}ml"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    wt = sum(w["ml"] for w in water.get_by_date(target))
+    await update.message.reply_text(
+        f"📋 *REPORT {target}*\n\n📋 Tasks done: {len(tasks.done_on(target))}\n"
+        f"💰 Expenses: ₹{exp_t:.0f}\n📖 Diary: {len(diary.get(target))}\n"
+        f"💪 Habits: {len(hd)}\n💧 Water: {wt}ml", parse_mode="Markdown")
 
 async def cmd_news(update, ctx):
     try:
         req = urllib.request.Request("https://feeds.bbci.co.uk/hindi/rss.xml", headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            tree = ET.parse(resp)
-            items = tree.getroot().find("channel").findall("item")[:5]
-            txt = "📰 *INDIA NEWS*\n\n"
-            for item in items:
-                title = item.findtext("title", "").strip()
-                if title:
-                    txt += f"• *{title}*\n"
-            await update.message.reply_text(txt, parse_mode="Markdown")
+            items = ET.parse(resp).getroot().find("channel").findall("item")[:5]
+            await update.message.reply_text("📰 *INDIA NEWS*\n\n" + "\n".join(f"• *{item.findtext('title','')}*" for item in items if item.findtext('title','')), parse_mode="Markdown")
     except:
         await update.message.reply_text("📰 News unavailable.")
 
 async def cmd_alltasks(update, ctx):
-    all_t = tasks.all_tasks()
-    if not all_t:
+    p = tasks.pending()
+    if not p:
         await update.message.reply_text("📋 No tasks!")
         return
-    p = tasks.pending()
-    txt = f"📋 *ALL ({len(all_t)})*\n⏳ {len(p)} pending\n\n"
-    if p:
-        txt += "*PENDING:*\n" + "\n".join(f"   #{t['id']} {t['title']}" for t in p[:10])
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text(f"📋 *ALL*\n⏳ {len(p)} pending\n\n" + "\n".join(f"   #{t['id']} {t['title']}" for t in p[:10]), parse_mode="Markdown")
 
 async def cmd_completed(update, ctx):
     c = tasks.completed_tasks()
     if not c:
-        await update.message.reply_text("✅ No completed tasks!")
+        await update.message.reply_text("✅ None!")
         return
-    txt = f"✅ *COMPLETED ({len(c)})*\n\n" + "\n".join(f"  ✓ #{t['id']} {t['title']}" for t in c[-15:])
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text(f"✅ *COMPLETED ({len(c)})*\n\n" + "\n".join(f"  ✓ #{t['id']} {t['title']}" for t in c[-15:]), parse_mode="Markdown")
 
 async def cmd_yesterday(update, ctx):
     yd = yesterday_str()
-    td = tasks.done_on(yd)
-    exp = expenses.get_by_date(yd)
+    exp_t = sum(e["amount"] for e in expenses.get_by_date(yd))
     hlogs = habits.get_logs_by_date(yd)
     hd = [h for h in habits.all() if h["id"] in hlogs]
-    txt = f"📅 *YESTERDAY ({yd})*\n\n"
-    txt += f"✅ Tasks: {len(td)}\n💪 Habits: {len(hd)}/{len(habits.all())}\n"
-    txt += f"💰 Expenses: ₹{sum(e['amount'] for e in exp):.0f}"
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text(
+        f"📅 *YESTERDAY ({yd})*\n\n✅ Tasks: {len(tasks.done_on(yd))}\n"
+        f"💪 Habits: {len(hd)}/{len(habits.all())}\n💰 Expenses: ₹{exp_t:.0f}", parse_mode="Markdown")
 
 async def cmd_remind(update, ctx):
     now = now_ist()
     if not ctx.args:
-        await update.message.reply_text(f"⏰ `/remind 2m Test`\n`/remind 30m Chai`\n`/remind 15:30 Doctor`", parse_mode="Markdown")
+        await update.message.reply_text("⏰ `/remind 2m Test` | `/remind 30m Chai` | `/remind 15:30 Doctor`", parse_mode="Markdown")
         return
     time_arg = ctx.args[0].lower()
     rest = ctx.args[1:]
@@ -1516,115 +1337,81 @@ async def cmd_remind(update, ctx):
         repeat = rest[-1].lower()
         rest = rest[:-1]
     text = " ".join(rest) if rest else "⏰ Reminder!"
-    
     if time_arg.endswith("m") and time_arg[:-1].isdigit():
         remind_at = (now + timedelta(minutes=int(time_arg[:-1]))).strftime("%H:%M")
     elif time_arg.endswith("h") and time_arg[:-1].isdigit():
         remind_at = (now + timedelta(hours=int(time_arg[:-1]))).strftime("%H:%M")
     elif ":" in time_arg:
         parts = time_arg.split(":")
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            h, m = int(parts[0]), int(parts[1])
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                remind_at = f"{h:02d}:{m:02d}"
-            else:
-                await update.message.reply_text("❌ Invalid time!")
-                return
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() and 0 <= int(parts[0]) <= 23:
+            remind_at = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
         else:
-            await update.message.reply_text("❌ Format: `/remind 15:30 Meeting`")
+            await update.message.reply_text("❌ Invalid time!")
             return
     else:
         await update.message.reply_text("❌ `/remind 2m Test` or `/remind 15:30 Meeting`")
         return
-    
     r = reminders.add(update.effective_chat.id, text, remind_at, repeat)
-    rl = {"once": "Once", "daily": "Daily 🔁", "weekly": "Weekly 📅"}.get(repeat, repeat)
-    await update.message.reply_text(f"✅ *Reminder!* ⏰ {remind_at} — {text}\n{rl}\n🆔 `#{r['id']}`", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ *Reminder!* ⏰ {remind_at} — {text}\n🆔 `#{r['id']}`", parse_mode="Markdown")
     await auto_backup_to_sheets()
 
 async def cmd_reminders_list(update, ctx):
     active = reminders.all_active()
     if not active:
-        await update.message.reply_text("⏰ No reminders!\n`/remind 2m Test`", parse_mode="Markdown")
+        await update.message.reply_text("⏰ None!\n`/remind 2m Test`")
         return
-    txt = f"⏰ *REMINDERS ({len(active)})*\n\n"
-    for r in active:
-        icon = "🔁" if r["repeat"] == "daily" else "📅" if r["repeat"] == "weekly" else "1️⃣"
-        txt += f"*#{r['id']}* {icon} `{r['time']}` — {r['text']}\n"
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text(f"⏰ *REMINDERS ({len(active)})*\n\n" + "\n".join(f"*#{r['id']}* `{r['time']}` — {r['text']}" for r in active), parse_mode="Markdown")
 
 async def cmd_delremind(update, ctx):
     if not ctx.args:
         await update.message.reply_text("`/delremind <id>`")
         return
-    try:
-        reminders.delete(int(ctx.args[0]))
-        await update.message.reply_text("🗑 Deleted!")
-        await auto_backup_to_sheets()
-    except:
-        await update.message.reply_text("❌ Invalid!")
+    reminders.delete(int(ctx.args[0]))
+    await update.message.reply_text("🗑 Deleted!")
+    await auto_backup_to_sheets()
 
 async def cmd_water(update, ctx):
-    ml = 250
-    if ctx.args:
-        try:
-            ml = int(ctx.args[0])
-        except:
-            pass
+    ml = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 250
     water.add(ml)
     total = water.today_total()
     goal = water.goal()
-    pct = min(100, int(total / goal * 100)) if goal else 0
-    await update.message.reply_text(f"💧 +{ml}ml | {total}ml/{goal}ml ({pct}%)", parse_mode="Markdown")
+    await update.message.reply_text(f"💧 +{ml}ml | {total}ml/{goal}ml ({min(100,int(total/goal*100)) if goal else 0}%)", parse_mode="Markdown")
     await auto_backup_to_sheets()
 
 async def cmd_water_status(update, ctx):
     total = water.today_total()
     goal = water.goal()
-    pct = min(100, int(total / goal * 100)) if goal else 0
-    await update.message.reply_text(f"💧 {total}ml / {goal}ml ({pct}%)", parse_mode="Markdown")
+    await update.message.reply_text(f"💧 {total}ml / {goal}ml", parse_mode="Markdown")
 
 async def cmd_water_goal(update, ctx):
-    if not ctx.args:
-        await update.message.reply_text(f"Goal: {water.goal()}ml\n`/watergoal 2500`")
-        return
-    try:
+    if ctx.args and ctx.args[0].isdigit():
         water.set_goal(int(ctx.args[0]))
-        await update.message.reply_text(f"✅ Goal: {ctx.args[0]}ml")
-    except:
-        pass
+    await update.message.reply_text(f"✅ Goal: {water.goal()}ml")
 
 async def cmd_bill(update, ctx):
     if not ctx.args or len(ctx.args) < 3:
-        await update.message.reply_text("💳 `/bill Name Amount DueDay`\nExample: `/bill Internet 999 15`")
+        await update.message.reply_text("💳 `/bill Name Amount DueDay`")
         return
     try:
         b = bills.add(ctx.args[0], float(ctx.args[1]), int(ctx.args[2]))
         await update.message.reply_text(f"✅ Bill: {b['name']} ₹{b['amount']:.0f} — Due {b['due_day']}th", parse_mode="Markdown")
         await auto_backup_to_sheets()
     except:
-        await update.message.reply_text("❌ Format: `/bill Name Amount DueDay`")
+        await update.message.reply_text("❌ Format!")
 
 async def cmd_bills_list(update, ctx):
     all_b = bills.all_active()
     if not all_b:
-        await update.message.reply_text("💳 No bills!")
+        await update.message.reply_text("💳 None!")
         return
-    txt = "💳 *BILLS*\n\n"
-    for b in all_b:
-        status = "✅" if bills.is_paid_this_month(b["id"]) else "⏳"
-        txt += f"{status} *{b['name']}* — ₹{b['amount']:.0f} (Due {b['due_day']}th)\n"
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text("💳 *BILLS*\n\n" + "\n".join(f"{'✅' if bills.is_paid_this_month(b['id']) else '⏳'} *{b['name']}* — ₹{b['amount']:.0f} (Due {b['due_day']}th)" for b in all_b), parse_mode="Markdown")
 
 async def cmd_bill_paid(update, ctx):
     if not ctx.args:
         await update.message.reply_text("`/billpaid <id>`")
         return
     try:
-        if bills.mark_paid(int(ctx.args[0])):
-            await update.message.reply_text("✅ Paid!")
-        else:
-            await update.message.reply_text("❌ Already paid!")
+        await update.message.reply_text("✅ Paid!" if bills.mark_paid(int(ctx.args[0])) else "❌ Already!")
         await auto_backup_to_sheets()
     except:
         await update.message.reply_text("❌ Invalid!")
@@ -1633,37 +1420,31 @@ async def cmd_del_bill(update, ctx):
     if not ctx.args:
         await update.message.reply_text("`/delbill <id>`")
         return
-    try:
-        bills.delete(int(ctx.args[0]))
-        await update.message.reply_text("🗑 Deleted!")
-        await auto_backup_to_sheets()
-    except:
-        await update.message.reply_text("❌ Invalid!")
+    bills.delete(int(ctx.args[0]))
+    await update.message.reply_text("🗑 Deleted!")
+    await auto_backup_to_sheets()
 
 async def cmd_cal(update, ctx):
     if not ctx.args:
-        await update.message.reply_text(f"📅 `/cal {today_str()} Meeting`\n`/cal kal Client call`")
+        await update.message.reply_text(f"📅 `/cal {today_str()} Meeting`")
         return
     args_str = " ".join(ctx.args)
-    date_str, title, event_time = None, args_str, ""
-    
+    date_str, title = None, args_str
     m = _re.match(r'^(\d{4}-\d{2}-\d{2})\s+(.*)', args_str)
     if m:
-        date_str = m.group(1); title = m.group(2)
+        date_str, title = m.group(1), m.group(2)
     if not date_str:
         if args_str.lower().startswith("aaj "):
             date_str = today_str(); title = args_str[4:]
         elif args_str.lower().startswith("kal "):
             date_str = (now_ist().date() + timedelta(days=1)).isoformat(); title = args_str[4:]
-    
     if not date_str:
         await update.message.reply_text("❌ `/cal YYYY-MM-DD Event`")
         return
-    
+    event_time = ""
     t_match = _re.search(r'(\d{1,2}:\d{2})', title)
     if t_match:
         event_time = t_match.group(1); title = title.replace(event_time, "").strip()
-    
     try:
         date.fromisoformat(date_str)
         calendar.add(title, date_str, event_time)
@@ -1675,86 +1456,51 @@ async def cmd_cal(update, ctx):
 async def cmd_cal_list(update, ctx):
     upcoming = calendar.upcoming(30)
     if not upcoming:
-        await update.message.reply_text("📅 No events!")
+        await update.message.reply_text("📅 None!")
         return
-    txt = "📅 *UPCOMING*\n\n"
-    for e in upcoming[:10]:
-        flag = "🔴" if e["date"] == today_str() else "📆"
-        ts = f" @ {e['time']}" if e.get("time") else ""
-        txt += f"{flag} {e['date']}{ts} — {e['title']}\n"
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text("📅 *UPCOMING*\n\n" + "\n".join(f"{'🔴' if e['date']==today_str() else '📆'} {e['date']}{f' @ {e[\"time\"]}' if e.get('time') else ''} — {e['title']}" for e in upcoming[:10]), parse_mode="Markdown")
 
 async def cmd_del_cal(update, ctx):
     if not ctx.args:
         await update.message.reply_text("`/delcal <id>`")
         return
-    try:
-        calendar.delete(int(ctx.args[0]))
-        await update.message.reply_text("🗑 Deleted!")
-        await auto_backup_to_sheets()
-    except:
-        await update.message.reply_text("❌ Invalid!")
+    calendar.delete(int(ctx.args[0]))
+    await update.message.reply_text("🗑 Deleted!")
+    await auto_backup_to_sheets()
 
 async def cmd_memory(update, ctx):
     facts = memory.get_all_facts()
     if not facts:
-        await update.message.reply_text("🧠 No memories!")
+        await update.message.reply_text("🧠 None!")
         return
-    txt = "🧠 *MEMORY*\n\n" + "\n".join(f"📌 {f['f']}" for f in facts[-15:])
-    await update.message.reply_text(txt, parse_mode="Markdown")
+    await update.message.reply_text("🧠 *MEMORY*\n\n" + "\n".join(f"📌 {f['f']}" for f in facts[-15:]), parse_mode="Markdown")
 
 async def cmd_backup(update, ctx):
     await update.message.reply_text("📤 Backing up...")
-    result = google_sheets.full_sync()
-    await update.message.reply_text(result)
+    await update.message.reply_text(google_sheets.full_sync())
 
 async def cmd_dbstatus(update, ctx):
-    lines = ["✅ *Sheets: CONNECTED*" if google_sheets.sheet else "❌ *NOT CONNECTED*"]
-    lines.append(f"\n📊 Reminders: {len(reminders.get_all())} | Tasks: {len(tasks.all_tasks())} | Diary: {sum(len(v) for v in diary.get_all_entries().values())}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text(
+        f"✅ Sheets: {'CONNECTED' if google_sheets.sheet else 'NOT CONNECTED'}\n"
+        f"📊 Reminders: {len(reminders.get_all())} | Tasks: {len(tasks.all_tasks())} | Diary: {sum(len(v) for v in diary.get_all_entries().values())}")
 
 async def cmd_clear(update, ctx):
-    count = chat_hist.clear()
-    await update.message.reply_text(f"🧹 Chat cleared ({count} msgs)! ✅ Data safe.", parse_mode="Markdown")
+    await update.message.reply_text(f"🧹 {chat_hist.clear()} msgs cleared!", parse_mode="Markdown")
 
 # ═══════════════════════════════════════════════════════════════════
-# MESSAGE HANDLER — AI CHAT + LOG TO SHEETS
+# MESSAGE HANDLER
 # ═══════════════════════════════════════════════════════════════════
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
-
     user_msg = update.message.text.strip()
     user_name = update.effective_user.first_name or "User"
-    
     if user_msg.startswith('/'):
         return
-
-    # Diary write flow
-    if ctx.user_data.get("awaiting_diary_entry"):
-        ctx.user_data.pop("awaiting_diary_entry", None)
-        diary.add(user_msg, mood="📝")
-        loop = asyncio.get_event_loop()
-        loop.create_task(auto_backup_to_sheets())
-        try:
-            await update.message.delete()
-        except:
-            pass
-        sent = await update.effective_chat.send_message(f"📖 *Diary saved!* 🕐 {now_str()}", parse_mode="Markdown")
-        await asyncio.sleep(3)
-        try:
-            await sent.delete()
-        except:
-            pass
-        return
-
     ctx.user_data.pop("diary_view", None)
 
-    # AI Chat
     await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     reply = await ai_chat(user_msg, update.effective_chat.id, user_name)
-
-    # 🔥 Log to chat history
     chat_hist.add("user", user_msg, user_name)
     chat_hist.add("assistant", reply, "Bot")
 
@@ -1762,8 +1508,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply, parse_mode="Markdown")
     except:
         await update.message.reply_text(reply)
-    
-    # Auto-backup after chat
     await auto_backup_to_sheets()
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1774,66 +1518,52 @@ async def reminder_job(context):
     if now.strftime("%H:%M") in ("00:00", "00:01"):
         reminders.reset_daily()
         return
-    
-    due = reminders.due_now()
-    for r in due:
+    for r in reminders.due_now():
         try:
-            repeat_note = "🔁 Daily" if r["repeat"] == "daily" else ("📅 Weekly" if r["repeat"] == "weekly" else "")
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Done", callback_data=f"remind_done_{r['id']}"),
                 InlineKeyboardButton("⏰ Snooze 10m", callback_data=f"remind_snooze_{r['id']}")
             ]])
-            await context.bot.send_message(
-                chat_id=int(r["chat_id"]),
-                text=f"🚨🔔 *ALARM!*\n{'═'*20}\n⏰ *{r['time']} BAJ GAYE!*\n📢 *{r['text']}*\n{repeat_note}",
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
+            await context.bot.send_message(chat_id=int(r["chat_id"]),
+                text=f"🚨🔔 *ALARM!*\n{'═'*20}\n⏰ *{r['time']}*\n📢 *{r['text']}*",
+                parse_mode="Markdown", reply_markup=kb)
             reminders.mark_fired(r["id"])
             await asyncio.sleep(1)
-        except Exception as e:
-            log.error(f"Alarm fail #{r['id']}: {e}")
+        except:
+            pass
 
 async def bill_due_job(context):
     if now_ist().strftime("%H:%M") != "09:00":
         return
     due = bills.due_soon(3)
-    if not due:
-        return
-    chat_ids = set(r["chat_id"] for r in reminders.all_active())
-    for cid in chat_ids:
-        try:
-            txt = "💳 *BILL DUE*\n" + "\n".join(f"⚠️ {b['name']} ₹{b['amount']:.0f}" for b in due)
-            await context.bot.send_message(chat_id=int(cid), text=txt, parse_mode="Markdown")
-        except:
-            pass
+    if due:
+        for cid in set(r["chat_id"] for r in reminders.all_active()):
+            try:
+                await context.bot.send_message(chat_id=int(cid),
+                    text="💳 *BILL DUE*\n" + "\n".join(f"⚠️ {b['name']} ₹{b['amount']:.0f}" for b in due), parse_mode="Markdown")
+            except:
+                pass
 
 async def water_reminder_job(context):
     now = now_ist()
-    if not (8 <= now.hour <= 22) or now.hour % 3 != 0:
+    if not (8 <= now.hour <= 22) or now.hour % 3 != 0 or water.today_total() >= water.goal():
         return
-    total = water.today_total()
-    if total >= water.goal():
-        return
-    chat_ids = set(r["chat_id"] for r in reminders.all_active())
-    for cid in chat_ids:
+    for cid in set(r["chat_id"] for r in reminders.all_active()):
         try:
-            await context.bot.send_message(chat_id=int(cid), text=f"💧 *Paani time!*\n{total}ml/{water.goal()}ml\n`/water`", parse_mode="Markdown")
+            await context.bot.send_message(chat_id=int(cid),
+                text=f"💧 *Paani time!*\n{water.today_total()}ml/{water.goal()}ml\n`/water`", parse_mode="Markdown")
         except:
             pass
 
 async def daily_log_job(context):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, google_sheets.save_daily_log)
-    log.info("📅 Daily log saved")
+    await asyncio.get_event_loop().run_in_executor(None, google_sheets.save_daily_log)
 
 async def scheduled_backup_job(context):
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, google_sheets.full_sync)
-    log.info(f"🕒 Scheduled: {result}")
+    result = await asyncio.get_event_loop().run_in_executor(None, google_sheets.full_sync)
+    log.info(f"🕒 {result}")
 
 # ═══════════════════════════════════════════════════════════════════
-# CALLBACK HANDLER — ONLY ALARM BUTTONS
+# CALLBACK HANDLER — ONLY ALARM
 # ═══════════════════════════════════════════════════════════════════
 async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1842,10 +1572,8 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     message = query.message
     if not message:
         return
-    
     if d.startswith("remind_done_"):
-        rid = int(d.split("_")[2])
-        reminders.mark_fired(rid)
+        reminders.mark_fired(int(d.split("_")[2]))
         await message.edit_text("✅ Done!")
         await auto_backup_to_sheets()
         await asyncio.sleep(2)
@@ -1853,7 +1581,6 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await message.delete()
         except:
             pass
-    
     elif d.startswith("remind_snooze_"):
         rid = int(d.split("_")[2])
         snooze = (now_ist() + timedelta(minutes=10)).strftime("%H:%M")
@@ -1870,35 +1597,21 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 # ═══════════════════════════════════════════════════════════════════
-# MAIN — FIXED STARTUP NOTIFICATION
+# MAIN — STARTUP NOTIFICATION DISABLED
 # ═══════════════════════════════════════════════════════════════════
 def main():
     n = now_ist()
     log.info("=" * 55)
-    log.info(f"🤖 Bot v17 — FINAL FIXED + CHAT LOGS + DIARY AUTO-DELETE")
+    log.info(f"🤖 Bot v17.1 — FINAL FIXED")
     log.info(f"⏰ IST: {n.strftime('%Y-%m-%d %I:%M:%S %p')}")
     log.info(f"📊 Sheets: {'✅' if google_sheets.sheet else '❌'}")
     log.info("=" * 55)
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # 🔥 FIXED: Simple startup notification — NO parse_mode
-    async def post_init(app):
-        if not ADMIN_CHAT_ID:
-            return
-        try:
-            n2 = now_ist()
-            time_str = n2.strftime('%d %b %Y %I:%M %p')
-            await app.bot.send_message(
-                chat_id=int(ADMIN_CHAT_ID),
-                text=f"Bot Restart!\n\n{time_str} IST\nSheets: {'CONNECTED' if google_sheets.sheet else 'NOT CONNECTED'}"
-            )
-        except Exception as e:
-            log.warning(f"Startup notification failed: {e}")
-
+    # 🔥 STARTUP NOTIFICATION FULLY DISABLED — NO WARNINGS
     app.post_init = lambda app: None
 
-    # Commands
     cmds = [
         ("start", cmd_start), ("help", cmd_help),
         ("task", cmd_task), ("done", cmd_done), ("deltask", cmd_deltask),
@@ -1919,7 +1632,6 @@ def main():
     for cmd, handler in cmds:
         app.add_handler(CommandHandler(cmd, handler))
 
-    # Diary ConversationHandler
     diary_conv = ConversationHandler(
         entry_points=[CommandHandler("diary", cmd_diary)],
         states={DIARY_AWAIT_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, diary_password_check)]},
@@ -1927,11 +1639,10 @@ def main():
         per_user=True, per_chat=True, conversation_timeout=60,
     )
     app.add_handler(diary_conv)
-    
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    
+
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=15)
         app.job_queue.run_repeating(bill_due_job, interval=3600, first=300)
@@ -1939,7 +1650,7 @@ def main():
         app.job_queue.run_daily(daily_log_job, time=dt_module.time(hour=21, minute=0, tzinfo=IST))
         app.job_queue.run_repeating(scheduled_backup_job, interval=3600, first=120)
         log.info("⏰ Jobs started!")
-    
+
     log.info("✅ Bot ready!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
