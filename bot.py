@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     PERSONAL AI ASSISTANT — v21.0  NATURAL LANGUAGE MODE       ║
-║  NO BUTTONS — Sab kuch chat se hoga                             ║
-║  - Natural language se task, habit, reminder, diary sab kaam   ║
-║  - Google Sheets sync intact                                    ║
-║  - Reminders/Alarms background mein chalte rahenge             ║
-║  - Commands bhi kaam karenge                                    ║
+║     PERSONAL AI ASSISTANT — v22.0  NO BUTTONS + REAL ACTIONS   ║
+║  ✅ Natural language se REAL kaam hoga — sirf reply nahi        ║
+║  ✅ Reminders actually set honge, tasks actually add honge      ║
+║  ✅ Google Sheets sync intact                                   ║
+║  ✅ Gemini JSON action engine (old v14 proven system)           ║
+║  ✅ Diary password flow                                         ║
+║  ✅ Background alarms/reminders                                 ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -30,8 +31,7 @@ except ImportError:
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, filters, ContextTypes,
-    ConversationHandler
+    filters, ContextTypes, ConversationHandler
 )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -54,8 +54,6 @@ GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON",
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
 
 DIARY_PASSWORD = "Rk1996"
-
-# ConversationHandler states (diary)
 DIARY_AWAIT_PASS = 0
 DIARY_AWAIT_TEXT = 1
 
@@ -79,6 +77,11 @@ def now_str():
 
 def yesterday_str():
     return (now_ist() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+def time_label():
+    n = now_ist()
+    days = {0:"Monday",1:"Tuesday",2:"Wednesday",3:"Thursday",4:"Friday",5:"Saturday",6:"Sunday"}
+    return f"{days.get(n.weekday(),'')}, {n.day} {n.strftime('%b')} {n.year} — {n.strftime('%I:%M %p')} IST"
 
 # ═══════════════════════════════════════════════════════════════════
 # DATABASE
@@ -125,7 +128,7 @@ GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 _last_gemini_call = 0
 
-def call_gemini(prompt, max_tokens=500):
+def call_gemini(prompt, max_tokens=500, is_action=False):
     global _last_gemini_call
     if not GEMINI_API_KEY:
         return None
@@ -135,11 +138,14 @@ def call_gemini(prompt, max_tokens=500):
         time.sleep(3 - elapsed + random.uniform(0.5, 1.5))
     _last_gemini_call = time.time()
 
+    temp = 0.0 if is_action else 0.75
+    tokens = min(max_tokens, 200 if is_action else 700)
+
     payload = json.dumps({
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.75,
-            "maxOutputTokens": min(max_tokens, 700)
+            "temperature": temp,
+            "maxOutputTokens": tokens
         }
     }).encode("utf-8")
 
@@ -154,6 +160,13 @@ def call_gemini(prompt, max_tokens=500):
             with urllib.request.urlopen(req, timeout=35) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                log.warning(f"Rate limited ({model})")
+                time.sleep(5)
+                continue
+            log.warning(f"Gemini {e.code} ({model}): {e}")
+            continue
         except Exception as e:
             log.warning(f"Gemini [{model}] error: {e}")
             continue
@@ -206,7 +219,6 @@ class TaskStore:
         return None
 
     def complete_by_title(self, keyword):
-        """Title mein keyword se task complete karo"""
         keyword = keyword.lower()
         for t in self.store.data["list"]:
             if not t["done"] and keyword in t["title"].lower():
@@ -304,11 +316,11 @@ class HabitStore:
         return True, streak
 
     def log_by_name(self, keyword):
-        """Name se habit log karo"""
         keyword = keyword.lower()
         for h in self.store.data.get("list", []):
             if keyword in h["name"].lower():
-                return self.log(h["id"]) + (h,)
+                ok, streak = self.log(h["id"])
+                return ok, streak, h
         return False, 0, None
 
     def today_status(self):
@@ -455,15 +467,6 @@ class ReminderStore:
             if r.get("active") and not r.get("fired_today")
             and r["time"] == now_hm
         ]
-
-    def snooze(self, rid, minutes=10):
-        snooze_time = (now_ist() + timedelta(minutes=minutes)).strftime("%H:%M")
-        for r in self.store.data["list"]:
-            if r["id"] == rid:
-                new_r = self.add(int(r["chat_id"]), r["text"], snooze_time, "once")
-                self.mark_fired(rid)
-                return new_r, snooze_time
-        return None, snooze_time
 
 
 class WaterStore:
@@ -745,12 +748,10 @@ class GoogleSheetsBackup:
                  t.get("due",""), t.get("tags","")]
                 for t in tasks.all_tasks()
             ]
-            if rows:
-                self._upsert_by_id(ws, rows, 0)
+            if rows: self._upsert_by_id(ws, rows, 0)
             return True
         except Exception as e:
-            log.warning(f"save_tasks: {e}")
-            return False
+            log.warning(f"save_tasks: {e}"); return False
 
     def save_reminders(self):
         try:
@@ -763,12 +764,10 @@ class GoogleSheetsBackup:
                  r.get("last_fired",""), r.get("remarks","")]
                 for r in reminders.get_all()
             ]
-            if rows:
-                self._upsert_by_id(ws, rows, 0)
+            if rows: self._upsert_by_id(ws, rows, 0)
             return True
         except Exception as e:
-            log.warning(f"save_reminders: {e}")
-            return False
+            log.warning(f"save_reminders: {e}"); return False
 
     def save_expenses(self):
         try:
@@ -778,12 +777,10 @@ class GoogleSheetsBackup:
                  e.get("desc",""), e.get("category","general"), e.get("time","")]
                 for e in expenses.store.data.get("list", [])
             ]
-            if rows:
-                self._append_unique(ws, rows, [0, 1, 2])
+            if rows: self._append_unique(ws, rows, [0, 1, 2])
             return True
         except Exception as e:
-            log.warning(f"save_expenses: {e}")
-            return False
+            log.warning(f"save_expenses: {e}"); return False
 
     def save_habits(self):
         try:
@@ -794,12 +791,10 @@ class GoogleSheetsBackup:
                  h.get("created",""), h.get("target","")]
                 for h in habits.all()
             ]
-            if rows:
-                self._upsert_by_id(ws, rows, 0)
+            if rows: self._upsert_by_id(ws, rows, 0)
             return True
         except Exception as e:
-            log.warning(f"save_habits: {e}")
-            return False
+            log.warning(f"save_habits: {e}"); return False
 
     def save_memory(self):
         try:
@@ -808,12 +803,10 @@ class GoogleSheetsBackup:
                 [f.get("d",""), "Fact", f.get("f",""), "", "Medium"]
                 for f in memory.get_all_facts()
             ]
-            if rows:
-                self._append_unique(ws, rows, [0, 2])
+            if rows: self._append_unique(ws, rows, [0, 2])
             return True
         except Exception as e:
-            log.warning(f"save_memory: {e}")
-            return False
+            log.warning(f"save_memory: {e}"); return False
 
     def save_goals(self):
         try:
@@ -824,30 +817,25 @@ class GoogleSheetsBackup:
                  g.get("deadline",""), g.get("created",""), g.get("milestones","")]
                 for g in goals.active() + goals.completed()
             ]
-            if rows:
-                self._upsert_by_id(ws, rows, 0)
+            if rows: self._upsert_by_id(ws, rows, 0)
             return True
         except Exception as e:
-            log.warning(f"save_goals: {e}")
-            return False
+            log.warning(f"save_goals: {e}"); return False
 
     def save_bills(self):
         try:
             ws = self.sheet.worksheet("Bills & Subscriptions")
             rows = [
                 [str(b.get("id","")), b.get("name",""), b.get("amount",0),
-                 str(b.get("due_day","")),
-                 b.get("auto_pay","No"),
+                 str(b.get("due_day","")), b.get("auto_pay","No"),
                  "Paid" if bills.is_paid_this_month(b["id"]) else "Pending",
                  b.get("payment_method",""), b.get("notes","")]
                 for b in bills.all_active()
             ]
-            if rows:
-                self._upsert_by_id(ws, rows, 0)
+            if rows: self._upsert_by_id(ws, rows, 0)
             return True
         except Exception as e:
-            log.warning(f"save_bills: {e}")
-            return False
+            log.warning(f"save_bills: {e}"); return False
 
     def save_calendar(self):
         try:
@@ -858,12 +846,10 @@ class GoogleSheetsBackup:
                  e.get("participants",""), e.get("notes","")]
                 for e in calendar.store.data.get("events", [])
             ]
-            if rows:
-                self._append_unique(ws, rows, [0, 2])
+            if rows: self._append_unique(ws, rows, [0, 2])
             return True
         except Exception as e:
-            log.warning(f"save_calendar: {e}")
-            return False
+            log.warning(f"save_calendar: {e}"); return False
 
     def save_water(self):
         try:
@@ -874,12 +860,10 @@ class GoogleSheetsBackup:
             for d, total_ml in sorted(week.items()):
                 pct = int(total_ml / goal_ml * 100) if goal_ml else 0
                 rows.append([d, total_ml, goal_ml, f"{pct}%", total_ml // 250, ""])
-            if rows:
-                self._upsert_by_id(ws, rows, 0)
+            if rows: self._upsert_by_id(ws, rows, 0)
             return True
         except Exception as e:
-            log.warning(f"save_water: {e}")
-            return False
+            log.warning(f"save_water: {e}"); return False
 
     def save_daily_log(self):
         try:
@@ -898,8 +882,7 @@ class GoogleSheetsBackup:
             ws.append_row(row, value_input_option="USER_ENTERED")
             return True
         except Exception as e:
-            log.warning(f"save_daily_log: {e}")
-            return False
+            log.warning(f"save_daily_log: {e}"); return False
 
     def save_diary(self):
         try:
@@ -924,8 +907,7 @@ class GoogleSheetsBackup:
                 ws.append_row(row, value_input_option="USER_ENTERED")
             return True
         except Exception as e:
-            log.warning(f"save_diary: {e}")
-            return False
+            log.warning(f"save_diary: {e}"); return False
 
     def save_chat_history(self):
         try:
@@ -944,18 +926,14 @@ class GoogleSheetsBackup:
                 msg  = h.get("message", "")
                 key  = f"{ts}|{role}|{msg[:80]}"
                 if key not in existing_keys:
-                    new_rows.append([
-                        ts, h.get("date",""), role, h.get("user",""), msg
-                    ])
+                    new_rows.append([ts, h.get("date",""), role, h.get("user",""), msg])
                     existing_keys.add(key)
             if new_rows:
                 for row in new_rows:
                     ws.append_row(row, value_input_option="USER_ENTERED")
-                log.info(f"💬 Miscellaneous: {len(new_rows)} rows saved")
             return True
         except Exception as e:
-            log.error(f"save_chat_history error: {e}")
-            return False
+            log.error(f"save_chat_history error: {e}"); return False
 
     def full_sync(self):
         if not self.sheet:
@@ -1002,180 +980,7 @@ async def auto_backup_to_sheets():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# NATURAL LANGUAGE PROCESSOR — ye sab kaam karega bina buttons ke
-# ═══════════════════════════════════════════════════════════════════
-
-def extract_time_from_text(text):
-    """Text se time extract karo — '5 baje', '3:30', '30 min mein' etc."""
-    text = text.lower()
-
-    # X minutes/hours mein
-    m = _re.search(r'(\d+)\s*(min|minute|minut)', text)
-    if m:
-        mins = int(m.group(1))
-        return (now_ist() + timedelta(minutes=mins)).strftime("%H:%M"), f"{mins}min"
-
-    m = _re.search(r'(\d+)\s*(ghante|hour|hr)', text)
-    if m:
-        hrs = int(m.group(1))
-        return (now_ist() + timedelta(hours=hrs)).strftime("%H:%M"), f"{hrs}hr"
-
-    # HH:MM format
-    m = _re.search(r'\b(\d{1,2}):(\d{2})\b', text)
-    if m:
-        h, mi = int(m.group(1)), int(m.group(2))
-        if 0 <= h <= 23 and 0 <= mi <= 59:
-            return f"{h:02d}:{mi:02d}", f"{h:02d}:{mi:02d}"
-
-    # X baje / at X
-    m = _re.search(r'(\d{1,2})\s*(baje|bajay|pm|am|:00)', text)
-    if m:
-        h = int(m.group(1))
-        suffix = m.group(2)
-        if "pm" in suffix and h != 12:
-            h += 12
-        if "am" in suffix and h == 12:
-            h = 0
-        return f"{h:02d}:00", f"{h:02d}:00"
-
-    return None, None
-
-
-def extract_amount_from_text(text):
-    """Text se amount extract karo"""
-    m = _re.search(r'(?:rs\.?|₹|rupees?|rupe)\s*(\d+(?:\.\d+)?)', text.lower())
-    if m:
-        return float(m.group(1))
-    m = _re.search(r'(\d+(?:\.\d+)?)\s*(?:rs\.?|₹|rupees?|rupe)', text.lower())
-    if m:
-        return float(m.group(1))
-    m = _re.search(r'\b(\d+(?:\.\d+)?)\b', text)
-    if m:
-        return float(m.group(1))
-    return None
-
-
-def detect_intent(text):
-    """
-    User ke message ka intent detect karo.
-    Returns: (intent, data_dict)
-    """
-    t = text.lower().strip()
-
-    # ── REMINDER ────────────────────────────────────────────────────
-    remind_keywords = ["remind", "reminder", "alarm", "alert", "yaad", "yaad kara",
-                       "remind kar", "bata", "bata dena", "bhool", "reminder set",
-                       "set reminder", "mujhe yaad", "wake", "uthana"]
-    if any(k in t for k in remind_keywords):
-        time_val, time_label = extract_time_from_text(t)
-        # Remove time-related words to get the reminder text
-        reminder_text = _re.sub(
-            r'\d+\s*(min|minute|ghante|hour|hr|baje|bajay|pm|am)\w*', '', t, flags=_re.I
-        )
-        reminder_text = _re.sub(
-            r'\b(remind|reminder|alarm|yaad|kara|dena|mujhe|set|kar|please|plz|ko)\b',
-            '', reminder_text
-        ).strip()
-        reminder_text = _re.sub(r'\s+', ' ', reminder_text).strip()
-        if not reminder_text or len(reminder_text) < 3:
-            reminder_text = text.strip()
-        repeat = "daily" if any(w in t for w in ["daily", "roz", "har din", "everyday"]) else "once"
-        return "reminder", {"time": time_val, "text": reminder_text or text, "repeat": repeat}
-
-    # ── TASK ADD ────────────────────────────────────────────────────
-    task_add_keywords = ["task", "kaam", "todo", "to-do", "add task", "naya kaam",
-                         "karna hai", "karna hai mujhe", "list mein", "yaad rakh",
-                         "note kar", "pending", "complete karna"]
-    if any(k in t for k in task_add_keywords):
-        priority = "high" if any(w in t for w in ["urgent", "jaldi", "important", "zaruri", "high"]) \
-                   else "low" if any(w in t for w in ["low", "baad mein", "later"]) else "medium"
-        title = _re.sub(
-            r'\b(task|kaam|todo|add|naya|mujhe|karna|hai|please|plz|urgent|jaldi|important|zaruri)\b',
-            '', t
-        ).strip()
-        title = _re.sub(r'\s+', ' ', title).strip()
-        return "task_add", {"title": title or text.strip(), "priority": priority}
-
-    # ── TASK DONE ────────────────────────────────────────────────────
-    task_done_keywords = ["task done", "kaam ho gaya", "ho gaya", "complete", "kar liya",
-                          "finish", "khatam", "done", "completed", "mark done"]
-    if any(k in t for k in task_done_keywords):
-        m = _re.search(r'#?(\d+)', t)
-        if m:
-            return "task_done", {"id": int(m.group(1))}
-        # Try keyword match
-        title_hint = _re.sub(
-            r'\b(task|done|ho|gaya|complete|kar|liya|finish|khatam|mark)\b', '', t
-        ).strip()
-        return "task_done", {"id": None, "keyword": title_hint}
-
-    # ── HABIT LOG ────────────────────────────────────────────────────
-    habit_done_keywords = ["habit done", "habit kar li", "habit complete", "exercise kiya",
-                           "meditation kiya", "padhai ki", "gym gaya", "running ki",
-                           "hdone", "habit ho gaya"]
-    if any(k in t for k in habit_done_keywords):
-        m = _re.search(r'#?(\d+)', t)
-        if m:
-            return "habit_done", {"id": int(m.group(1))}
-        keyword = _re.sub(
-            r'\b(habit|done|complete|kiya|ki|gaya|ho|kar|li)\b', '', t
-        ).strip()
-        return "habit_done", {"keyword": keyword}
-
-    # ── EXPENSE ────────────────────────────────────────────────────
-    expense_keywords = ["kharcha", "kharch", "spent", "spend", "khaya", "piya", "kharida",
-                        "buy", "bought", "paid", "payment", "expense", "rupees", "rs",
-                        "₹", "paisa", "paise"]
-    if any(k in t for k in expense_keywords):
-        amount = extract_amount_from_text(t)
-        desc = _re.sub(
-            r'(?:rs\.?|₹|rupees?|rupe|\d+(?:\.\d+)?|\b(kharcha|kharch|spent|spend|kharida|buy|bought|paid|payment|expense|paisa|paise|ka|ke|ki|mein|pr|par)\b)',
-            '', t, flags=_re.I
-        ).strip()
-        desc = _re.sub(r'\s+', ' ', desc).strip()
-        return "expense", {"amount": amount, "desc": desc or "Expense"}
-
-    # ── WATER ────────────────────────────────────────────────────────
-    water_keywords = ["paani piya", "water piya", "paani pi", "water pi", "water log",
-                      "paani log", "glass paani", "bottle paani"]
-    if any(k in t for k in water_keywords):
-        m = _re.search(r'(\d+)\s*(ml|liter|litre|glass|bottle)', t)
-        ml = 250
-        if m:
-            val = int(m.group(1))
-            unit = m.group(2)
-            if "liter" in unit or "litre" in unit:
-                ml = val * 1000
-            elif "glass" in unit:
-                ml = val * 250
-            elif "bottle" in unit:
-                ml = val * 500
-            else:
-                ml = val
-        return "water", {"ml": ml}
-
-    # ── DIARY READ ────────────────────────────────────────────────────
-    diary_read_keywords = ["diary dekho", "diary dikhao", "diary padho", "diary kya hai",
-                           "aaj ki diary", "kal ki diary", "diary view", "diary open"]
-    if any(k in t for k in diary_read_keywords):
-        if "week" in t or "hafte" in t:
-            return "diary_read", {"mode": "week"}
-        elif "all" in t or "poori" in t or "sab" in t:
-            return "diary_read", {"mode": "all"}
-        return "diary_read", {"mode": "today"}
-
-    # ── STATUS / BRIEFING ────────────────────────────────────────────
-    status_keywords = ["kya chal", "aaj kya", "status", "briefing", "update", "summary",
-                       "aaj ka", "batao", "kya karna hai", "pending kya", "schedule"]
-    if any(k in t for k in status_keywords):
-        return "briefing", {}
-
-    # No specific intent — normal chat
-    return "chat", {}
-
-
-# ═══════════════════════════════════════════════════════════════════
-# SYSTEM PROMPT
+# SYSTEM PROMPT (for normal chat)
 # ═══════════════════════════════════════════════════════════════════
 def build_system_prompt():
     tp    = tasks.today_pending()
@@ -1204,7 +1009,6 @@ def build_system_prompt():
 
     return (
         f"Tu mera Personal AI Assistant hai — naam 'Dost'. Hamesha Hindi/Hinglish mein baat kar.\n"
-        f"Tera kaam sirf jawab dena nahi — KAAM KARNA hai. User jo bolega woh actually hona chahiye.\n"
         f"⚠️ REAL TIME: {now_ist().strftime('%A, %d %b %Y — %I:%M %p')} IST\n\n"
         f"📋 AAJ KE TASKS ({len(tp)}):\n{tasks_s}\n\n"
         f"💪 HABITS: Done: {h_done} | Baaki: {h_pend}\n\n"
@@ -1214,179 +1018,406 @@ def build_system_prompt():
         f"💧 PAANI: {wt}ml/{wg}ml\n\n"
         f"RULES:\n"
         f"- Dost ki tarah baat kar, Hindi/Hinglish mein SHORT jawab (2-4 lines)\n"
-        f"- Kaam ho gaya toh confirm karo clearly\n"
-        f"- Agar kuch add/save/set hua toh batao ID bhi\n"
-        f"- Commands yaad dilao agar needed: /task /remind /kharcha /diary /habit\n"
-        f"- Koi button use mat karo — sab chat se hoga"
+        f"- Agar koi action ho gaya toh confirm karo clearly\n"
+        f"- Commands bhi yaad dilao agar needed: /task /remind /kharcha /diary /habit"
     )
 
 
 # ═══════════════════════════════════════════════════════════════════
-# AI CHAT — Context-aware with intent detection
+# ACTION SYSTEM — Gemini JSON router (proven from v14)
 # ═══════════════════════════════════════════════════════════════════
-async def ai_chat(user_msg, chat_id=None, user_name=""):
-    # Recent context add karo prompt mein
-    recent = chat_hist.get_recent(6)
-    context_str = ""
-    if recent:
-        context_lines = []
-        for h in recent[-6:]:
-            role_label = "User" if h["role"] == "user" else "Dost"
-            context_lines.append(f"{role_label}: {h['message'][:100]}")
-        context_str = "\n\nHALI BAAT:\n" + "\n".join(context_lines)
 
-    prompt = build_system_prompt() + context_str + f"\n\nUser: {user_msg}\n\nShort Hindi reply:"
-    reply = call_gemini(prompt)
-    if not reply:
+ACTION_SYSTEM_PROMPT = """You are a JSON action router for a personal assistant bot. Parse the user message and return ONLY raw JSON — no markdown, no backticks, no extra text.
+
+Current EXACT time: {now}
+24hr time: {current_time}
+Today: {today}
+2 min from now: {two_min}
+
+JSON format: {{"action":"ACTION","params":{{...}}}}
+
+ACTIONS and when to use them:
+REMIND — User EXPLICITLY asks for reminder/alarm/yaad dilana. params: {{"time":"HH:MM","text":"reminder text","repeat":"once/daily/weekly"}}
+ADD_TASK — User wants to add a task/kaam/todo. params: {{"title":"task title","priority":"high/medium/low"}}
+COMPLETE_TASK — User says task done/complete/ho gaya. params: {{"title_hint":"keyword or id"}}
+ADD_EXPENSE — User mentions spending money/kharcha/rupees. params: {{"amount":number,"desc":"description","category":"general"}}
+ADD_DIARY — User wants to write diary. params: {{"text":"diary text","mood":"😊"}}
+ADD_MEMORY — User says "remember this" or "yaad rakh". params: {{"fact":"the fact"}}
+ADD_HABIT — User wants to add a new habit. params: {{"name":"habit name","emoji":"💪"}}
+COMPLETE_HABIT — User says habit done/ho gayi. params: {{"keyword":"habit name or id"}}
+ADD_WATER — User says water piya/paani piya. params: {{"ml":250}}
+SHOW_TASKS — User asks to see tasks/pending kaam.
+SHOW_REMINDERS — User asks to see reminders.
+SHOW_HABITS — User asks to see habits.
+BRIEFING — User wants daily summary/status/aaj kya hai.
+CHAT — Default for greetings, questions, casual talk, anything else.
+
+IMPORTANT:
+- Time relative to now: "2 min mein" = {two_min}, "30 min mein" = calculate from {current_time}
+- "baje" = clock time (5 baje = 17:00 if evening)
+- Return CHAT for greetings (hello, hi, kaise ho) and general questions
+- Only return REMIND if user explicitly asks for reminder/alarm
+"""
+
+def _regex_fallback(user_msg):
+    """Fallback when Gemini fails — regex-based action detection"""
+    lower = user_msg.lower().strip()
+    now = now_ist()
+
+    # Explicit reminder keywords
+    remind_explicit = [
+        "remind", "reminder", "alarm", "yaad dila", "yaad dilana", "yaad dilao",
+        "alarm laga", "alarm set", "remind kar", "reminder set", "notify",
+        "bata dena", "bhool mat", "wake", "uthana"
+    ]
+    has_time = bool(_re.search(r'(\d{1,2}):(\d{2})', lower))
+    has_minutes = bool(_re.search(r'(\d+)\s*(?:minute|min|mins|minut)', lower))
+    has_hours = bool(_re.search(r'(\d+)\s*(?:ghante|ghanta|hour|hr)', lower))
+    has_baje = bool(_re.search(r'(\d{1,2})\s*(?:baje|bajay|baj)', lower))
+
+    is_explicit_reminder = any(r in lower for r in remind_explicit)
+    should_remind = is_explicit_reminder or (
+        (has_time or has_minutes or has_hours or has_baje) and
+        any(k in lower for k in ["yaad", "remind", "alarm", "bata", "notify"])
+    )
+
+    if should_remind:
+        time_str = None
+        m = _re.search(r'(\d+)\s*(?:minute|min|mins|minut)', lower)
+        if m:
+            time_str = (now + timedelta(minutes=int(m.group(1)))).strftime("%H:%M")
+        if not time_str:
+            m = _re.search(r'(\d+)\s*(?:ghante|ghanta|hour|hr)', lower)
+            if m:
+                time_str = (now + timedelta(hours=int(m.group(1)))).strftime("%H:%M")
+        if not time_str:
+            m = _re.search(r'(\d{1,2}):(\d{2})', lower)
+            if m:
+                h, mn = int(m.group(1)), int(m.group(2))
+                if 0 <= h <= 23 and 0 <= mn <= 59:
+                    time_str = f"{h:02d}:{mn:02d}"
+        if not time_str:
+            m = _re.search(r'(\d{1,2})\s*(?:baje|bajay|baj)', lower)
+            if m:
+                h = int(m.group(1))
+                if any(w in lower for w in ['raat', 'sham', 'evening', 'night', 'pm']):
+                    h = h + 12 if h < 12 else h
+                elif any(w in lower for w in ['subah', 'savere', 'morning', 'am']):
+                    h = h if h < 12 else h - 12
+                else:
+                    h = h + 12 if 1 <= h <= 6 else h
+                time_str = f"{h:02d}:00"
+        if time_str:
+            text = user_msg
+            text = _re.sub(r'\d+\s*(?:minute|min|mins|minut|ghante|ghanta|hour|hr)', '', text, flags=_re.I)
+            text = _re.sub(r'\d{1,2}(?::\d{2})?\s*(?:baje|bajay|baj)?', '', text, flags=_re.I)
+            for kw in remind_explicit + ["baad", "mein", "ke", "liye", "set", "karo", "do", "please", "plz"]:
+                text = text.replace(kw, ' ')
+            text = ' '.join(text.split()).strip()
+            if not text or len(text) < 2:
+                text = "⏰ Reminder!"
+            repeat = "daily" if any(w in lower for w in ["daily", "roz", "har din", "everyday"]) else \
+                     "weekly" if any(w in lower for w in ["weekly", "hafte", "har hafte"]) else "once"
+            return {"action": "REMIND", "params": {"time": time_str, "text": text[:100], "repeat": repeat}}
+
+    # Task detection
+    task_words = ["task add", "add task", "karna hai mujhe", "kaam add", "new task",
+                  "todo add", "task create", "kaam hai", "kaam karna hai"]
+    if any(t in lower for t in task_words):
+        title = _re.sub(
+            r'(task add|add task|karna hai|kaam add|new task|todo add|task create|kaam hai mujhe)', '',
+            user_msg, flags=_re.I
+        ).strip()
+        if title:
+            return {"action": "ADD_TASK", "params": {"title": title[:80], "priority": "medium"}}
+
+    # Task done
+    task_done_words = ["task done", "kaam ho gaya", "ho gaya", "complete kar liya", "kar liya",
+                       "finish ho gaya", "khatam", "mark done", "done kar"]
+    if any(t in lower for t in task_done_words):
+        m = _re.search(r'#?(\d+)', lower)
+        hint = m.group(1) if m else ""
+        return {"action": "COMPLETE_TASK", "params": {"title_hint": hint or lower[:30]}}
+
+    # Habit done
+    habit_done_words = ["habit done", "habit ho gayi", "habit complete", "hdone"]
+    if any(t in lower for t in habit_done_words):
+        m = _re.search(r'#?(\d+)', lower)
+        hint = m.group(1) if m else lower[:30]
+        return {"action": "COMPLETE_HABIT", "params": {"keyword": hint}}
+
+    # Expense detection
+    if any(w in lower for w in ["kharcha", "kharch", "spent", "rupees", "₹", "rs ", "paisa", "paise",
+                                  "khaya", "piya", "kharida", "buy", "bought", "paid", "payment"]):
+        m = _re.search(r'(\d+(?:\.\d+)?)', lower)
+        amount = float(m.group(1)) if m else 0
+        if amount > 0:
+            desc = _re.sub(r'(\d+(?:\.\d+)?|rs\.?|₹|rupees?|rupe|kharcha|kharch|spent|spent on|ke liye|ka|ke|ki|mein|par|pr)', '', user_msg, flags=_re.I).strip()
+            desc = ' '.join(desc.split()).strip() or "Expense"
+            return {"action": "ADD_EXPENSE", "params": {"amount": amount, "desc": desc[:60], "category": "general"}}
+
+    # Water
+    water_words = ["paani piya", "water piya", "paani pi", "water pi", "water log", "paani log"]
+    if any(w in lower for w in water_words):
+        m = _re.search(r'(\d+)\s*(ml|glass|bottle|liter|litre)', lower)
+        ml = 250
+        if m:
+            val, unit = int(m.group(1)), m.group(2)
+            ml = val * 1000 if "liter" in unit or "litre" in unit else \
+                 val * 500 if "bottle" in unit else \
+                 val * 250 if "glass" in unit else val
+        return {"action": "ADD_WATER", "params": {"ml": ml}}
+
+    return {"action": "CHAT", "params": {}}
+
+
+def call_gemini_action(user_msg):
+    """Call Gemini to get JSON action"""
+    now = now_ist()
+    two_min = (now + timedelta(minutes=2)).strftime("%H:%M")
+    prompt = ACTION_SYSTEM_PROMPT.format(
+        now=time_label(),
+        current_time=now.strftime("%H:%M"),
+        today=today_str(),
+        two_min=two_min
+    )
+    full_prompt = f"{prompt}\n\nUser: {user_msg}"
+
+    payload = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": full_prompt}]}],
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 200}
+    }).encode("utf-8")
+
+    for model in ["gemini-2.5-flash-lite", "gemini-2.5-flash"]:
+        try:
+            url = GEMINI_URL.format(model=model, key=GEMINI_API_KEY)
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                raw = raw.replace("```json", "").replace("```", "").strip()
+                json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+                if json_match:
+                    raw = json_match.group(0)
+                parsed = json.loads(raw)
+                log.info(f"✅ Action detected: {parsed.get('action')} via {model}")
+                return parsed
+        except Exception as e:
+            log.warning(f"Action detection fail ({model}): {e}")
+            continue
+
+    return _regex_fallback(user_msg)
+
+
+async def execute_action(action_data, chat_id, user_msg, user_name=""):
+    """Execute the detected action and return reply string"""
+    action = action_data.get("action", "CHAT")
+    params = action_data.get("params", {})
+    now = now_ist()
+    do_backup = True
+
+    if action == "REMIND":
+        time_str = params.get("time", "")
+        text = params.get("text", "⏰ Reminder!")
+        repeat = params.get("repeat", "once")
+        if not time_str or not _re.match(r'^\d{2}:\d{2}$', time_str):
+            do_backup = False
+            return f"⏰ Time samajh nahi aaya! Abhi *{now.strftime('%H:%M')}* baj rahe hain.\nExample: '30 min mein chai yaad dilana'", False
+        r = reminders.add(chat_id, text, time_str, repeat)
+        rl = {"once": "Ek baar 1️⃣", "daily": "Roz 🔁", "weekly": "Har hafte 📅"}.get(repeat, repeat)
+        return (f"✅ *Reminder Set!*\n"
+                f"⏰ *{time_str}* — {text}\n"
+                f"{rl} | 🆔 `#{r['id']}`\n"
+                f"_Delete: /delremind {r['id']}_"), True
+
+    elif action == "ADD_TASK":
+        title = params.get("title", user_msg[:80])
+        priority = params.get("priority", "medium")
+        t = tasks.add(title, priority)
+        icons = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+        return (f"✅ *Task Added!*\n"
+                f"{icons.get(priority,'🟡')} *{t['title']}*\n"
+                f"🆔 `#{t['id']}` | _/done {t['id']} se complete karo_"), True
+
+    elif action == "COMPLETE_TASK":
+        hint = str(params.get("title_hint", "")).lower()
+        pending = tasks.pending()
+        matched = None
+        if hint.isdigit():
+            matched = next((t for t in pending if t["id"] == int(hint)), None)
+        if not matched and hint:
+            matched = next((t for t in pending if hint in t["title"].lower()), None)
+        if not matched and pending:
+            matched = pending[-1]
+        if matched:
+            tasks.complete(matched["id"])
+            return f"🎉 *Done!* ✅\n*{matched['title']}* — Khatam! 💪", True
+        return "❓ Kaunsa task? `/done <id>` se complete karo ya task ka naam batao.", False
+
+    elif action == "ADD_EXPENSE":
+        amount = float(params.get("amount", 0))
+        desc = params.get("desc", "Kharcha")
+        if amount <= 0:
+            return "💰 Amount clear nahi hua. Example: '150 rupees chai pe kharcha'", False
+        expenses.add(amount, desc)
+        bl = expenses.budget_left()
+        budget_line = f"\n💳 Budget baaki: ₹{bl:.0f}" if bl is not None else ""
+        return (f"💰 ₹{amount:.0f} — {desc}\n"
+                f"📊 Aaj total: ₹{expenses.today_total():.0f}{budget_line}"), True
+
+    elif action == "ADD_DIARY":
+        diary.add(params.get("text", user_msg[:200]), params.get("mood", "📝"))
+        return f"📖 *Diary saved!* ✅\n🕐 {now_str()}", True
+
+    elif action == "ADD_MEMORY":
+        memory.add_fact(params.get("fact", user_msg[:200]))
+        return "🧠 *Yaad kar liya!* ✅", True
+
+    elif action == "ADD_HABIT":
+        h = habits.add(params.get("name", user_msg[:50]), params.get("emoji", "✅"))
+        return (f"💪 *Habit Added!*\n"
+                f"{h['emoji']} *{h['name']}*\n"
+                f"🆔 `#{h['id']}` | _/hdone {h['id']} se log karo_"), True
+
+    elif action == "COMPLETE_HABIT":
+        keyword = str(params.get("keyword", "")).lower()
+        hid = None
+        if keyword.isdigit():
+            hid = int(keyword)
+        if hid:
+            ok, streak = habits.log(hid)
+            h_obj = next((h for h in habits.all() if h["id"] == hid), None)
+            h_name = h_obj["name"] if h_obj else f"#{hid}"
+        else:
+            ok, streak, h_obj = habits.log_by_name(keyword)
+            h_name = h_obj["name"] if h_obj else keyword
+        if ok:
+            return f"💪 *{h_name} — Done!* 🔥 {streak} din streak!", True
+        elif h_obj or hid:
+            return f"✅ *{h_name}* — Aaj pehle hi log ho chuka hai!", False
+        else:
+            _, pending_h = habits.today_status()
+            if pending_h:
+                lines = "\n".join(f"⬜ #{h['id']} {h['name']}" for h in pending_h[:5])
+                return f"💪 *Pending habits:*\n\n{lines}\n\n_/hdone <id> likhao_", False
+            return "🎊 Aaj sab habits ho gayi!", False
+
+    elif action == "ADD_WATER":
+        ml = int(params.get("ml", 250))
+        water.add(ml)
+        total = water.today_total()
+        goal = water.goal()
+        pct = int(total / goal * 100) if goal else 0
+        bar = "💧" * min(10, pct // 10) + "⬜" * (10 - min(10, pct // 10))
+        return f"💧 +{ml}ml logged!\n{bar}\n{total}ml / {goal}ml ({pct}%)", True
+
+    elif action == "SHOW_TASKS":
+        pending = tasks.today_pending()
+        if not pending:
+            return "🎉 Koi pending task nahi! Sab clear!", False
+        txt = f"📋 *PENDING ({len(pending)})*\n\n"
+        for t in pending[:10]:
+            txt += f"{'🔴' if t['priority']=='high' else '🟡' if t['priority']=='medium' else '🟢'} *#{t['id']}* {t['title']}\n"
+        txt += "\n_/done <id> se complete karo_"
+        return txt, False
+
+    elif action == "SHOW_REMINDERS":
+        active = reminders.all_active()
+        if not active:
+            return "⏰ Koi active reminder nahi!\n_Example: '30 min mein chai yaad dilana'_", False
+        txt = f"⏰ *REMINDERS ({len(active)})*\n\n"
+        for r in active:
+            icon = "🔁" if r.get("repeat") == "daily" else "📅" if r.get("repeat") == "weekly" else "1️⃣"
+            txt += f"*#{r['id']}* {icon} `{r['time']}` — {r['text']}\n"
+        txt += "\n_/delremind <id> se delete karo_"
+        return txt, False
+
+    elif action == "SHOW_HABITS":
+        all_h = habits.all()
+        hd, hp = habits.today_status()
+        if not all_h:
+            return "💪 Koi habit nahi! `/habit Naam` se add karo.", False
+        txt = f"💪 *HABITS ({len(all_h)})*\n\n"
+        for h in all_h:
+            done = h in hd
+            txt += f"{'✅' if done else '⬜'} *#{h['id']}* {h['emoji']} {h['name']} 🔥{h.get('streak',0)}\n"
+        txt += "\n_/hdone <id> se log karo_"
+        return txt, False
+
+    elif action == "BRIEFING":
         n = now_ist()
-        msg = user_msg.lower()
-        if any(w in msg for w in ["time", "baje", "kitne"]):
-            reply = f"⏰ Abhi *{n.strftime('%I:%M %p')}* baj rahe hain (IST)"
-        elif any(w in msg for w in ["hello", "hi", "assalam", "salam"]):
-            reply = f"🕌 *Assalamualaikum!* Batao kaisi help chahiye?"
-        else:
-            reply = "🙏 Kuch samajh nahi aaya. `/help` try karo!"
-    return reply
+        tp = tasks.today_pending()
+        hd, hp = habits.today_status()
+        today_ev = calendar.today_events()
+        active_rem = reminders.all_active()
+        ev_line = f"\n📅 Events: {', '.join(e['title'] for e in today_ev[:3])}" if today_ev else ""
+        rem_line = f"\n⏰ Reminders: {len(active_rem)} active" if active_rem else ""
+        txt = (f"🌅 *BRIEFING — {n.strftime('%d %b %Y')}*\n"
+               f"⏰ {n.strftime('%I:%M %p')} IST\n\n"
+               f"📋 Tasks pending: {len(tp)}\n"
+               f"💪 Habits done: {len(hd)}/{len(hd)+len(hp)}\n"
+               f"💰 Aaj kharcha: ₹{expenses.today_total():.0f}\n"
+               f"💧 Water: {water.today_total()}ml/{water.goal()}ml"
+               f"{ev_line}{rem_line}")
+        return txt, False
+
+    else:  # CHAT
+        # Auto memory extraction
+        lower = user_msg.lower()
+        mem_triggers = ["yaad rakh", "remember", "mera naam", "meri umar", "birthday",
+                        "anniversary", "deadline", "important", "mera", "meri"]
+        if any(k in lower for k in mem_triggers):
+            memory.add_fact(user_msg[:250])
+
+        # Build context
+        recent = chat_hist.get_recent(6)
+        context_str = ""
+        if recent:
+            context_lines = [
+                f"{'User' if h['role']=='user' else 'Dost'}: {h['message'][:100]}"
+                for h in recent[-6:]
+            ]
+            context_str = "\n\nHALI BAAT:\n" + "\n".join(context_lines)
+
+        prompt = build_system_prompt() + context_str + f"\n\nUser: {user_msg}\n\nShort Hindi reply (2-4 lines):"
+        reply = call_gemini(prompt, max_tokens=400)
+        if not reply:
+            reply = _smart_fallback(user_msg)
+        return reply, False
 
 
-# ═══════════════════════════════════════════════════════════════════
-# COMMAND HANDLERS
-# ═══════════════════════════════════════════════════════════════════
-
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    name = update.effective_user.first_name or "Dost"
+def _smart_fallback(user_msg):
+    msg = user_msg.lower().strip()
     n = now_ist()
-    await update.message.reply_text(
-        f"🕌 *Assalamualaikum {name}!*\n\n"
-        f"⏰ {n.strftime('%I:%M %p')} IST\n"
-        f"📅 {n.strftime('%d %b %Y')}\n\n"
-        f"Main aapka AI Dost hoon! Seedha baat karo — kaam ho jaayega.\n\n"
-        f"Kuch bhi likho jaise:\n"
-        f"• 'Kal meeting hai 3 baje remind karna'\n"
-        f"• 'Exercise kharcha 500 rupees'\n"
-        f"• 'Gym ka kaam add kar'\n\n"
-        f"Ya commands use karo:\n"
-        f"📋 /task /done /habit /remind /kharcha /diary /help",
-        parse_mode="Markdown"
-    )
-    await auto_backup_to_sheets()
-
-
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 *COMMANDS*\n\n"
-        "🗣 *Natural Chat se karo:*\n"
-        "  'Kal 9 baje doctor reminder'\n"
-        "  'Chai pe 50 rupees kharcha'\n"
-        "  '30 min mein meeting yaad dilana'\n"
-        "  'Exercise habit ho gayi aaj'\n\n"
-        "⚡ *Commands:*\n"
-        "`/task Kaam [high/low]` — Task add\n"
-        "`/done <id>` — Task complete\n"
-        "`/deltask <id>` — Task delete\n"
-        "`/habit Naam` — Habit add\n"
-        "`/hdone <id>` — Habit log\n"
-        "`/remind 30m Chai` ya `/remind 15:30 Meeting`\n"
-        "`/kharcha 100 Chai` — Expense\n"
-        "`/budget 5000` — Budget set\n"
-        "`/diary` — Diary (password required)\n"
-        "`/save Aaj ka din...` — Quick diary save\n"
-        "`/water 250` — Paani log\n"
-        "`/goal Title` — Goal add\n"
-        "`/remember Note` — Memory\n"
-        "`/briefing` — Aaj ka summary\n"
-        "`/backup` — Google Sheets sync\n"
-        "`/help` — Ye menu",
-        parse_mode="Markdown"
-    )
-
-
-async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        pending = tasks.pending()
-        if pending:
-            lines = "\n".join(
-                f"{'🔴' if t['priority']=='high' else '🟡' if t['priority']=='medium' else '🟢'} "
-                f"#{t['id']} {t['title']}"
-                for t in pending[:15]
-            )
-            await update.message.reply_text(
-                f"📋 *Pending Tasks ({len(pending)}):*\n\n{lines}\n\n"
-                f"_Complete karne ke liye: /done <id>_",
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text("📋 `/task Kaam [high/low]`", parse_mode="Markdown")
-        return
-    args = " ".join(ctx.args)
-    priority = "medium"
-    if args.endswith(" high"):
-        priority = "high"; args = args[:-5].strip()
-    elif args.endswith(" low"):
-        priority = "low";  args = args[:-4].strip()
-    t = tasks.add(args, priority)
-    e = "🔴" if priority == "high" else "🟡" if priority == "medium" else "🟢"
-    await update.message.reply_text(
-        f"✅ Task added!\n{e} *{t['title']}*\n🆔 `#{t['id']}`",
-        parse_mode="Markdown"
-    )
-    await auto_backup_to_sheets()
-
-
-async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        pending = tasks.pending()
-        if pending:
-            lines = "\n".join(f"#{t['id']} — {t['title']}" for t in pending[:15])
-            await update.message.reply_text(
-                f"📋 *Pending ({len(pending)}):*\n\n{lines}\n\n"
-                f"_Likhao: /done <id>_",
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text("🎉 Koi pending task nahi!")
-        return
-    try:
-        t = tasks.complete(int(ctx.args[0]))
-        await update.message.reply_text(
-            f"🎉 *Done!* ✅\n{t['title']}" if t else "❌ Not found!",
-            parse_mode="Markdown"
-        )
-        await auto_backup_to_sheets()
-    except Exception:
-        await update.message.reply_text("❌ Invalid ID!")
-
-
-async def cmd_deltask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        await update.message.reply_text("`/deltask <id>`")
-        return
-    tasks.delete(int(ctx.args[0]))
-    await update.message.reply_text("🗑 Task deleted!")
-    await auto_backup_to_sheets()
+    if any(w in msg for w in ["time", "kitne baje", "time kya", "time batao"]):
+        return f"⏰ Abhi *{n.strftime('%I:%M %p')}* baj rahe hain (IST)"
+    if any(w in msg for w in ["date", "aaj kya", "tarikh"]):
+        return f"📅 Aaj *{n.strftime('%A, %d %B %Y')}* hai"
+    if any(w in msg for w in ["hello", "hi", "assalam", "namaste", "hey"]):
+        return "🕌 *Assalamualaikum!* Batao kya help chahiye? 😊"
+    if any(w in msg for w in ["kaise ho", "how are", "kya haal"]):
+        return "😊 *Main badiya hoon!* Aap sunao, kya ho raha hai?"
+    if any(w in msg for w in ["thank", "shukriya", "thanks"]):
+        return "🤗 *Welcome!* Aur koi help chahiye toh batao!"
+    if any(w in msg for w in ["bye", "allah hafiz", "good night"]):
+        return "🌙 *Allah Hafiz!* Apna khayal rakhna! 🤗"
+    return "🙏 Batao kya help chahiye? Tasks, reminders, kharcha, ya kuch aur?"
 
 
 # ═══════════════════════════════════════════════════════════════════
-# DIARY — ConversationHandler (password required, no buttons)
+# DIARY — ConversationHandler (password required)
 # ═══════════════════════════════════════════════════════════════════
 
 async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args or []
-
     if not args:
-        await update.message.reply_text(
-            "📖 *Diary*\n\n"
-            "Kya karna hai?\n"
-            "• `/diary` — Aaj ki diary\n"
-            "• `/diary week` — Hafte ki\n"
-            "• `/diary all` — Poori\n"
-            "• `/diary write` — Naya likhna\n\n"
-            "_Password hamesha maanga jaayega_",
-            parse_mode="Markdown"
-        )
         ctx.user_data["diary_mode"] = "view_today"
         await update.message.reply_text(
-            "🔐 *Password daalo:*\n_/cancel se bahar jao_",
+            "🔐 *Diary password daalo:*\n_/cancel se bahar jao_",
             parse_mode="Markdown"
         )
         return DIARY_AWAIT_PASS
@@ -1412,9 +1443,7 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return ConversationHandler.END
-
     entered = update.message.text.strip()
-
     try:
         await update.message.delete()
     except Exception:
@@ -1430,7 +1459,6 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     mode = ctx.user_data.get("diary_mode", "view_today")
-
     if mode == "write":
         pending = ctx.user_data.get("diary_pending_text", "")
         if pending:
@@ -1464,9 +1492,7 @@ async def _do_save_diary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: s
         pass
     try:
         conf_msg = await update.effective_chat.send_message(
-            f"📖 *Diary Saved!* ✅\n"
-            f"🕐 {now_str()}\n\n"
-            f"_{text[:120]}{'...' if len(text) > 120 else ''}_",
+            f"📖 *Diary Saved!* ✅\n🕐 {now_str()}\n\n_{text[:120]}{'...' if len(text) > 120 else ''}_",
             parse_mode="Markdown"
         )
         asyncio.create_task(auto_backup_to_sheets())
@@ -1544,9 +1570,7 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Quick diary save — no password"""
     if not ctx.args:
         await update.message.reply_text(
-            "📖 `/save Aaj ka din acha tha...`\n\n"
-            "_Password ke saath save: /diary write_",
-            parse_mode="Markdown"
+            "📖 `/save Aaj ka din acha tha...`", parse_mode="Markdown"
         )
         return
     text = " ".join(ctx.args)
@@ -1554,8 +1578,120 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# REMAINING COMMANDS
+# COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════════════════
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    name = update.effective_user.first_name or "Dost"
+    n = now_ist()
+    await update.message.reply_text(
+        f"🕌 *Assalamualaikum {name}!*\n\n"
+        f"⏰ {n.strftime('%I:%M %p')} IST\n"
+        f"📅 {n.strftime('%d %b %Y')}\n\n"
+        f"Main aapka AI Dost hoon! Seedha baat karo — REAL kaam hoga.\n\n"
+        f"*Examples:*\n"
+        f"• '2 min mein paani yaad dilana' → ⏰ Reminder set\n"
+        f"• 'Chai pe 50 rupees kharcha' → 💰 Saved\n"
+        f"• 'Gym kaam add karo' → 📋 Task added\n"
+        f"• 'Exercise habit ho gayi' → 💪 Logged\n\n"
+        f"Ya commands: /task /remind /kharcha /diary /habit /help",
+        parse_mode="Markdown"
+    )
+    await auto_backup_to_sheets()
+
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📋 *COMMANDS*\n\n"
+        "🗣 *Natural Chat (seedha type karo):*\n"
+        "  '2 min mein paani yaad dilana'\n"
+        "  'Chai pe 50 rupees kharcha'\n"
+        "  '30 min mein meeting reminder'\n"
+        "  'Exercise habit ho gayi aaj'\n\n"
+        "⚡ *Commands:*\n"
+        "`/task Kaam [high/low]` — Task add\n"
+        "`/done <id>` — Task complete\n"
+        "`/deltask <id>` — Task delete\n"
+        "`/habit Naam` — Habit add\n"
+        "`/hdone <id>` — Habit log\n"
+        "`/remind 30m Chai` ya `/remind 15:30 Meeting`\n"
+        "`/kharcha 100 Chai` — Expense\n"
+        "`/budget 5000` — Budget set\n"
+        "`/diary` — Diary (password required)\n"
+        "`/save Aaj ka din...` — Quick diary\n"
+        "`/water 250` — Paani log\n"
+        "`/goal Title` — Goal add\n"
+        "`/remember Note` — Memory\n"
+        "`/briefing` — Aaj ka summary\n"
+        "`/backup` — Google Sheets sync\n"
+        "`/help` — Ye menu",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        pending = tasks.pending()
+        if pending:
+            lines = "\n".join(
+                f"{'🔴' if t['priority']=='high' else '🟡' if t['priority']=='medium' else '🟢'} "
+                f"#{t['id']} {t['title']}"
+                for t in pending[:15]
+            )
+            await update.message.reply_text(
+                f"📋 *Pending Tasks ({len(pending)}):*\n\n{lines}\n\n"
+                f"_Complete karne ke liye: /done <id>_",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("📋 `/task Kaam [high/low]`", parse_mode="Markdown")
+        return
+    args = " ".join(ctx.args)
+    priority = "medium"
+    if args.endswith(" high"):
+        priority = "high"; args = args[:-5].strip()
+    elif args.endswith(" low"):
+        priority = "low"; args = args[:-4].strip()
+    t = tasks.add(args, priority)
+    e = "🔴" if priority == "high" else "🟡" if priority == "medium" else "🟢"
+    await update.message.reply_text(
+        f"✅ Task added!\n{e} *{t['title']}*\n🆔 `#{t['id']}`",
+        parse_mode="Markdown"
+    )
+    await auto_backup_to_sheets()
+
+
+async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        pending = tasks.pending()
+        if pending:
+            lines = "\n".join(f"#{t['id']} — {t['title']}" for t in pending[:15])
+            await update.message.reply_text(
+                f"📋 *Pending ({len(pending)}):*\n\n{lines}\n\n_/done <id>_",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("🎉 Koi pending task nahi!")
+        return
+    try:
+        t = tasks.complete(int(ctx.args[0]))
+        await update.message.reply_text(
+            f"🎉 *Done!* ✅\n{t['title']}" if t else "❌ Not found!",
+            parse_mode="Markdown"
+        )
+        await auto_backup_to_sheets()
+    except Exception:
+        await update.message.reply_text("❌ Invalid ID!")
+
+
+async def cmd_deltask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("`/deltask <id>`")
+        return
+    tasks.delete(int(ctx.args[0]))
+    await update.message.reply_text("🗑 Task deleted!")
+    await auto_backup_to_sheets()
+
 
 async def cmd_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -1567,8 +1703,7 @@ async def cmd_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 for h in all_h
             )
             await update.message.reply_text(
-                f"💪 *Habits ({len(all_h)}):*\n\n{lines}\n\n"
-                f"_Done karne ke liye: /hdone <id>_",
+                f"💪 *Habits ({len(all_h)}):*\n\n{lines}\n\n_Done karne ke liye: /hdone <id>_",
                 parse_mode="Markdown"
             )
         else:
@@ -1576,7 +1711,7 @@ async def cmd_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     h = habits.add(" ".join(ctx.args))
     await update.message.reply_text(
-        f"💪 Habit added!\n{h['emoji']} *{h['name']}*\n🆔 `#{h['id']}`\n\n_Done karne ke liye: /hdone {h['id']}_",
+        f"💪 Habit added!\n{h['emoji']} *{h['name']}*\n🆔 `#{h['id']}`",
         parse_mode="Markdown"
     )
     await auto_backup_to_sheets()
@@ -1588,7 +1723,7 @@ async def cmd_hdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if pending:
             lines = "\n".join(f"⬜ #{h['id']} {h['name']}" for h in pending)
             await update.message.reply_text(
-                f"💪 *Pending Habits:*\n\n{lines}\n\n_Likhao: /hdone <id>_",
+                f"💪 *Pending Habits:*\n\n{lines}\n\n_/hdone <id>_",
                 parse_mode="Markdown"
             )
         else:
@@ -1597,7 +1732,7 @@ async def cmd_hdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         ok, streak = habits.log(int(ctx.args[0]))
         await update.message.reply_text(
-            f"💪 *Habit Done!* 🔥 {streak} din streak!" if ok else "✅ Already done!",
+            f"💪 *Habit Done!* 🔥 {streak} din streak!" if ok else "✅ Already done today!",
             parse_mode="Markdown"
         )
         await auto_backup_to_sheets()
@@ -1620,9 +1755,8 @@ async def cmd_kharcha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if today_list:
             lines = "\n".join(f"₹{e['amount']:.0f} — {e['desc']}" for e in today_list[-10:])
             await update.message.reply_text(
-                f"💰 *Aaj Ka Kharcha:*\n\n{lines}\n\n"
-                f"*Total: ₹{expenses.today_total():.0f}*\n\n"
-                f"_Add karne ke liye: /kharcha 100 Chai_",
+                f"💰 *Aaj Ka Kharcha:*\n\n{lines}\n\n*Total: ₹{expenses.today_total():.0f}*\n\n"
+                f"_Add: /kharcha 100 Chai_",
                 parse_mode="Markdown"
             )
         else:
@@ -1630,7 +1764,7 @@ async def cmd_kharcha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         amount = float(ctx.args[0])
-        desc   = " ".join(ctx.args[1:])
+        desc = " ".join(ctx.args[1:])
         expenses.add(amount, desc)
         bl = expenses.budget_left()
         budget_line = f"\n💳 Budget baaki: ₹{bl:.0f}" if bl is not None else ""
@@ -1647,12 +1781,10 @@ async def cmd_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         b = expenses.store.data.get("budget", 0)
         bl = expenses.budget_left()
-        await update.message.reply_text(
-            f"💳 *Budget:* ₹{b}\n"
-            f"💰 Is mahine: ₹{expenses.month_total():.0f}\n"
-            f"✅ Baaki: ₹{bl:.0f}" if bl is not None else f"💳 Budget: ₹{b}\n`/budget 5000`",
-            parse_mode="Markdown"
-        )
+        msg = f"💳 *Budget:* ₹{b}\n💰 Is mahine: ₹{expenses.month_total():.0f}"
+        if bl is not None:
+            msg += f"\n✅ Baaki: ₹{bl:.0f}"
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
     expenses.set_budget(float(ctx.args[0]))
     await update.message.reply_text(f"💳 Budget set: ₹{ctx.args[0]}")
@@ -1666,17 +1798,14 @@ async def cmd_goal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines = "\n".join(f"#{g['id']} {g['title']} — {g['progress']}%" for g in active)
             await update.message.reply_text(
                 f"🎯 *Active Goals ({len(active)}):*\n\n{lines}\n\n"
-                f"_Progress update: /gprogress <id> <percent>_",
+                f"_Progress: /gprogress <id> <percent>_",
                 parse_mode="Markdown"
             )
         else:
             await update.message.reply_text("🎯 `/goal Description`")
         return
     g = goals.add(" ".join(ctx.args))
-    await update.message.reply_text(
-        f"🎯 Goal set!\n#{g['id']} {g['title']}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"🎯 Goal set!\n#{g['id']} {g['title']}", parse_mode="Markdown")
     await auto_backup_to_sheets()
 
 
@@ -1720,10 +1849,8 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     hd, hp = habits.today_status()
     today_ev = calendar.today_events()
     active_rem = reminders.all_active()
-
     ev_line = f"\n📅 Events: {', '.join(e['title'] for e in today_ev[:3])}" if today_ev else ""
     rem_line = f"\n⏰ Reminders: {len(active_rem)} active" if active_rem else ""
-
     await update.message.reply_text(
         f"🌅 *BRIEFING — {n.strftime('%d %b %Y')}*\n"
         f"⏰ {n.strftime('%I:%M %p')} IST\n\n"
@@ -1738,7 +1865,6 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_weekly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    n = now_ist()
     tw = tasks.get_weekly_summary()
     await update.message.reply_text(
         f"📊 *WEEKLY SUMMARY*\n\n"
@@ -1757,12 +1883,12 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         datetime.strptime(target, "%Y-%m-%d")
     except ValueError:
-        await update.message.reply_text("❌ Invalid date! Format: YYYY-MM-DD")
+        await update.message.reply_text("❌ Format: YYYY-MM-DD")
         return
     exp_t = sum(e["amount"] for e in expenses.get_by_date(target))
-    hl    = habits.get_logs_by_date(target)
-    hd    = [h for h in habits.all() if h["id"] in hl]
-    wt    = sum(w["ml"] for w in water.get_by_date(target))
+    hl = habits.get_logs_by_date(target)
+    hd = [h for h in habits.all() if h["id"] in hl]
+    wt = sum(w["ml"] for w in water.get_by_date(target))
     await update.message.reply_text(
         f"📋 *REPORT {target}*\n\n"
         f"✅ Tasks done: {len(tasks.done_on(target))}\n"
@@ -1786,10 +1912,7 @@ async def cmd_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"• *{item.findtext('title','')}*"
                 for item in items if item.findtext('title','')
             )
-            await update.message.reply_text(
-                f"📰 *INDIA NEWS*\n\n{lines}",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"📰 *NEWS*\n\n{lines}", parse_mode="Markdown")
     except Exception:
         await update.message.reply_text("📰 News unavailable.")
 
@@ -1804,10 +1927,7 @@ async def cmd_alltasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"#{t['id']} {t['title']}"
         for t in p[:20]
     )
-    await update.message.reply_text(
-        f"📋 *All Pending Tasks ({len(p)}):*\n\n{lines}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"📋 *All Pending ({len(p)}):*\n\n{lines}", parse_mode="Markdown")
 
 
 async def cmd_completed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1816,17 +1936,14 @@ async def cmd_completed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Abhi tak koi task complete nahi!")
         return
     lines = "\n".join(f"✓ #{t['id']} {t['title']}" for t in c[-15:])
-    await update.message.reply_text(
-        f"✅ *Completed ({len(c)}):*\n\n{lines}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"✅ *Completed ({len(c)}):*\n\n{lines}", parse_mode="Markdown")
 
 
 async def cmd_yesterday(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    yd    = yesterday_str()
+    yd = yesterday_str()
     exp_t = sum(e["amount"] for e in expenses.get_by_date(yd))
-    hl    = habits.get_logs_by_date(yd)
-    hd    = [h for h in habits.all() if h["id"] in hl]
+    hl = habits.get_logs_by_date(yd)
+    hd = [h for h in habits.all() if h["id"] in hl]
     await update.message.reply_text(
         f"📅 *Kal ({yd}):*\n\n"
         f"✅ Tasks done: {len(tasks.done_on(yd))}\n"
@@ -1882,9 +1999,7 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     r = reminders.add(update.effective_chat.id, text, remind_at, repeat)
     await update.message.reply_text(
-        f"✅ *Reminder Set!*\n"
-        f"⏰ {remind_at} — {text}\n"
-        f"🆔 `#{r['id']}` | {repeat}",
+        f"✅ *Reminder Set!*\n⏰ {remind_at} — {text}\n🆔 `#{r['id']}` | {repeat}",
         parse_mode="Markdown"
     )
     await auto_backup_to_sheets()
@@ -1900,8 +2015,7 @@ async def cmd_reminders_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for r in active
     )
     await update.message.reply_text(
-        f"⏰ *Active Reminders ({len(active)}):*\n\n{lines}\n\n"
-        f"_Delete: /delremind <id>_",
+        f"⏰ *Active Reminders ({len(active)}):*\n\n{lines}\n\n_Delete: /delremind <id>_",
         parse_mode="Markdown"
     )
 
@@ -1919,9 +2033,9 @@ async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ml = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 250
     water.add(ml)
     total = water.today_total()
-    goal  = water.goal()
-    pct   = int(total / goal * 100) if goal else 0
-    bar   = "💧" * min(10, pct // 10) + "⬜" * (10 - min(10, pct // 10))
+    goal = water.goal()
+    pct = int(total / goal * 100) if goal else 0
+    bar = "💧" * min(10, pct // 10) + "⬜" * (10 - min(10, pct // 10))
     await update.message.reply_text(
         f"💧 +{ml}ml logged!\n{bar}\n{total}ml / {goal}ml ({pct}%)",
         parse_mode="Markdown"
@@ -1931,9 +2045,9 @@ async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_water_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total = water.today_total()
-    goal  = water.goal()
-    pct   = int(total / goal * 100) if goal else 0
-    bar   = "💧" * min(10, pct // 10) + "⬜" * (10 - min(10, pct // 10))
+    goal = water.goal()
+    pct = int(total / goal * 100) if goal else 0
+    bar = "💧" * min(10, pct // 10) + "⬜" * (10 - min(10, pct // 10))
     await update.message.reply_text(
         f"💧 *Water Status*\n{bar}\n{total}ml / {goal}ml ({pct}%)",
         parse_mode="Markdown"
@@ -1943,7 +2057,7 @@ async def cmd_water_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_water_goal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ctx.args and ctx.args[0].isdigit():
         water.set_goal(int(ctx.args[0]))
-        await update.message.reply_text(f"✅ Water goal set: {ctx.args[0]}ml")
+        await update.message.reply_text(f"✅ Water goal: {ctx.args[0]}ml")
     else:
         await update.message.reply_text(f"💧 Current goal: {water.goal()}ml\n`/watergoal 2500`")
 
@@ -1974,8 +2088,7 @@ async def cmd_bills_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for b in all_b
     )
     await update.message.reply_text(
-        f"💳 *Bills ({len(all_b)}):*\n\n{lines}\n\n"
-        f"_Paid mark: /billpaid <id>_",
+        f"💳 *Bills ({len(all_b)}):*\n\n{lines}\n\n_Paid: /billpaid <id>_",
         parse_mode="Markdown"
     )
 
@@ -2009,17 +2122,14 @@ async def cmd_cal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"{'🔴' if e['date']==today_str() else '📆'} {e['date']} — {e['title']}"
                 for e in upcoming[:10]
             )
-            await update.message.reply_text(
-                f"📅 *Upcoming Events:*\n\n{lines}",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"📅 *Upcoming:*\n\n{lines}", parse_mode="Markdown")
         else:
             await update.message.reply_text(f"📅 `/cal {today_str()} Meeting`")
         return
 
     args_str = " ".join(ctx.args)
     date_str = None
-    title    = args_str
+    title = args_str
 
     m = _re.match(r'^(\d{4}-\d{2}-\d{2})\s+(.*)', args_str)
     if m:
@@ -2028,8 +2138,7 @@ async def cmd_cal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if args_str.lower().startswith("aaj "):
             date_str = today_str(); title = args_str[4:]
         elif args_str.lower().startswith("kal "):
-            date_str = (now_ist().date() + timedelta(days=1)).isoformat()
-            title = args_str[4:]
+            date_str = (now_ist().date() + timedelta(days=1)).isoformat(); title = args_str[4:]
     if not date_str:
         await update.message.reply_text("❌ `/cal 2025-07-15 Meeting`")
         return
@@ -2062,10 +2171,7 @@ async def cmd_cal_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'🔴' if e['date']==today_str() else '📆'} {e['date']} — {e['title']}"
         for e in upcoming[:10]
     )
-    await update.message.reply_text(
-        f"📅 *Upcoming Events:*\n\n{lines}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"📅 *Upcoming:*\n\n{lines}", parse_mode="Markdown")
 
 
 async def cmd_del_cal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2094,16 +2200,16 @@ async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_dbstatus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    r  = len(reminders.get_all())
-    t  = len(tasks.all_tasks())
-    d  = sum(len(v) for v in diary.get_all_entries().values())
-    e  = len(expenses.store.data.get("list", []))
+    r = len(reminders.get_all())
+    t = len(tasks.all_tasks())
+    d = sum(len(v) for v in diary.get_all_entries().values())
+    e = len(expenses.store.data.get("list", []))
     ch = len(chat_hist.get_all())
     await update.message.reply_text(
         f"📊 *DB STATUS*\n\n"
         f"Sheets: {'🟢 Connected' if google_sheets.sheet else '🔴 Disconnected'}\n\n"
-        f"Reminders: {r}\nTasks: {t}\nDiary entries: {d}\n"
-        f"Expenses: {e}\nChat history: {ch}",
+        f"Reminders: {r}\nTasks: {t}\nDiary: {d} entries\n"
+        f"Expenses: {e}\nChat: {ch}",
         parse_mode="Markdown"
     )
 
@@ -2114,197 +2220,63 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# MAIN MESSAGE HANDLER — Natural Language Processing
+# MAIN MESSAGE HANDLER — Natural Language → Real Actions
 # ═══════════════════════════════════════════════════════════════════
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user_msg  = update.message.text.strip()
+    user_msg = update.message.text.strip()
     user_name = update.effective_user.first_name or "User"
-    chat_id   = update.effective_chat.id
+    chat_id = update.effective_chat.id
 
     if user_msg.startswith("/"):
         return
 
-    await ctx.bot.send_chat_action(chat_id=chat_id, action="typing")
-
-    # Intent detect karo
-    intent, data = detect_intent(user_msg)
-
-    # ── REMINDER ────────────────────────────────────────────────────
-    if intent == "reminder":
-        time_val  = data.get("time")
-        rem_text  = data.get("text", user_msg)
-        repeat    = data.get("repeat", "once")
-
-        if not time_val:
-            # Time nahi mili — AI se poochho
-            reply = await ai_chat(user_msg, chat_id, user_name)
-            reply += "\n\n_Time format: '30 min mein', '3 baje', '15:30'_"
-        else:
-            r = reminders.add(chat_id, rem_text, time_val, repeat)
-            reply = (
-                f"✅ *Reminder Set!*\n"
-                f"⏰ {time_val} — {rem_text}\n"
-                f"🆔 #{r['id']} | {repeat}"
+    # Diary awaiting pass inline?
+    if ctx.user_data.get("diary_awaiting_pass_inline"):
+        ctx.user_data.pop("diary_awaiting_pass_inline", None)
+        entered = user_msg.strip()
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if entered != DIARY_PASSWORD:
+            await update.effective_chat.send_message(
+                "❌ *Galat Password!*", parse_mode="Markdown"
             )
-            await auto_backup_to_sheets()
-
-    # ── TASK ADD ────────────────────────────────────────────────────
-    elif intent == "task_add":
-        title    = data.get("title", user_msg)
-        priority = data.get("priority", "medium")
-        if len(title) < 2:
-            title = user_msg
-        t = tasks.add(title, priority)
-        e = "🔴" if priority == "high" else "🟡" if priority == "medium" else "🟢"
-        reply = f"✅ Task added!\n{e} *{t['title']}*\n🆔 #{t['id']}"
-        await auto_backup_to_sheets()
-
-    # ── TASK DONE ────────────────────────────────────────────────────
-    elif intent == "task_done":
-        tid = data.get("id")
-        if tid:
-            t = tasks.complete(tid)
-        else:
-            kw = data.get("keyword", "")
-            t  = tasks.complete_by_title(kw) if kw else None
-
-        if t:
-            reply = f"🎉 *Done!* ✅\n{t['title']}"
-            await auto_backup_to_sheets()
-        else:
-            pending = tasks.pending()
-            if pending:
-                lines = "\n".join(f"#{t['id']} {t['title']}" for t in pending[:8])
-                reply = f"📋 *Kaun sa task done hua?*\n\n{lines}\n\n_/done <id> likhao_"
-            else:
-                reply = "Koi pending task nahi!"
-
-    # ── HABIT DONE ────────────────────────────────────────────────────
-    elif intent == "habit_done":
-        hid = data.get("id")
-        if hid:
-            ok, streak = habits.log(hid)
-            h_obj = next((h for h in habits.all() if h["id"] == hid), None)
-            h_name = h_obj["name"] if h_obj else f"#{hid}"
-        else:
-            kw = data.get("keyword", "")
-            result = habits.log_by_name(kw)
-            ok, streak, h_obj = result if len(result) == 3 else (result[0], result[1], None)
-            h_name = h_obj["name"] if h_obj else kw
-
-        if ok:
-            reply = f"💪 *{h_name} done!* 🔥 {streak} din streak!"
-            await auto_backup_to_sheets()
-        else:
-            _, pending = habits.today_status()
-            if pending:
-                lines = "\n".join(f"#{h['id']} {h['name']}" for h in pending[:5])
-                reply = f"⬜ *Pending habits:*\n\n{lines}\n\n_/hdone <id> likhao_"
-            else:
-                reply = "🎊 Sab habits ho gayi aaj!"
-
-    # ── EXPENSE ────────────────────────────────────────────────────
-    elif intent == "expense":
-        amount = data.get("amount")
-        desc   = data.get("desc", "Expense")
-        if amount:
-            expenses.add(amount, desc)
-            bl = expenses.budget_left()
-            budget_line = f"\n💳 Budget baaki: ₹{bl:.0f}" if bl is not None else ""
-            reply = (
-                f"💰 ₹{amount:.0f} — {desc}\n"
-                f"📊 Aaj total: ₹{expenses.today_total():.0f}{budget_line}"
-            )
-            await auto_backup_to_sheets()
-        else:
-            reply = "💰 Amount clear nahi hua.\n_Example: '50 rupees chai pe kharcha'_"
-
-    # ── WATER ────────────────────────────────────────────────────────
-    elif intent == "water":
-        ml    = data.get("ml", 250)
-        water.add(ml)
-        total = water.today_total()
-        goal  = water.goal()
-        pct   = int(total / goal * 100) if goal else 0
-        bar   = "💧" * min(10, pct // 10) + "⬜" * (10 - min(10, pct // 10))
-        reply = f"💧 +{ml}ml!\n{bar}\n{total}ml / {goal}ml ({pct}%)"
-        await auto_backup_to_sheets()
-
-    # ── DIARY READ ────────────────────────────────────────────────────
-    elif intent == "diary_read":
-        mode = data.get("mode", "today")
-        # Diary ke liye password check
-        ctx.user_data["diary_mode"] = f"view_{mode}"
-        await update.message.reply_text(
-            "🔐 *Diary password daalo:*",
-            parse_mode="Markdown"
-        )
-        ctx.user_data["diary_awaiting_pass_inline"] = True
-        chat_hist.add("user", user_msg, user_name)
+            ctx.user_data.pop("diary_mode", None)
+            return
+        mode = ctx.user_data.pop("diary_mode", "view_today")
+        await _show_diary(update, ctx, mode)
         return
 
-    # ── BRIEFING ────────────────────────────────────────────────────
-    elif intent == "briefing":
-        n = now_ist()
-        tp = tasks.today_pending()
-        hd, hp = habits.today_status()
-        reply = (
-            f"🌅 *Aaj Ka Status*\n"
-            f"⏰ {n.strftime('%I:%M %p')}\n\n"
-            f"📋 Tasks pending: {len(tp)}\n"
-            f"💪 Habits done: {len(hd)}/{len(hd)+len(hp)}\n"
-            f"💰 Aaj kharcha: ₹{expenses.today_total():.0f}\n"
-            f"💧 Water: {water.today_total()}ml/{water.goal()}ml\n"
-            f"⏰ Reminders: {len(reminders.all_active())} active"
-        )
+    await ctx.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-    # ── NORMAL AI CHAT ────────────────────────────────────────────────
+    # ════ STEP 1: Call Gemini JSON action router ════
+    if GEMINI_API_KEY:
+        action_data = call_gemini_action(user_msg)
     else:
-        reply = await ai_chat(user_msg, chat_id, user_name)
+        action_data = _regex_fallback(user_msg)
 
-    # Save history
+    log.info(f"📥 '{user_msg[:50]}' → Action: {action_data.get('action','?')}")
+
+    # ════ STEP 2: Execute action ════
+    reply, did_action = await execute_action(action_data, chat_id, user_msg, user_name)
+
+    # ════ STEP 3: Save history ════
     chat_hist.add("user", user_msg, user_name)
     chat_hist.add("assistant", reply, "Bot")
 
+    # ════ STEP 4: Send reply ════
     try:
         await update.message.reply_text(reply, parse_mode="Markdown")
     except Exception:
         await update.message.reply_text(reply)
 
-    await auto_backup_to_sheets()
-
-
-# Inline diary password (outside ConversationHandler)
-async def handle_inline_diary_pass(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Natural language se diary read ke liye password handler"""
-    if not ctx.user_data.get("diary_awaiting_pass_inline"):
-        return False
-
-    if not update.message:
-        return False
-
-    entered = update.message.text.strip()
-    ctx.user_data.pop("diary_awaiting_pass_inline", None)
-
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-
-    if entered != DIARY_PASSWORD:
-        await update.effective_chat.send_message(
-            "❌ *Galat Password!*\n_Dobara: /diary_",
-            parse_mode="Markdown"
-        )
-        ctx.user_data.pop("diary_mode", None)
-        return True
-
-    mode = ctx.user_data.pop("diary_mode", "view_today")
-    await _show_diary(update, ctx, mode)
-    return True
+    # ════ STEP 5: Backup if action was taken ════
+    if did_action:
+        await auto_backup_to_sheets()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2314,7 +2286,6 @@ async def handle_inline_diary_pass(update: Update, ctx: ContextTypes.DEFAULT_TYP
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     now = now_ist()
 
-    # Midnight reset
     if now.hour == 0 and now.minute <= 2:
         reminders.reset_daily()
         log.info("🌙 Midnight: reminders reset")
@@ -2326,21 +2297,31 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
     for r in due:
         try:
+            repeat_note = ""
+            if r.get("repeat") == "daily":
+                repeat_note = "\n🔁 _Kal bhi yaad dilaunga!_"
+            elif r.get("repeat") == "weekly":
+                repeat_note = "\n📅 _Agli hafte!_"
+
+            alert_text = (
+                f"🚨🔔🚨 *ALARM!* 🚨🔔🚨\n"
+                f"{'═'*25}\n"
+                f"⏰ *{r['time']} BAJ GAYE!*\n"
+                f"{'═'*25}\n\n"
+                f"📢 *{r['text'].upper()}*\n\n"
+                f"{repeat_note}\n"
+                f"_Snooze: /remind 10m {r['text'][:30]}_\n"
+                f"_Delete: /delremind {r['id']}_"
+            )
             await context.bot.send_message(
                 chat_id=int(r["chat_id"]),
-                text=(
-                    f"🚨🔔 *ALARM!*\n{'═'*20}\n"
-                    f"⏰ *{r['time']}*\n"
-                    f"📢 *{r['text']}*\n\n"
-                    f"{'🔁 Daily reminder' if r.get('repeat')=='daily' else ''}\n"
-                    f"_Snooze karne ke liye: /remind 10m {r['text']}_\n"
-                    f"_Delete: /delremind {r['id']}_"
-                ),
-                parse_mode="Markdown"
+                text=alert_text,
+                parse_mode="Markdown",
+                disable_notification=False
             )
             reminders.mark_fired(r["id"])
-            log.info(f"  ✅ Fired #{r['id']}: {r['text']}")
-            await asyncio.sleep(0.5)
+            log.info(f"  ✅ Alarm fired #{r['id']}: {r['text']}")
+            await asyncio.sleep(1)
         except Exception as e:
             log.error(f"  ❌ Reminder fire error #{r['id']}: {e}")
 
@@ -2383,7 +2364,7 @@ async def water_reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 text=(
                     f"💧 *Paani Peena Yaad Hai?*\n"
                     f"Abhi tak: {water.today_total()}ml / {water.goal()}ml\n"
-                    f"_'/water' ya '250ml paani piya' likho_"
+                    f"_'paani piya' ya '/water' likho_"
                 ),
                 parse_mode="Markdown"
             )
@@ -2402,19 +2383,20 @@ async def scheduled_backup_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 def main():
     log.info("=" * 60)
-    log.info("🤖 Personal AI Bot v21.0 — Natural Language Mode")
-    log.info("  ✅ No buttons — Sab chat se hoga")
-    log.info("  ✅ Natural language intent detection")
-    log.info("  ✅ Reminders/Alarms background mein")
+    log.info("🤖 Personal AI Bot v22.0 — No Buttons + Real Actions")
+    log.info("  ✅ Gemini JSON action router")
+    log.info("  ✅ Real reminders/tasks/expenses from chat")
+    log.info("  ✅ Background alarms working")
     log.info("  ✅ Google Sheets auto-sync")
-    log.info("  ✅ Diary password flow intact")
+    log.info("  ✅ Diary password flow")
     log.info(f"⏰ IST: {now_ist().strftime('%Y-%m-%d %I:%M:%S %p')}")
+    log.info(f"🤖 Gemini: {'✅' if GEMINI_API_KEY else '❌ (regex fallback)'}")
     log.info(f"📊 Sheets: {'✅ Connected' if google_sheets.sheet else '❌ Not connected'}")
     log.info("=" * 60)
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # ── Step 1: Diary ConversationHandler PEHLE ──────────────────────
+    # Diary ConversationHandler
     diary_conv = ConversationHandler(
         entry_points=[CommandHandler("diary", cmd_diary_entry)],
         states={
@@ -2433,7 +2415,7 @@ def main():
     )
     app.add_handler(diary_conv)
 
-    # ── Step 2: Commands ──────────────────────────────────────────────
+    # Commands
     cmds = [
         ("start",       cmd_start),
         ("help",        cmd_help),
@@ -2478,12 +2460,12 @@ def main():
     for cmd, handler in cmds:
         app.add_handler(CommandHandler(cmd, handler))
 
-    # ── Step 3: General message handler (natural language) ────────────
+    # Natural language handler
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
 
-    # ── Step 4: Background jobs ───────────────────────────────────────
+    # Background jobs
     if app.job_queue:
         app.job_queue.run_repeating(
             reminder_job, interval=60, first=10, name="reminder_check"
@@ -2501,7 +2483,7 @@ def main():
     else:
         log.warning("⚠️ job_queue not available!")
 
-    log.info("✅ Bot ready! Polling shuru...")
+    log.info("✅ Bot v22 ready! Polling shuru...")
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
