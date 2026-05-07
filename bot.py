@@ -2,12 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     PERSONAL AI ASSISTANT — v22.1  NO BUTTONS + REAL ACTIONS   ║
-║  ✅ Google Sheets FIXED — proper segregation                   ║
-║  ✅ Snooze option in alarms                                     ║
-║  ✅ Natural language se REAL kaam hoga                          ║
-║  ✅ Gemini JSON action engine                                   ║
-║  ✅ Background alarms/reminders                                 ║
+║     PERSONAL AI ASSISTANT — v22.2  NO BUTTONS + REAL ACTIONS   ║
+║  ✅ Clear chat option                                          ║
+║  ✅ OK button in alarms (reminder inactive ho jaye)            ║
+║  ✅ Diary auto-delete after save                               ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -27,9 +25,9 @@ try:
 except ImportError:
     HAS_GSHEETS = False
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes, ConversationHandler
 )
 
@@ -453,6 +451,16 @@ class ReminderStore:
                 self.store.save()
                 break
 
+    def deactivate(self, rid, remark="OK pressed"):
+        for r in self.store.data["list"]:
+            if r["id"] == rid and r.get("active"):
+                r["active"] = False
+                r["remarks"] = remark
+                r["last_fired"] = now_ist().isoformat()
+                self.store.save()
+                return True
+        return False
+
     def reset_daily(self):
         for r in self.store.data["list"]:
             r["fired_today"] = False
@@ -641,7 +649,7 @@ calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
 
 # ═══════════════════════════════════════════════════════════════════
-# GOOGLE SHEETS BACKUP — FIXED WITH PROPER SEGREGATION
+# GOOGLE SHEETS BACKUP
 # ═══════════════════════════════════════════════════════════════════
 class GoogleSheetsBackup:
     def __init__(self):
@@ -667,7 +675,6 @@ class GoogleSheetsBackup:
     def ensure_worksheets(self):
         if not self.sheet:
             return
-        # Proper headers for each sheet
         sheet_configs = {
             "Reminders":               ["ID","Time","Text","Repeat","Status","Created Date","Chat ID","Last Fired","Remarks"],
             "Tasks":                   ["ID","Title","Priority","Status","Created Date","Completed Date","Due Date","Tags"],
@@ -693,7 +700,6 @@ class GoogleSheetsBackup:
                     log.warning(f"Could not create worksheet {name}: {e}")
 
     def _clear_and_write(self, ws, rows, headers):
-        """Clear worksheet and write fresh data"""
         try:
             ws.clear()
             if rows:
@@ -934,15 +940,12 @@ class GoogleSheetsBackup:
             return False
 
     def save_chat_history(self):
-        """Save ALL data to Miscellaneous as fallback + segregation"""
         try:
             ws = self.sheet.worksheet("Miscellaneous")
             headers = ["Timestamp","Date","Role","User","Message","Type"]
             
-            # Collect all data from all stores
             all_data = []
             
-            # Chat history
             for h in chat_hist.get_all():
                 all_data.append([
                     h.get("timestamp", ""),
@@ -953,7 +956,6 @@ class GoogleSheetsBackup:
                     "CHAT"
                 ])
             
-            # Tasks
             for t in tasks.all_tasks():
                 all_data.append([
                     t.get("created", ""),
@@ -964,18 +966,17 @@ class GoogleSheetsBackup:
                     "TASK"
                 ])
             
-            # Reminders
             for r in reminders.get_all():
+                status = "Active" if r.get("active") else "Inactive"
                 all_data.append([
                     r.get("date", ""),
                     r.get("date", ""),
                     "SYSTEM",
                     "Reminder",
-                    f"ID:{r.get('id')} Time:{r.get('time')} Text:{r.get('text')} Repeat:{r.get('repeat')} Active:{r.get('active')}",
+                    f"ID:{r.get('id')} Time:{r.get('time')} Text:{r.get('text')} Repeat:{r.get('repeat')} Status:{status} Remarks:{r.get('remarks','')}",
                     "REMINDER"
                 ])
             
-            # Expenses
             for e in expenses.store.data.get("list", []):
                 all_data.append([
                     e.get("date", ""),
@@ -986,7 +987,6 @@ class GoogleSheetsBackup:
                     "EXPENSE"
                 ])
             
-            # Habits
             for h in habits.all():
                 all_data.append([
                     h.get("created", ""),
@@ -997,7 +997,6 @@ class GoogleSheetsBackup:
                     "HABIT"
                 ])
             
-            # Diary
             for edate, entries in diary.get_all_entries().items():
                 for entry in entries:
                     all_data.append([
@@ -1009,7 +1008,6 @@ class GoogleSheetsBackup:
                         "DIARY"
                     ])
             
-            # Goals
             for g in goals.active() + goals.completed():
                 all_data.append([
                     g.get("created", ""),
@@ -1020,7 +1018,6 @@ class GoogleSheetsBackup:
                     "GOAL"
                 ])
             
-            # Bills
             for b in bills.all_active():
                 all_data.append([
                     b.get("created", ""),
@@ -1031,7 +1028,6 @@ class GoogleSheetsBackup:
                     "BILL"
                 ])
             
-            # Calendar events
             for e in calendar.store.data.get("events", []):
                 all_data.append([
                     e.get("created", ""),
@@ -1042,7 +1038,6 @@ class GoogleSheetsBackup:
                     "CALENDAR"
                 ])
             
-            # Memory facts
             for f in memory.get_all_facts():
                 all_data.append([
                     f.get("d", ""),
@@ -1053,7 +1048,6 @@ class GoogleSheetsBackup:
                     "MEMORY"
                 ])
             
-            # Water logs
             for edate, logs in water.store.data.get("logs", {}).items():
                 total = sum(l.get("ml", 0) for l in logs)
                 all_data.append([
@@ -1116,7 +1110,7 @@ async def auto_backup_to_sheets():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SYSTEM PROMPT (for normal chat)
+# SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════
 def build_system_prompt():
     tp    = tasks.today_pending()
@@ -1160,7 +1154,7 @@ def build_system_prompt():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ACTION SYSTEM — Gemini JSON router (proven from v14)
+# ACTION SYSTEM — Gemini JSON router
 # ═══════════════════════════════════════════════════════════════════
 
 ACTION_SYSTEM_PROMPT = """You are a JSON action router for a personal assistant bot. Parse the user message and return ONLY raw JSON — no markdown, no backticks, no extra text.
@@ -1196,11 +1190,9 @@ IMPORTANT:
 """
 
 def _regex_fallback(user_msg):
-    """Fallback when Gemini fails — regex-based action detection"""
     lower = user_msg.lower().strip()
     now = now_ist()
 
-    # Explicit reminder keywords
     remind_explicit = [
         "remind", "reminder", "alarm", "yaad dila", "yaad dilana", "yaad dilao",
         "alarm laga", "alarm set", "remind kar", "reminder set", "notify",
@@ -1256,7 +1248,6 @@ def _regex_fallback(user_msg):
                      "weekly" if any(w in lower for w in ["weekly", "hafte", "har hafte"]) else "once"
             return {"action": "REMIND", "params": {"time": time_str, "text": text[:100], "repeat": repeat}}
 
-    # Task detection
     task_words = ["task add", "add task", "karna hai mujhe", "kaam add", "new task",
                   "todo add", "task create", "kaam hai", "kaam karna hai"]
     if any(t in lower for t in task_words):
@@ -1267,7 +1258,6 @@ def _regex_fallback(user_msg):
         if title:
             return {"action": "ADD_TASK", "params": {"title": title[:80], "priority": "medium"}}
 
-    # Task done
     task_done_words = ["task done", "kaam ho gaya", "ho gaya", "complete kar liya", "kar liya",
                        "finish ho gaya", "khatam", "mark done", "done kar"]
     if any(t in lower for t in task_done_words):
@@ -1275,14 +1265,12 @@ def _regex_fallback(user_msg):
         hint = m.group(1) if m else ""
         return {"action": "COMPLETE_TASK", "params": {"title_hint": hint or lower[:30]}}
 
-    # Habit done
     habit_done_words = ["habit done", "habit ho gayi", "habit complete", "hdone"]
     if any(t in lower for t in habit_done_words):
         m = _re.search(r'#?(\d+)', lower)
         hint = m.group(1) if m else lower[:30]
         return {"action": "COMPLETE_HABIT", "params": {"keyword": hint}}
 
-    # Expense detection
     if any(w in lower for w in ["kharcha", "kharch", "spent", "rupees", "₹", "rs ", "paisa", "paise",
                                   "khaya", "piya", "kharida", "buy", "bought", "paid", "payment"]):
         m = _re.search(r'(\d+(?:\.\d+)?)', lower)
@@ -1292,7 +1280,6 @@ def _regex_fallback(user_msg):
             desc = ' '.join(desc.split()).strip() or "Expense"
             return {"action": "ADD_EXPENSE", "params": {"amount": amount, "desc": desc[:60], "category": "general"}}
 
-    # Water
     water_words = ["paani piya", "water piya", "paani pi", "water pi", "water log", "paani log"]
     if any(w in lower for w in water_words):
         m = _re.search(r'(\d+)\s*(ml|glass|bottle|liter|litre)', lower)
@@ -1308,7 +1295,6 @@ def _regex_fallback(user_msg):
 
 
 def call_gemini_action(user_msg):
-    """Call Gemini to get JSON action"""
     now = now_ist()
     two_min = (now + timedelta(minutes=2)).strftime("%H:%M")
     prompt = ACTION_SYSTEM_PROMPT.format(
@@ -1350,7 +1336,6 @@ def call_gemini_action(user_msg):
 
 
 async def execute_action(action_data, chat_id, user_msg, user_name=""):
-    """Execute the detected action and return reply string"""
     action = action_data.get("action", "CHAT")
     params = action_data.get("params", {})
     now = now_ist()
@@ -1502,14 +1487,12 @@ async def execute_action(action_data, chat_id, user_msg, user_name=""):
         return txt, False
 
     else:  # CHAT
-        # Auto memory extraction
         lower = user_msg.lower()
         mem_triggers = ["yaad rakh", "remember", "mera naam", "meri umar", "birthday",
                         "anniversary", "deadline", "important", "mera", "meri"]
         if any(k in lower for k in mem_triggers):
             memory.add_fact(user_msg[:250])
 
-        # Build context
         recent = chat_hist.get_recent(6)
         context_str = ""
         if recent:
@@ -1545,7 +1528,7 @@ def _smart_fallback(user_msg):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# DIARY — ConversationHandler (password required)
+# DIARY — ConversationHandler (password required) with auto-delete
 # ═══════════════════════════════════════════════════════════════════
 
 async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1601,10 +1584,11 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await _do_save_diary(update, ctx, pending)
             return ConversationHandler.END
         else:
-            await update.effective_chat.send_message(
+            msg = await update.effective_chat.send_message(
                 "✏️ *Diary mein likho:*\n\n_Dil ki baat..._\n_/cancel se bahar_",
                 parse_mode="Markdown"
             )
+            ctx.user_data["diary_prompt_msg_id"] = msg.message_id
             return DIARY_AWAIT_TEXT
     else:
         await _show_diary(update, ctx, mode)
@@ -1615,30 +1599,45 @@ async def diary_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return ConversationHandler.END
     text = update.message.text.strip()
+    
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    
+    prompt_msg_id = ctx.user_data.get("diary_prompt_msg_id")
+    if prompt_msg_id:
+        try:
+            await update.effective_chat.delete_message(prompt_msg_id)
+        except Exception:
+            pass
+        ctx.user_data.pop("diary_prompt_msg_id", None)
+    
     await _do_save_diary(update, ctx, text)
     return ConversationHandler.END
 
 
 async def _do_save_diary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str):
     diary.add(text, mood="📝")
-    try:
-        if update.message:
-            await update.message.delete()
-    except Exception:
-        pass
+    
     try:
         conf_msg = await update.effective_chat.send_message(
             f"📖 *Diary Saved!* ✅\n🕐 {now_str()}\n\n_{text[:120]}{'...' if len(text) > 120 else ''}_",
             parse_mode="Markdown"
         )
         asyncio.create_task(auto_backup_to_sheets())
-        await asyncio.sleep(4)
-        try:
-            await conf_msg.delete()
-        except Exception:
-            pass
+        
+        async def delete_msg():
+            await asyncio.sleep(3)
+            try:
+                await conf_msg.delete()
+            except Exception:
+                pass
+        asyncio.create_task(delete_msg())
+        
     except Exception as e:
         log.error(f"_do_save_diary error: {e}")
+    
     ctx.user_data.pop("diary_mode", None)
     ctx.user_data.pop("diary_pending_text", None)
 
@@ -1697,25 +1696,56 @@ async def _show_diary(update: Update, ctx: ContextTypes.DEFAULT_TYPE, mode: str)
 async def diary_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop("diary_mode", None)
     ctx.user_data.pop("diary_pending_text", None)
+    ctx.user_data.pop("diary_prompt_msg_id", None)
     if update.message:
         await update.message.reply_text("⏱ Diary cancel. _Dobara: /diary_")
     return ConversationHandler.END
 
 
 async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Quick diary save — no password"""
+    """Quick diary save — auto-delete after save"""
     if not ctx.args:
         await update.message.reply_text(
             "📖 `/save Aaj ka din acha tha...`", parse_mode="Markdown"
         )
         return
     text = " ".join(ctx.args)
-    await _do_save_diary(update, ctx, text)
+    
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    
+    diary.add(text, mood="📝")
+    
+    conf_msg = await update.effective_chat.send_message(
+        f"📖 *Diary Saved!* ✅\n🕐 {now_str()}\n\n_{text[:120]}{'...' if len(text) > 120 else ''}_",
+        parse_mode="Markdown"
+    )
+    
+    async def delete_msg():
+        await asyncio.sleep(3)
+        try:
+            await conf_msg.delete()
+        except Exception:
+            pass
+    asyncio.create_task(delete_msg())
+    await auto_backup_to_sheets()
 
 
 # ═══════════════════════════════════════════════════════════════════
 # COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════════════════
+
+async def cmd_clearchat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Clear chat history"""
+    count = chat_hist.clear()
+    await update.message.reply_text(
+        f"🧹 *Chat history cleared!*\n{count} messages deleted.",
+        parse_mode="Markdown"
+    )
+    await auto_backup_to_sheets()
+
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Dost"
@@ -1754,12 +1784,13 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/kharcha 100 Chai` — Expense\n"
         "`/budget 5000` — Budget set\n"
         "`/diary` — Diary (password required)\n"
-        "`/save Aaj ka din...` — Quick diary\n"
+        "`/save Aaj ka din...` — Quick diary (auto-delete)\n"
         "`/water 250` — Paani log\n"
         "`/goal Title` — Goal add\n"
         "`/remember Note` — Memory\n"
         "`/briefing` — Aaj ka summary\n"
         "`/backup` — Google Sheets sync\n"
+        "`/clearchat` — Clear chat history\n"
         "`/help` — Ye menu",
         parse_mode="Markdown"
     )
@@ -2356,10 +2387,35 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SNOOZE COMMAND HANDLER (NEW)
+# OK BUTTON HANDLER FOR ALARMS
+# ═══════════════════════════════════════════════════════════════════
+async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if data.startswith("ok_reminder_"):
+        reminder_id = int(data.split("_")[2])
+        
+        if reminders.deactivate(reminder_id, "User pressed OK"):
+            await query.edit_message_text(
+                text=f"✅ *Reminder Acknowledged!*\n\n"
+                     f"Alarm has been dismissed.\n"
+                     f"📝 Remark: User pressed OK",
+                parse_mode="Markdown"
+            )
+            await auto_backup_to_sheets()
+        else:
+            await query.edit_message_text(
+                text="⚠️ Reminder already dismissed or not found.",
+                parse_mode="Markdown"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SNOOZE COMMAND HANDLER
 # ═══════════════════════════════════════════════════════════════════
 async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Snooze a reminder by ID with specified minutes"""
     if len(ctx.args) < 2:
         await update.message.reply_text(
             "⏸️ `/snooze5 <reminder_id>` ya `/snooze10 <reminder_id>`\n"
@@ -2368,7 +2424,6 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Parse command like "snooze5" -> 5 minutes
     cmd_text = ctx.args[0].lower()
     snooze_min = None
     if "snooze5" in cmd_text or cmd_text == "5":
@@ -2380,7 +2435,7 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif "snooze60" in cmd_text or cmd_text == "60":
         snooze_min = 60
     else:
-        snooze_min = 10  # default
+        snooze_min = 10
     
     reminder_id = int(ctx.args[1]) if len(ctx.args) > 1 else None
     
@@ -2388,7 +2443,6 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Reminder ID do! Example: `/snooze10 123`")
         return
     
-    # Find the reminder
     all_reminders = reminders.get_all()
     target = None
     for r in all_reminders:
@@ -2400,11 +2454,9 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Reminder #{reminder_id} nahi mila!")
         return
     
-    # Calculate new time
     now = now_ist()
     new_time = (now + timedelta(minutes=snooze_min)).strftime("%H:%M")
     
-    # Create snoozed reminder (new one)
     new_rem = reminders.add(
         chat_id=target["chat_id"],
         text=f"[SNOOZED] {target['text']}",
@@ -2412,7 +2464,6 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         repeat="once"
     )
     
-    # Deactivate old reminder
     for r in reminders.get_all():
         if r["id"] == reminder_id:
             r["active"] = False
@@ -2443,7 +2494,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if user_msg.startswith("/"):
         return
 
-    # Diary awaiting pass inline?
     if ctx.user_data.get("diary_awaiting_pass_inline"):
         ctx.user_data.pop("diary_awaiting_pass_inline", None)
         entered = user_msg.strip()
@@ -2463,7 +2513,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await ctx.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-    # ════ STEP 1: Call Gemini JSON action router ════
     if GEMINI_API_KEY:
         action_data = call_gemini_action(user_msg)
     else:
@@ -2471,20 +2520,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     log.info(f"📥 '{user_msg[:50]}' → Action: {action_data.get('action','?')}")
 
-    # ════ STEP 2: Execute action ════
     reply, did_action = await execute_action(action_data, chat_id, user_msg, user_name)
 
-    # ════ STEP 3: Save history ════
     chat_hist.add("user", user_msg, user_name)
     chat_hist.add("assistant", reply, "Bot")
 
-    # ════ STEP 4: Send reply ════
     try:
         await update.message.reply_text(reply, parse_mode="Markdown")
     except Exception:
         await update.message.reply_text(reply)
 
-    # ════ STEP 5: Backup if action was taken ════
     if did_action:
         await auto_backup_to_sheets()
 
@@ -2513,7 +2558,11 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             elif r.get("repeat") == "weekly":
                 repeat_note = "\n📅 _Agli hafte!_"
 
-            # 🔔 ALARM WITH SNOOZE OPTIONS 🔔
+            # Create inline keyboard with OK button
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ OK", callback_data=f"ok_reminder_{r['id']}")]
+            ])
+
             alert_text = (
                 f"🚨🔔🚨 *ALARM!* 🚨🔔🚨\n"
                 f"{'═'*25}\n"
@@ -2534,6 +2583,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=int(r["chat_id"]),
                 text=alert_text,
                 parse_mode="Markdown",
+                reply_markup=keyboard,
                 disable_notification=False
             )
             reminders.mark_fired(r["id"])
@@ -2600,12 +2650,13 @@ async def scheduled_backup_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 def main():
     log.info("=" * 60)
-    log.info("🤖 Personal AI Bot v22.1 — Google Sheets Fixed + Snooze")
+    log.info("🤖 Personal AI Bot v22.2 — Clear Chat + OK Button + Diary Auto-Delete")
     log.info("  ✅ Gemini JSON action router")
     log.info("  ✅ Real reminders/tasks/expenses from chat")
-    log.info("  ✅ Background alarms working with SNOOZE")
-    log.info("  ✅ Google Sheets auto-sync (proper segregation)")
-    log.info("  ✅ Diary password flow")
+    log.info("  ✅ Background alarms with OK button & SNOOZE")
+    log.info("  ✅ Google Sheets auto-sync")
+    log.info("  ✅ Diary auto-delete after save")
+    log.info("  ✅ Clear chat history command")
     log.info(f"⏰ IST: {now_ist().strftime('%Y-%m-%d %I:%M:%S %p')}")
     log.info(f"🤖 Gemini: {'✅' if GEMINI_API_KEY else '❌ (regex fallback)'}")
     log.info(f"📊 Sheets: {'✅ Connected' if google_sheets.sheet else '❌ Not connected'}")
@@ -2672,6 +2723,7 @@ def main():
         ("backup",      cmd_backup),
         ("dbstatus",    cmd_dbstatus),
         ("clear",       cmd_clear),
+        ("clearchat",   cmd_clearchat),
         ("save",        cmd_save),
         ("snooze5",     cmd_snooze),
         ("snooze10",    cmd_snooze),
@@ -2680,6 +2732,9 @@ def main():
     ]
     for cmd, handler in cmds:
         app.add_handler(CommandHandler(cmd, handler))
+
+    # Callback query handler for OK button
+    app.add_handler(CallbackQueryHandler(handle_ok_button))
 
     # Natural language handler
     app.add_handler(
@@ -2704,7 +2759,7 @@ def main():
     else:
         log.warning("⚠️ job_queue not available!")
 
-    log.info("✅ Bot v22.1 ready! Polling shuru...")
+    log.info("✅ Bot v22.2 ready! Polling shuru...")
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
