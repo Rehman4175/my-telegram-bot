@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     PERSONAL AI ASSISTANT — v22.0  NO BUTTONS + REAL ACTIONS   ║
-║  ✅ Natural language se REAL kaam hoga — sirf reply nahi        ║
-║  ✅ Reminders actually set honge, tasks actually add honge      ║
-║  ✅ Google Sheets sync intact                                   ║
-║  ✅ Gemini JSON action engine (old v14 proven system)           ║
-║  ✅ Diary password flow                                         ║
+║     PERSONAL AI ASSISTANT — v22.1  NO BUTTONS + REAL ACTIONS   ║
+║  ✅ Google Sheets FIXED — proper segregation                   ║
+║  ✅ Snooze option in alarms                                     ║
+║  ✅ Natural language se REAL kaam hoga                          ║
+║  ✅ Gemini JSON action engine                                   ║
 ║  ✅ Background alarms/reminders                                 ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -642,7 +641,7 @@ calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
 
 # ═══════════════════════════════════════════════════════════════════
-# GOOGLE SHEETS BACKUP
+# GOOGLE SHEETS BACKUP — FIXED WITH PROPER SEGREGATION
 # ═══════════════════════════════════════════════════════════════════
 class GoogleSheetsBackup:
     def __init__(self):
@@ -668,6 +667,7 @@ class GoogleSheetsBackup:
     def ensure_worksheets(self):
         if not self.sheet:
             return
+        # Proper headers for each sheet
         sheet_configs = {
             "Reminders":               ["ID","Time","Text","Repeat","Status","Created Date","Chat ID","Last Fired","Remarks"],
             "Tasks":                   ["ID","Title","Priority","Status","Created Date","Completed Date","Due Date","Tags"],
@@ -677,10 +677,10 @@ class GoogleSheetsBackup:
             "Memory / Important Notes":["Date","Category","Content","Tags","Priority"],
             "Daily_Logs":              ["Date","Tasks Done","Tasks Pending","Expenses (Rs)","Reminders Active","Habits Done","Water ML","Mood","Notes"],
             "Goals":                   ["ID","Title","Progress %","Status","Deadline","Created Date","Milestones"],
-            "Bills & Subscriptions":   ["ID","Name","Amount (₹)","Due Date","Auto-pay","Paid Status","Payment Method","Notes"],
+            "Bills & Subscriptions":   ["ID","Name","Amount (₹)","Due Day","Auto-pay","Paid Status","Payment Method","Notes"],
             "Calendar Events":         ["Date","Time","Event Title","Location","Reminder Set","Participants","Notes"],
             "Diary":                   ["Date","Time","Content","Mood"],
-            "Miscellaneous":           ["Timestamp","Date","Role","User","Message"],
+            "Miscellaneous":           ["Timestamp","Date","Role","User","Message","Type"],
         }
         existing_ws = {ws.title: ws for ws in self.sheet.worksheets()}
         for name, headers in sheet_configs.items():
@@ -692,187 +692,217 @@ class GoogleSheetsBackup:
                 except Exception as e:
                     log.warning(f"Could not create worksheet {name}: {e}")
 
-    def _upsert_by_id(self, ws, rows, id_col=0):
+    def _clear_and_write(self, ws, rows, headers):
+        """Clear worksheet and write fresh data"""
         try:
-            existing = ws.get_all_values()
-            key_to_row = {}
-            for i, row in enumerate(existing[1:], start=2):
-                if row and len(row) > id_col and row[id_col]:
-                    key_to_row[str(row[id_col]).strip()] = i
-            updates, appends = [], []
-            for row in rows:
-                key = str(row[id_col]).strip() if row else ""
-                if key and key in key_to_row:
-                    updates.append((key_to_row[key], row))
-                else:
-                    appends.append(row)
-            if updates:
-                batch = []
-                for row_num, data in updates:
-                    col_end = chr(ord("A") + len(data) - 1)
-                    batch.append({
-                        "range": f"A{row_num}:{col_end}{row_num}",
-                        "values": [data]
-                    })
-                ws.batch_update(batch)
-            for row in appends:
-                ws.append_row(row, value_input_option="USER_ENTERED")
+            ws.clear()
+            if rows:
+                ws.update('A1', [headers] + rows, value_input_option="USER_ENTERED")
+            else:
+                ws.update('A1', [headers])
+            return True
         except Exception as e:
-            log.warning(f"_upsert_by_id error: {e}")
-
-    def _append_unique(self, ws, rows, key_cols):
-        try:
-            existing = ws.get_all_values()
-            existing_keys = set()
-            for row in existing[1:]:
-                key = "|".join(str(row[c]) if len(row) > c else "" for c in key_cols)
-                existing_keys.add(key)
-            new_rows = []
-            for row in rows:
-                key = "|".join(str(row[c]) if len(row) > c else "" for c in key_cols)
-                if key not in existing_keys:
-                    new_rows.append(row)
-                    existing_keys.add(key)
-            for row in new_rows:
-                ws.append_row(row, value_input_option="USER_ENTERED")
-        except Exception as e:
-            log.warning(f"_append_unique error: {e}")
+            log.warning(f"_clear_and_write error: {e}")
+            return False
 
     def save_tasks(self):
         try:
             ws = self.sheet.worksheet("Tasks")
+            headers = ["ID","Title","Priority","Status","Created Date","Completed Date","Due Date","Tags"]
             rows = [
-                [str(t.get("id","")), t.get("title",""), t.get("priority","medium"),
-                 "Done" if t.get("done") else "Pending",
-                 t.get("created",""), t.get("done_date",""),
-                 t.get("due",""), t.get("tags","")]
+                [
+                    str(t.get("id","")),
+                    t.get("title",""),
+                    t.get("priority","medium"),
+                    "Done" if t.get("done") else "Pending",
+                    t.get("created",""),
+                    t.get("done_date",""),
+                    t.get("due",""),
+                    t.get("tags","")
+                ]
                 for t in tasks.all_tasks()
             ]
-            if rows: self._upsert_by_id(ws, rows, 0)
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_tasks: {e}"); return False
+            log.warning(f"save_tasks: {e}")
+            return False
 
     def save_reminders(self):
         try:
             ws = self.sheet.worksheet("Reminders")
+            headers = ["ID","Time","Text","Repeat","Status","Created Date","Chat ID","Last Fired","Remarks"]
             rows = [
-                [str(r.get("id","")), r.get("time",""), r.get("text",""),
-                 r.get("repeat","once"),
-                 "Active" if r.get("active") else "Inactive",
-                 r.get("date",""), str(r.get("chat_id","")),
-                 r.get("last_fired",""), r.get("remarks","")]
+                [
+                    str(r.get("id","")),
+                    r.get("time",""),
+                    r.get("text",""),
+                    r.get("repeat","once"),
+                    "Active" if r.get("active") else "Inactive",
+                    r.get("date",""),
+                    str(r.get("chat_id","")),
+                    r.get("last_fired",""),
+                    r.get("remarks","")
+                ]
                 for r in reminders.get_all()
             ]
-            if rows: self._upsert_by_id(ws, rows, 0)
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_reminders: {e}"); return False
+            log.warning(f"save_reminders: {e}")
+            return False
 
     def save_expenses(self):
         try:
             ws = self.sheet.worksheet("Expenses")
+            headers = ["Date","Amount (Rs)","Description","Category","Time"]
             rows = [
-                [e.get("date",""), e.get("amount",0),
-                 e.get("desc",""), e.get("category","general"), e.get("time","")]
+                [
+                    e.get("date",""),
+                    e.get("amount",0),
+                    e.get("desc",""),
+                    e.get("category","general"),
+                    e.get("time","")
+                ]
                 for e in expenses.store.data.get("list", [])
             ]
-            if rows: self._append_unique(ws, rows, [0, 1, 2])
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_expenses: {e}"); return False
+            log.warning(f"save_expenses: {e}")
+            return False
 
     def save_habits(self):
         try:
             ws = self.sheet.worksheet("Habits")
+            headers = ["ID","Habit Name","Emoji","Streak","Best Streak","Created Date","Target (per day)"]
             rows = [
-                [str(h.get("id","")), h.get("name",""), h.get("emoji","✅"),
-                 h.get("streak",0), h.get("best_streak",0),
-                 h.get("created",""), h.get("target","")]
+                [
+                    str(h.get("id","")),
+                    h.get("name",""),
+                    h.get("emoji","✅"),
+                    h.get("streak",0),
+                    h.get("best_streak",0),
+                    h.get("created",""),
+                    h.get("target","")
+                ]
                 for h in habits.all()
             ]
-            if rows: self._upsert_by_id(ws, rows, 0)
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_habits: {e}"); return False
+            log.warning(f"save_habits: {e}")
+            return False
 
     def save_memory(self):
         try:
             ws = self.sheet.worksheet("Memory / Important Notes")
+            headers = ["Date","Category","Content","Tags","Priority"]
             rows = [
-                [f.get("d",""), "Fact", f.get("f",""), "", "Medium"]
+                [
+                    f.get("d",""),
+                    "Fact",
+                    f.get("f",""),
+                    "",
+                    "Medium"
+                ]
                 for f in memory.get_all_facts()
             ]
-            if rows: self._append_unique(ws, rows, [0, 2])
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_memory: {e}"); return False
+            log.warning(f"save_memory: {e}")
+            return False
 
     def save_goals(self):
         try:
             ws = self.sheet.worksheet("Goals")
+            headers = ["ID","Title","Progress %","Status","Deadline","Created Date","Milestones"]
             rows = [
-                [str(g.get("id","")), g.get("title",""), g.get("progress",0),
-                 "Done" if g.get("done") else "Active",
-                 g.get("deadline",""), g.get("created",""), g.get("milestones","")]
+                [
+                    str(g.get("id","")),
+                    g.get("title",""),
+                    g.get("progress",0),
+                    "Done" if g.get("done") else "Active",
+                    g.get("deadline",""),
+                    g.get("created",""),
+                    g.get("milestones","")
+                ]
                 for g in goals.active() + goals.completed()
             ]
-            if rows: self._upsert_by_id(ws, rows, 0)
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_goals: {e}"); return False
+            log.warning(f"save_goals: {e}")
+            return False
 
     def save_bills(self):
         try:
             ws = self.sheet.worksheet("Bills & Subscriptions")
+            headers = ["ID","Name","Amount (₹)","Due Day","Auto-pay","Paid Status","Payment Method","Notes"]
             rows = [
-                [str(b.get("id","")), b.get("name",""), b.get("amount",0),
-                 str(b.get("due_day","")), b.get("auto_pay","No"),
-                 "Paid" if bills.is_paid_this_month(b["id"]) else "Pending",
-                 b.get("payment_method",""), b.get("notes","")]
+                [
+                    str(b.get("id","")),
+                    b.get("name",""),
+                    b.get("amount",0),
+                    str(b.get("due_day","")),
+                    b.get("auto_pay","No"),
+                    "Paid" if bills.is_paid_this_month(b["id"]) else "Pending",
+                    b.get("payment_method",""),
+                    b.get("notes","")
+                ]
                 for b in bills.all_active()
             ]
-            if rows: self._upsert_by_id(ws, rows, 0)
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_bills: {e}"); return False
+            log.warning(f"save_bills: {e}")
+            return False
 
     def save_calendar(self):
         try:
             ws = self.sheet.worksheet("Calendar Events")
+            headers = ["Date","Time","Event Title","Location","Reminder Set","Participants","Notes"]
             rows = [
-                [e.get("date",""), e.get("time",""), e.get("title",""),
-                 e.get("location",""), e.get("reminder_set","Yes"),
-                 e.get("participants",""), e.get("notes","")]
+                [
+                    e.get("date",""),
+                    e.get("time",""),
+                    e.get("title",""),
+                    e.get("location",""),
+                    e.get("reminder_set","Yes"),
+                    e.get("participants",""),
+                    e.get("notes","")
+                ]
                 for e in calendar.store.data.get("events", [])
             ]
-            if rows: self._append_unique(ws, rows, [0, 2])
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_calendar: {e}"); return False
+            log.warning(f"save_calendar: {e}")
+            return False
 
     def save_water(self):
         try:
             ws = self.sheet.worksheet("Water Intake")
+            headers = ["Date","Total ML","Goal ML","Percentage","Glasses (250ml)","Hourly Logs"]
             goal_ml = water.goal()
             week = water.week_summary()
             rows = []
             for d, total_ml in sorted(week.items()):
                 pct = int(total_ml / goal_ml * 100) if goal_ml else 0
                 rows.append([d, total_ml, goal_ml, f"{pct}%", total_ml // 250, ""])
-            if rows: self._upsert_by_id(ws, rows, 0)
-            return True
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_water: {e}"); return False
+            log.warning(f"save_water: {e}")
+            return False
 
     def save_daily_log(self):
         try:
             ws = self.sheet.worksheet("Daily_Logs")
+            headers = ["Date","Tasks Done","Tasks Pending","Expenses (Rs)","Reminders Active","Habits Done","Water ML","Mood","Notes"]
             today = today_str()
             row = [
-                today, len(tasks.done_on(today)), len(tasks.today_pending()),
-                expenses.today_total(), len(reminders.all_active()),
-                len(habits.today_status()[0]), water.today_total(), "", ""
+                today,
+                len(tasks.done_on(today)),
+                len(tasks.today_pending()),
+                expenses.today_total(),
+                len(reminders.all_active()),
+                len(habits.today_status()[0]),
+                water.today_total(),
+                "",
+                ""
             ]
             all_vals = ws.get_all_values()
             for i, r in enumerate(all_vals):
@@ -882,58 +912,164 @@ class GoogleSheetsBackup:
             ws.append_row(row, value_input_option="USER_ENTERED")
             return True
         except Exception as e:
-            log.warning(f"save_daily_log: {e}"); return False
+            log.warning(f"save_daily_log: {e}")
+            return False
 
     def save_diary(self):
         try:
             ws = self.sheet.worksheet("Diary")
-            existing = ws.get_all_values()
-            existing_keys = set()
-            for row in existing[1:]:
-                if row and row[0]:
-                    key = f"{row[0]}|{row[1] if len(row)>1 else ''}|{row[2][:50] if len(row)>2 else ''}"
-                    existing_keys.add(key)
-            new_rows = []
+            headers = ["Date","Time","Content","Mood"]
+            rows = []
             for edate in sorted(diary.get_all_entries().keys()):
                 for entry in diary.get_all_entries()[edate]:
-                    key = f"{edate}|{entry.get('time','')}|{entry.get('text','')[:50]}"
-                    if key not in existing_keys:
-                        new_rows.append([
-                            edate, entry.get("time",""),
-                            entry.get("text",""), entry.get("mood","📝")
-                        ])
-                        existing_keys.add(key)
-            for row in new_rows:
-                ws.append_row(row, value_input_option="USER_ENTERED")
-            return True
+                    rows.append([
+                        edate,
+                        entry.get("time",""),
+                        entry.get("text",""),
+                        entry.get("mood","📝")
+                    ])
+            return self._clear_and_write(ws, rows, headers)
         except Exception as e:
-            log.warning(f"save_diary: {e}"); return False
+            log.warning(f"save_diary: {e}")
+            return False
 
     def save_chat_history(self):
+        """Save ALL data to Miscellaneous as fallback + segregation"""
         try:
             ws = self.sheet.worksheet("Miscellaneous")
-            existing = ws.get_all_values()
-            existing_keys = set()
-            for row in existing[1:]:
-                if row and len(row) >= 5 and row[0]:
-                    key = f"{row[0]}|{row[2]}|{row[4][:80] if len(row) > 4 else ''}"
-                    existing_keys.add(key)
-            all_history = chat_hist.get_all()
-            new_rows = []
-            for h in all_history:
-                ts   = h.get("timestamp", "")
-                role = h.get("role", "")
-                msg  = h.get("message", "")
-                key  = f"{ts}|{role}|{msg[:80]}"
-                if key not in existing_keys:
-                    new_rows.append([ts, h.get("date",""), role, h.get("user",""), msg])
-                    existing_keys.add(key)
-            if new_rows:
-                for row in new_rows:
-                    ws.append_row(row, value_input_option="USER_ENTERED")
-            return True
+            headers = ["Timestamp","Date","Role","User","Message","Type"]
+            
+            # Collect all data from all stores
+            all_data = []
+            
+            # Chat history
+            for h in chat_hist.get_all():
+                all_data.append([
+                    h.get("timestamp", ""),
+                    h.get("date", ""),
+                    h.get("role", ""),
+                    h.get("user", ""),
+                    h.get("message", ""),
+                    "CHAT"
+                ])
+            
+            # Tasks
+            for t in tasks.all_tasks():
+                all_data.append([
+                    t.get("created", ""),
+                    t.get("created", ""),
+                    "SYSTEM",
+                    "Task",
+                    f"ID:{t.get('id')} Title:{t.get('title')} Priority:{t.get('priority')} Status:{'Done' if t.get('done') else 'Pending'}",
+                    "TASK"
+                ])
+            
+            # Reminders
+            for r in reminders.get_all():
+                all_data.append([
+                    r.get("date", ""),
+                    r.get("date", ""),
+                    "SYSTEM",
+                    "Reminder",
+                    f"ID:{r.get('id')} Time:{r.get('time')} Text:{r.get('text')} Repeat:{r.get('repeat')} Active:{r.get('active')}",
+                    "REMINDER"
+                ])
+            
+            # Expenses
+            for e in expenses.store.data.get("list", []):
+                all_data.append([
+                    e.get("date", ""),
+                    e.get("date", ""),
+                    "SYSTEM",
+                    "Expense",
+                    f"Amount:{e.get('amount')} Desc:{e.get('desc')} Category:{e.get('category')}",
+                    "EXPENSE"
+                ])
+            
+            # Habits
+            for h in habits.all():
+                all_data.append([
+                    h.get("created", ""),
+                    h.get("created", ""),
+                    "SYSTEM",
+                    "Habit",
+                    f"ID:{h.get('id')} Name:{h.get('name')} Streak:{h.get('streak')} Best:{h.get('best_streak')}",
+                    "HABIT"
+                ])
+            
+            # Diary
+            for edate, entries in diary.get_all_entries().items():
+                for entry in entries:
+                    all_data.append([
+                        entry.get("time", ""),
+                        edate,
+                        "USER",
+                        "Diary",
+                        entry.get("text", ""),
+                        "DIARY"
+                    ])
+            
+            # Goals
+            for g in goals.active() + goals.completed():
+                all_data.append([
+                    g.get("created", ""),
+                    g.get("created", ""),
+                    "SYSTEM",
+                    "Goal",
+                    f"ID:{g.get('id')} Title:{g.get('title')} Progress:{g.get('progress')}% Done:{g.get('done')}",
+                    "GOAL"
+                ])
+            
+            # Bills
+            for b in bills.all_active():
+                all_data.append([
+                    b.get("created", ""),
+                    b.get("created", ""),
+                    "SYSTEM",
+                    "Bill",
+                    f"ID:{b.get('id')} Name:{b.get('name')} Amount:{b.get('amount')} Due:{b.get('due_day')}",
+                    "BILL"
+                ])
+            
+            # Calendar events
+            for e in calendar.store.data.get("events", []):
+                all_data.append([
+                    e.get("created", ""),
+                    e.get("date", ""),
+                    "SYSTEM",
+                    "Calendar",
+                    f"Title:{e.get('title')} Time:{e.get('time')} Location:{e.get('location')}",
+                    "CALENDAR"
+                ])
+            
+            # Memory facts
+            for f in memory.get_all_facts():
+                all_data.append([
+                    f.get("d", ""),
+                    f.get("d", ""),
+                    "SYSTEM",
+                    "Memory",
+                    f.get("f", ""),
+                    "MEMORY"
+                ])
+            
+            # Water logs
+            for edate, logs in water.store.data.get("logs", {}).items():
+                total = sum(l.get("ml", 0) for l in logs)
+                all_data.append([
+                    "",
+                    edate,
+                    "SYSTEM",
+                    "Water",
+                    f"Total:{total}ml Goal:{water.goal()}ml",
+                    "WATER"
+                ])
+            
+            return self._clear_and_write(ws, all_data, headers)
+            
         except Exception as e:
-            log.error(f"save_chat_history error: {e}"); return False
+            log.error(f"save_chat_history error: {e}")
+            return False
 
     def full_sync(self):
         if not self.sheet:
@@ -950,7 +1086,7 @@ class GoogleSheetsBackup:
             ("Water",        self.save_water),
             ("Daily_Log",    self.save_daily_log),
             ("Diary",        self.save_diary),
-            ("Chat_History", self.save_chat_history),
+            ("Miscellaneous", self.save_chat_history),
         ]
         success = 0
         for name, fn in ops:
@@ -2220,6 +2356,80 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# SNOOZE COMMAND HANDLER (NEW)
+# ═══════════════════════════════════════════════════════════════════
+async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Snooze a reminder by ID with specified minutes"""
+    if len(ctx.args) < 2:
+        await update.message.reply_text(
+            "⏸️ `/snooze5 <reminder_id>` ya `/snooze10 <reminder_id>`\n"
+            "Options: snooze5, snooze10, snooze30, snooze60",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Parse command like "snooze5" -> 5 minutes
+    cmd_text = ctx.args[0].lower()
+    snooze_min = None
+    if "snooze5" in cmd_text or cmd_text == "5":
+        snooze_min = 5
+    elif "snooze10" in cmd_text or cmd_text == "10":
+        snooze_min = 10
+    elif "snooze30" in cmd_text or cmd_text == "30":
+        snooze_min = 30
+    elif "snooze60" in cmd_text or cmd_text == "60":
+        snooze_min = 60
+    else:
+        snooze_min = 10  # default
+    
+    reminder_id = int(ctx.args[1]) if len(ctx.args) > 1 else None
+    
+    if not reminder_id:
+        await update.message.reply_text("❌ Reminder ID do! Example: `/snooze10 123`")
+        return
+    
+    # Find the reminder
+    all_reminders = reminders.get_all()
+    target = None
+    for r in all_reminders:
+        if r["id"] == reminder_id:
+            target = r
+            break
+    
+    if not target:
+        await update.message.reply_text(f"❌ Reminder #{reminder_id} nahi mila!")
+        return
+    
+    # Calculate new time
+    now = now_ist()
+    new_time = (now + timedelta(minutes=snooze_min)).strftime("%H:%M")
+    
+    # Create snoozed reminder (new one)
+    new_rem = reminders.add(
+        chat_id=target["chat_id"],
+        text=f"[SNOOZED] {target['text']}",
+        remind_at=new_time,
+        repeat="once"
+    )
+    
+    # Deactivate old reminder
+    for r in reminders.get_all():
+        if r["id"] == reminder_id:
+            r["active"] = False
+            break
+    reminders.store.save()
+    
+    await update.message.reply_text(
+        f"⏸️ *Snoozed!* ✅\n"
+        f"🔔 {snooze_min} minute baad fir yaad dilaunga\n"
+        f"⏰ Naya time: *{new_time}*\n"
+        f"🆔 नया reminder ID: `#{new_rem['id']}`\n\n"
+        f"_Isse cancel karne ke liye:_ `/delremind {new_rem['id']}`",
+        parse_mode="Markdown"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
 # MAIN MESSAGE HANDLER — Natural Language → Real Actions
 # ═══════════════════════════════════════════════════════════════════
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2303,6 +2513,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             elif r.get("repeat") == "weekly":
                 repeat_note = "\n📅 _Agli hafte!_"
 
+            # 🔔 ALARM WITH SNOOZE OPTIONS 🔔
             alert_text = (
                 f"🚨🔔🚨 *ALARM!* 🚨🔔🚨\n"
                 f"{'═'*25}\n"
@@ -2310,8 +2521,14 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 f"{'═'*25}\n\n"
                 f"📢 *{r['text'].upper()}*\n\n"
                 f"{repeat_note}\n"
-                f"_Snooze: /remind 10m {r['text'][:30]}_\n"
-                f"_Delete: /delremind {r['id']}_"
+                f"\n"
+                f"⏸️ *SNOOZE OPTIONS:*\n"
+                f"  🔹 `/snooze5 {r['id']}` → 5 minutes mein\n"
+                f"  🔹 `/snooze10 {r['id']}` → 10 minutes mein\n"
+                f"  🔹 `/snooze30 {r['id']}` → 30 minutes mein\n"
+                f"  🔹 `/snooze60 {r['id']}` → 1 ghante mein\n"
+                f"\n"
+                f"❌ *Delete:* `/delremind {r['id']}`"
             )
             await context.bot.send_message(
                 chat_id=int(r["chat_id"]),
@@ -2383,11 +2600,11 @@ async def scheduled_backup_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 def main():
     log.info("=" * 60)
-    log.info("🤖 Personal AI Bot v22.0 — No Buttons + Real Actions")
+    log.info("🤖 Personal AI Bot v22.1 — Google Sheets Fixed + Snooze")
     log.info("  ✅ Gemini JSON action router")
     log.info("  ✅ Real reminders/tasks/expenses from chat")
-    log.info("  ✅ Background alarms working")
-    log.info("  ✅ Google Sheets auto-sync")
+    log.info("  ✅ Background alarms working with SNOOZE")
+    log.info("  ✅ Google Sheets auto-sync (proper segregation)")
     log.info("  ✅ Diary password flow")
     log.info(f"⏰ IST: {now_ist().strftime('%Y-%m-%d %I:%M:%S %p')}")
     log.info(f"🤖 Gemini: {'✅' if GEMINI_API_KEY else '❌ (regex fallback)'}")
@@ -2456,6 +2673,10 @@ def main():
         ("dbstatus",    cmd_dbstatus),
         ("clear",       cmd_clear),
         ("save",        cmd_save),
+        ("snooze5",     cmd_snooze),
+        ("snooze10",    cmd_snooze),
+        ("snooze30",    cmd_snooze),
+        ("snooze60",    cmd_snooze),
     ]
     for cmd, handler in cmds:
         app.add_handler(CommandHandler(cmd, handler))
@@ -2483,7 +2704,7 @@ def main():
     else:
         log.warning("⚠️ job_queue not available!")
 
-    log.info("✅ Bot v22 ready! Polling shuru...")
+    log.info("✅ Bot v22.1 ready! Polling shuru...")
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
