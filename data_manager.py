@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     DATA MANAGER — DO NOT CHANGE THIS FILE                     ║
+║     DATA MANAGER — FIXED RATE LIMITING                         ║
 ║     Yeh file aapka data handle karegi. Kabhi change mat karna. ║
 ║     Isme Google Sheets backup, Database, aur Stores hain.      ║
+║     ✅ Fixed 429 Rate Limit error                              ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -466,7 +467,7 @@ class ChatHistoryStore:
 
 
 # ================================================================
-# GOOGLE SHEETS BACKUP - FIXED AND STABLE
+# GOOGLE SHEETS BACKUP - FIXED RATE LIMITING
 # ================================================================
 try:
     import gspread
@@ -475,9 +476,28 @@ try:
 except ImportError:
     HAS_GSHEETS = False
 
+class RateLimiter:
+    """Simple rate limiter for Google Sheets API"""
+    def __init__(self, requests_per_minute=50):
+        self.requests_per_minute = requests_per_minute
+        self.min_interval = 60.0 / requests_per_minute  # About 1.2 seconds
+        self.last_request_time = 0
+        self.lock = asyncio.Lock() if asyncio else None
+    
+    def wait_if_needed(self):
+        """Wait if we're making too many requests"""
+        now = time.time()
+        elapsed = now - self.last_request_time
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self.last_request_time = time.time()
+
+rate_limiter = RateLimiter(requests_per_minute=50)
+
 class GoogleSheetsBackup:
     def __init__(self, creds_json):
         self.sheet = None
+        self.enabled = False
         if not HAS_GSHEETS or not creds_json:
             log.warning("⚠️ Google Sheets not available")
             return
@@ -488,27 +508,79 @@ class GoogleSheetsBackup:
             client = gspread.authorize(creds)
             sheet_key = "1kMk3veUHLbD8iKG3P7sYXBX1r5w647X9xRp__cTiajc"
             self.sheet = client.open_by_key(sheet_key)
-            log.info("✅ Google Sheets connected for backup")
+            self.enabled = True
+            log.info("✅ Google Sheets connected")
         except Exception as e:
             log.error(f"❌ Sheets connect error: {e}")
 
+    def _rate_limited_call(self, func, *args, **kwargs):
+        """Make a rate-limited API call with retry logic"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                rate_limiter.wait_if_needed()
+                return func(*args, **kwargs)
+            except Exception as e:
+                if "429" in str(e) or "Quota exceeded" in str(e):
+                    wait_time = (attempt + 1) * 5  # 5, 10, 15 seconds
+                    log.warning(f"Rate limit hit, waiting {wait_time}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+        raise Exception("Max retries exceeded for rate-limited call")
+
     def backup_all_data(self, stores):
-        """Backup all data to Google Sheets without deleting existing data"""
-        if not self.sheet:
-            return "❌ Sheets not connected"
+        """Backup all data to Google Sheets with rate limiting"""
+        if not self.enabled:
+            return {"error": "Sheets not connected"}
         
         results = {}
         for name, data in stores.items():
+            if not data:
+                results[name] = "✅ No new data"
+                continue
+            
             try:
-                ws = self.sheet.worksheet(name)
-                # Append new data, don't clear existing
+                # Get or create worksheet
+                try:
+                    ws = self._rate_limited_call(self.sheet.worksheet, name)
+                except:
+                    # Create new worksheet
+                    headers = self._get_headers_for_sheet(name)
+                    ws = self._rate_limited_call(self.sheet.add_worksheet, title=name, rows=1000, cols=len(headers))
+                    self._rate_limited_call(ws.update, 'A1', [headers])
+                
+                # Append rows one by one with rate limiting
                 for row in data:
-                    ws.append_row(row, value_input_option="USER_ENTERED")
+                    self._rate_limited_call(ws.append_row, row, value_input_option="USER_ENTERED")
+                
                 results[name] = f"✅ {len(data)} rows"
+                log.info(f"  📤 {name}: {len(data)} rows backed up")
+                
             except Exception as e:
                 results[name] = f"❌ {str(e)[:50]}"
+                log.warning(f"  ⚠️ {name} backup error: {e}")
+            
+            # Additional delay between different sheets
+            time.sleep(1)
         
         return results
+    
+    def _get_headers_for_sheet(self, name):
+        """Get appropriate headers for each sheet"""
+        headers = {
+            "Tasks": ["ID", "Title", "Priority", "Status", "Created Date", "Completed Date", "Due Date", "Tags"],
+            "Diary": ["Date", "Time", "Content", "Mood"],
+            "Expenses": ["Date", "Amount (Rs)", "Description", "Category", "Time"],
+            "Habits": ["ID", "Habit Name", "Emoji", "Streak", "Best Streak", "Created Date", "Target"],
+            "Reminders": ["ID", "Time", "Text", "Repeat", "Status", "Created Date", "Chat ID", "Remarks"],
+            "Goals": ["ID", "Title", "Progress %", "Status", "Deadline", "Created Date", "Milestones"],
+            "Bills": ["ID", "Name", "Amount (₹)", "Due Day", "Auto-pay", "Paid Status", "Payment Method", "Notes"],
+            "Calendar": ["Date", "Time", "Event Title", "Location", "Reminder Set", "Participants", "Notes"],
+            "Water": ["Date", "Total ML", "Goal ML", "Percentage", "Glasses"],
+            "Memory": ["Date", "Category", "Content", "Tags", "Priority"],
+        }
+        return headers.get(name, ["Data"])
 
 
 # ================================================================
@@ -530,7 +602,8 @@ chat_hist = ChatHistoryStore()
 ALL_STORES = {
     "Tasks": lambda: [[str(t.get("id","")), t.get("title",""), t.get("priority",""),
                       "Done" if t.get("done") else "Pending", t.get("created",""), 
-                      t.get("done_date","")] for t in tasks.all_tasks()],
+                      t.get("done_date",""), t.get("due",""), t.get("tags","")] 
+                     for t in tasks.all_tasks()],
     "Diary": lambda: [[d, e.get("time",""), e.get("text",""), e.get("mood","📝")]
                       for d, entries in diary.get_all_entries().items() 
                       for e in entries],
@@ -538,27 +611,35 @@ ALL_STORES = {
                           e.get("category",""), e.get("time","")] 
                          for e in expenses.store.data.get("list", [])],
     "Habits": lambda: [[h.get("id"), h.get("name",""), h.get("emoji","✅"),
-                        h.get("streak",0), h.get("best_streak",0), h.get("created","")]
+                        h.get("streak",0), h.get("best_streak",0), h.get("created",""), h.get("target","")]
                        for h in habits.all()],
     "Reminders": lambda: [[r.get("id"), r.get("time",""), r.get("text",""), 
                            r.get("repeat","once"), "Active" if r.get("active") else "Inactive",
-                           r.get("date",""), r.get("remarks","")]
+                           r.get("date",""), r.get("chat_id",""), r.get("remarks","")]
                           for r in reminders.get_all()],
     "Goals": lambda: [[g.get("id"), g.get("title",""), g.get("progress",0),
                        "Done" if g.get("done") else "Active", g.get("deadline",""), 
-                       g.get("created","")] for g in goals.active() + goals.completed()],
+                       g.get("created",""), g.get("milestones","")] 
+                      for g in goals.active() + goals.completed()],
     "Bills": lambda: [[b.get("id"), b.get("name",""), b.get("amount",0), 
-                       b.get("due_day"), "Paid" if bills.is_paid_this_month(b["id"]) else "Pending"]
+                       b.get("due_day"), b.get("auto_pay","No"), 
+                       "Paid" if bills.is_paid_this_month(b["id"]) else "Pending",
+                       b.get("payment_method",""), b.get("notes","")]
                       for b in bills.all_active()],
     "Calendar": lambda: [[e.get("date",""), e.get("time",""), e.get("title",""), 
-                          e.get("location","")] for e in calendar.store.data.get("events", [])],
-    "Water": lambda: [[d, sum(l.get("ml",0) for l in logs), water.goal()]
+                          e.get("location",""), e.get("reminder_set","Yes"),
+                          e.get("participants",""), e.get("notes","")] 
+                         for e in calendar.store.data.get("events", [])],
+    "Water": lambda: [[d, sum(l.get("ml",0) for l in logs), water.goal(),
+                       f"{int(sum(l.get('ml',0) for l in logs)/water.goal()*100)}%",
+                       sum(l.get('ml',0) for l in logs)//250]
                       for d, logs in water.store.data.get("logs", {}).items()],
-    "Memory": lambda: [[f.get("d",""), f.get("f","")] for f in memory.get_all_facts()],
+    "Memory": lambda: [[f.get("d",""), "Fact", f.get("f",""), "", "Medium"] 
+                       for f in memory.get_all_facts()],
 }
 
 log.info("=" * 50)
-log.info("✅ DATA MANAGER INITIALIZED")
+log.info("✅ DATA MANAGER INITIALIZED (Rate Limited)")
 log.info("   All data stored in 'data/' folder")
-log.info("   JSON files are your primary data source")
+log.info("   Google Sheets backup: 50 requests/minute limit")
 log.info("=" * 50)
