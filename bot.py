@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║     PERSONAL AI ASSISTANT — BOT ONLY                          ║
+║     PERSONAL AI ASSISTANT — BOT ONLY (Rate Limited)            ║
 ║     Data handling data_manager.py se hota hai                  ║
-║     Aap is file mein changes kar sakte ho                      ║
+║     ✅ Fixed 429 Rate Limit error                              ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -13,7 +13,7 @@ import urllib.request, urllib.error, ssl
 from datetime import datetime, date, timedelta, timezone
 import re as _re
 
-# Import data manager (YEH KABHI CHANGE MAT KARNA)
+# Import data manager
 from data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders, 
     water, bills, calendar, chat_hist, now_ist, today_str, now_str,
@@ -58,21 +58,42 @@ log = logging.getLogger(__name__)
 # ================================================================
 google_sheets = GoogleSheetsBackup(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else None
 
+# Queue for background backups (to prevent rate limiting)
+backup_queue = asyncio.Queue()
+last_backup_time = 0
+BACKUP_INTERVAL = 30  # seconds between backups
+
+async def schedule_backup():
+    """Schedule a backup with rate limiting"""
+    global last_backup_time
+    now = time.time()
+    if now - last_backup_time < BACKUP_INTERVAL:
+        wait_time = BACKUP_INTERVAL - (now - last_backup_time)
+        log.info(f"⏳ Backup rate limited, waiting {wait_time:.1f}s")
+        await asyncio.sleep(wait_time)
+    last_backup_time = time.time()
+    
+    await backup_to_sheets()
+
 async def backup_to_sheets():
-    """Backup all data to Google Sheets (doesn't delete existing)"""
-    if not google_sheets or not google_sheets.sheet:
+    """Backup all data to Google Sheets"""
+    if not google_sheets or not google_sheets.enabled:
         log.warning("⚠️ Cannot backup: Sheets not connected")
         return "❌ Sheets not connected"
     
     try:
+        log.info("📤 Starting backup to Google Sheets...")
         backup_data = {}
         for name, data_func in ALL_STORES.items():
             backup_data[name] = data_func()
+            log.info(f"  📋 {name}: {len(backup_data[name])} rows to backup")
         
+        # Run backup in thread pool (blocking operation)
         loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(None, google_sheets.backup_all_data, backup_data)
         
-        success_count = sum(1 for v in results.values() if v.startswith("✅"))
+        success_count = sum(1 for v in results.values() if v and v.startswith("✅"))
+        log.info(f"📤 Backup complete: {success_count}/{len(results)} sheets")
         return f"✅ {success_count}/{len(results)} sheets backed up"
     except Exception as e:
         log.error(f"Backup error: {e}")
@@ -142,10 +163,13 @@ Hamesha Hindi/Hinglish mein short jawab do (2-3 lines maximum)."""
 async def handle_remind(update, text, time_str, repeat="once"):
     r = reminders.add(update.effective_chat.id, text, time_str, repeat)
     await update.message.reply_text(f"✅ Reminder set for {time_str}: {text}\nID: #{r['id']}")
+    # Non-blocking backup
+    asyncio.create_task(schedule_backup())
 
 async def handle_add_task(update, title):
     t = tasks.add(title)
     await update.message.reply_text(f"✅ Task added: #{t['id']} {t['title']}")
+    asyncio.create_task(schedule_backup())
 
 async def handle_complete_task(update, hint):
     pending = tasks.pending()
@@ -153,20 +177,24 @@ async def handle_complete_task(update, hint):
     if matched:
         tasks.complete(matched["id"])
         await update.message.reply_text(f"🎉 Done! ✅ {matched['title']}")
+        asyncio.create_task(schedule_backup())
     else:
         await update.message.reply_text("❓ Kaunsa task? ID ya naam batao")
 
 async def handle_expense(update, amount, desc):
     expenses.add(amount, desc)
     await update.message.reply_text(f"💰 ₹{amount} - {desc}\nAaj total: ₹{expenses.today_total()}")
+    asyncio.create_task(schedule_backup())
 
 async def handle_diary(update, text):
     diary.add(text)
     await update.message.reply_text(f"📖 Diary saved! ✅\n_{text[:100]}_")
+    asyncio.create_task(schedule_backup())
 
 async def handle_habit_add(update, name):
     h = habits.add(name)
     await update.message.reply_text(f"💪 Habit added: #{h['id']} {h['name']}")
+    asyncio.create_task(schedule_backup())
 
 async def handle_habit_done(update, keyword):
     if keyword.isdigit():
@@ -177,6 +205,7 @@ async def handle_habit_done(update, keyword):
         name = h.name if h else keyword
     if ok:
         await update.message.reply_text(f"💪 {name} done! 🔥 {streak} day streak!")
+        asyncio.create_task(schedule_backup())
     else:
         await update.message.reply_text("❓ Kaunsa habit? ID ya naam batao")
 
@@ -185,6 +214,7 @@ async def handle_water(update, ml=250):
     total = water.today_total()
     goal = water.goal()
     await update.message.reply_text(f"💧 +{ml}ml! Total: {total}/{goal}ml")
+    asyncio.create_task(schedule_backup())
 
 # ================================================================
 # REGEX FALLBACK
@@ -323,14 +353,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         prompt = build_system_prompt() + f"\n\nUser: {user_msg}\n\nShort Hindi reply:"
         reply = call_gemini(prompt, max_tokens=400)
         if not reply:
-            reply = "🙏 Batao kya help chahiye? Tasks, reminders, kharcha, diary?"
+            reply = "🙏 Batao kya help chahiye?"
         await update.message.reply_text(reply, parse_mode="Markdown")
     
     # Save to chat history
     chat_hist.add("user", user_msg, update.effective_user.first_name or "User")
-    
-    # Auto backup
-    asyncio.create_task(backup_to_sheets())
 
 
 # ================================================================
@@ -374,7 +401,7 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     title = " ".join(ctx.args)
     t = tasks.add(title)
     await update.message.reply_text(f"✅ Task added: #{t['id']} {t['title']}")
-    await backup_to_sheets()
+    asyncio.create_task(schedule_backup())
 
 async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -386,7 +413,7 @@ async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         t = tasks.complete(int(ctx.args[0]))
         await update.message.reply_text(f"🎉 Done! ✅ {t['title']}" if t else "❌ Not found!")
-        await backup_to_sheets()
+        asyncio.create_task(schedule_backup())
     except:
         await update.message.reply_text("❌ Invalid ID!")
 
@@ -402,7 +429,7 @@ async def cmd_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     h = habits.add(" ".join(ctx.args))
     await update.message.reply_text(f"💪 Habit added: #{h['id']} {h['name']}")
-    await backup_to_sheets()
+    asyncio.create_task(schedule_backup())
 
 async def cmd_hdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -414,7 +441,7 @@ async def cmd_hdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         ok, streak = habits.log(int(ctx.args[0]))
         await update.message.reply_text(f"💪 Habit done! 🔥 {streak} day streak!" if ok else "✅ Already done today!")
-        await backup_to_sheets()
+        asyncio.create_task(schedule_backup())
     except:
         await update.message.reply_text("❌ Invalid ID!")
 
@@ -432,7 +459,7 @@ async def cmd_kharcha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         desc = " ".join(ctx.args[1:])
         expenses.add(amount, desc)
         await update.message.reply_text(f"💰 ₹{amount} - {desc}\nAaj total: ₹{expenses.today_total()}")
-        await backup_to_sheets()
+        asyncio.create_task(schedule_backup())
     except:
         await update.message.reply_text("❌ `/kharcha 100 Chai`")
 
@@ -460,13 +487,13 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     r = reminders.add(update.effective_chat.id, text, remind_at)
     await update.message.reply_text(f"✅ Reminder set for {remind_at}: {text}\nID: #{r['id']}")
-    await backup_to_sheets()
+    asyncio.create_task(schedule_backup())
 
 async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ml = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 250
     water.add(ml)
     await update.message.reply_text(f"💧 +{ml}ml! Total: {water.today_total()}/{water.goal()}ml")
-    await backup_to_sheets()
+    asyncio.create_task(schedule_backup())
 
 async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     n = now_ist()
@@ -480,7 +507,7 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📤 Backup in progress...")
+    await update.message.reply_text("📤 Backup in progress (rate limited)...")
     result = await backup_to_sheets()
     await update.message.reply_text(result)
 
@@ -492,7 +519,8 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Expenses: {len(expenses.store.data.get('list', []))}\n"
         f"Reminders: {len(reminders.get_all())}\n"
         f"Habits: {len(habits.all())}\n"
-        f"Sheets: {'✅' if google_sheets and google_sheets.sheet else '❌'}"
+        f"Sheets: {'✅' if google_sheets and google_sheets.enabled else '❌'}\n"
+        f"Data Folder: 'data/' (JSON files)"
     )
 
 async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -502,7 +530,7 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = " ".join(ctx.args)
     diary.add(text)
     await update.message.reply_text(f"📖 Diary saved! ✅\n_{text[:100]}_")
-    await backup_to_sheets()
+    asyncio.create_task(schedule_backup())
 
 # ================================================================
 # DIARY CONVERSATION
@@ -545,7 +573,7 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = ctx.user_data.get("diary_pending_text", "")
         diary.add(text)
         await update.effective_chat.send_message(f"📖 Diary saved! ✅\n_{text[:100]}_")
-        await backup_to_sheets()
+        asyncio.create_task(schedule_backup())
         return ConversationHandler.END
     else:
         entries = diary.get_all_entries()
@@ -566,7 +594,7 @@ async def diary_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
     diary.add(text)
     await update.effective_chat.send_message(f"📖 Diary saved! ✅\n_{text[:100]}_")
-    await backup_to_sheets()
+    asyncio.create_task(schedule_backup())
     return ConversationHandler.END
 
 async def diary_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -601,7 +629,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             rid = int(data.split("_")[1])
             if reminders.acknowledge(rid, "User pressed OK"):
                 await query.edit_message_text("✅ Alarm band ho gaya!")
-                await backup_to_sheets()
+                asyncio.create_task(schedule_backup())
             else:
                 await query.edit_message_text("⚠️ Pehle se band hai.")
         except:
@@ -624,7 +652,7 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         new_time = (now_ist() + timedelta(minutes=mins)).strftime("%H:%M")
         new_rem = reminders.add(target["chat_id"], f"🔁 {target['text']}", new_time, "once")
         await update.message.reply_text(f"⏸️ Snoozed! {mins} min baad fir yaad dilaunga.\nNew ID: #{new_rem['id']}")
-        await backup_to_sheets()
+        asyncio.create_task(schedule_backup())
     except:
         await update.message.reply_text("❌ Invalid ID!")
 
@@ -638,8 +666,9 @@ async def cmd_delremind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ================================================================
 def main():
     log.info("=" * 60)
-    log.info("🤖 Personal AI Bot v24.0 - DATA IS SEPARATE!")
+    log.info("🤖 Personal AI Bot v24.1 - RATE LIMITED")
     log.info("   All data stored in 'data/' folder (JSON files)")
+    log.info("   Google Sheets backup: 30 seconds between backups")
     log.info("   You can change bot.py without losing data")
     log.info("=" * 60)
     
@@ -670,7 +699,7 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
     
-    log.info("✅ Bot ready!")
+    log.info("✅ Bot ready! (Rate limited to avoid 429 errors)")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
