@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════════════╗
-║     PERSONAL AI ASSISTANT — BOT ONLY (Secure Data)             ║
-║     Uses private GitHub repo + Google Sheets backup            ║
-╚══════════════════════════════════════════════════════════════════╝
+PERSONAL AI ASSISTANT - Using Secure Data Manager
 """
 
 import os, json, logging, time, asyncio, random
@@ -13,7 +10,7 @@ from datetime import datetime, date, timedelta, timezone
 import re as _re
 
 # ================================================================
-# IMPORT FROM SECURE DATA MANAGER (Private Repo Backup)
+# IMPORT FROM SECURE DATA MANAGER
 # ================================================================
 from secure_data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders,
@@ -53,7 +50,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ================================================================
-# GEMINI API (Optional)
+# GEMINI API
 # ================================================================
 GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -152,7 +149,6 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Check bot status and data connection"""
-    # Check if private repo is connected
     try:
         from secure_data_manager import repo_manager, sheets_backup
         github_status = "✅ Connected" if repo_manager.is_connected else "⚠️ Local only"
@@ -380,7 +376,11 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     
     for r in reminders.due_now():
         try:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ OK - Band Karo", callback_data=f"ok_{r['id']}")]])
+            # Create keyboard with OK button
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ OK - Band Karo", callback_data=f"ok_{r['id']}")]
+            ])
+            
             alert = (
                 f"🔔🔔🔔 *ALARM!* 🔔🔔🔔\n"
                 f"{'═'*25}\n"
@@ -390,8 +390,14 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 f"⏸️ *Snooze:* `/snooze5 {r['id']}` | `/snooze10 {r['id']}`\n"
                 f"❌ *Delete:* `/delremind {r['id']}`"
             )
-            await context.bot.send_message(chat_id=int(r["chat_id"]), text=alert, reply_markup=keyboard, parse_mode="Markdown")
+            await context.bot.send_message(
+                chat_id=int(r["chat_id"]), 
+                text=alert, 
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
             reminders.mark_fired(r["id"])
+            log.info(f"🔔 Alarm fired for #{r['id']}: {r['text']}")
             await asyncio.sleep(0.5)
         except Exception as e:
             log.error(f"Reminder error: {e}")
@@ -404,10 +410,12 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             rid = int(data.split("_")[1])
             if reminders.acknowledge(rid, "User pressed OK"):
-                await query.edit_message_text("✅ *Alarm band ho gaya!*", parse_mode="Markdown")
+                await query.edit_message_text("✅ *Alarm band ho gaya! Ab nahi bajega.*", parse_mode="Markdown")
+                log.info(f"✅ Reminder #{rid} stopped by OK button")
             else:
                 await query.edit_message_text("⚠️ *Pehle se band hai.*", parse_mode="Markdown")
-        except:
+        except Exception as e:
+            log.error(f"OK button error: {e}")
             await query.edit_message_text("❌ Error!")
 
 async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -463,9 +471,9 @@ def parse_user_message(user_msg):
             return ("remind", {"time": time_str, "text": text[:100]})
     
     # Diary detection
-    if "diary" in lower or "dairy" in lower or "diary mein likho" in lower or "diary me likho" in lower:
+    if "diary" in lower or "dairy" in lower or "diary mein likho" in lower:
         text = user_msg
-        for kw in ["diary", "dairy", "likho", "add", "save", "mein", "me", "main", "mein likho", "me likho"]:
+        for kw in ["diary", "dairy", "likho", "add", "save", "mein", "me", "main"]:
             text = text.replace(kw, ' ').replace(kw.title(), ' ')
         text = ' '.join(text.split()).strip()
         if not text:
@@ -473,43 +481,43 @@ def parse_user_message(user_msg):
         return ("diary", {"text": text[:300]})
     
     # Task detection
-    if any(w in lower for w in ["task add", "add task", "kaam add", "new task", "kaam hai mujhe"]):
+    if any(w in lower for w in ["task add", "add task", "kaam add", "new task"]):
         title = user_msg
-        for w in ["task add", "add task", "kaam add", "new task", "kaam hai mujhe"]:
+        for w in ["task add", "add task", "kaam add", "new task"]:
             title = title.replace(w, '').replace(w.title(), '')
         title = title.strip()
         if title:
             return ("add_task", {"title": title[:80]})
     
     # Task complete detection
-    if any(w in lower for w in ["task done", "kaam ho gaya", "complete kar liya", "ho gaya"]):
+    if any(w in lower for w in ["task done", "kaam ho gaya", "complete kar liya"]):
         match = _re.search(r'#?(\d+)', lower)
         hint = match.group(1) if match else lower[:30]
         return ("complete_task", {"hint": hint})
     
     # Expense detection
-    expense_words = ["kharcha", "kharch", "spent", "rupees", "₹", "rs", "paisa", "paise"]
+    expense_words = ["kharcha", "kharch", "spent", "rupees", "₹", "rs"]
     if any(w in lower for w in expense_words):
         match = _re.search(r'(\d+(?:\.\d+)?)', lower)
         if match:
             amount = float(match.group(1))
-            desc = _re.sub(r'(\d+(?:\.\d+)?|rs\.?|₹|rupees?|rupe|kharcha|kharch)', '', user_msg)
+            desc = _re.sub(r'(\d+(?:\.\d+)?|rs\.?|₹|rupees?)', '', user_msg)
             desc = ' '.join([w for w in desc.split() if w.lower() not in expense_words])
             desc = desc.strip() or "Expense"
             return ("expense", {"amount": amount, "desc": desc[:60]})
     
     # Habit detection
-    if "habit add" in lower or "add habit" in lower or "new habit" in lower:
-        name = user_msg.replace("habit add", "").replace("add habit", "").replace("new habit", "").strip()
+    if "habit add" in lower or "add habit" in lower:
+        name = user_msg.replace("habit add", "").replace("add habit", "").strip()
         return ("add_habit", {"name": name[:50]})
     
-    if "habit done" in lower or "habit ho gayi" in lower or "habit complete" in lower:
+    if "habit done" in lower or "habit ho gayi" in lower:
         match = _re.search(r'#?(\d+)', lower)
         keyword = match.group(1) if match else lower[:30]
         return ("habit_done", {"keyword": keyword})
     
     # Water detection
-    if any(w in lower for w in ["paani piya", "water piya", "water log", "paani pi"]):
+    if any(w in lower for w in ["paani piya", "water piya", "water log"]):
         match = _re.search(r'(\d+)\s*(ml|glass|bottle)', lower)
         ml = 250
         if match:
@@ -587,29 +595,28 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         goal = water.goal()
         await update.message.reply_text(f"💧 +{params.get('ml', 250)}ml! Total: {total}/{goal}ml")
     
-    else:  # chat
+    else:
         prompt = build_system_prompt() + f"\n\nUser: {user_msg}\n\nShort Hindi reply (2-3 lines):"
         reply = call_gemini(prompt)
         if not reply:
             reply = _smart_fallback(user_msg)
         await update.message.reply_text(reply, parse_mode="Markdown")
     
-    # Save to chat history
     chat_hist.add("user", user_msg, update.effective_user.first_name or "User")
     chat_hist.add("assistant", "Reply sent", "Bot")
 
 def _smart_fallback(user_msg):
     msg = user_msg.lower().strip()
     n = now_ist()
-    if any(w in msg for w in ["time", "kitne baje", "time kya"]):
-        return f"⏰ Abhi *{n.strftime('%I:%M %p')}* baj rahe hain", "Markdown"
+    if any(w in msg for w in ["time", "kitne baje"]):
+        return f"⏰ Abhi *{n.strftime('%I:%M %p')}* baj rahe hain"
     if any(w in msg for w in ["date", "aaj kya tarikh"]):
-        return f"📅 Aaj *{n.strftime('%A, %d %B %Y')}* hai", "Markdown"
+        return f"📅 Aaj *{n.strftime('%A, %d %B %Y')}* hai"
     if any(w in msg for w in ["hello", "hi", "assalam", "namaste"]):
-        return "🕌 *Assalamualaikum!* Kya help chahiye?", "Markdown"
+        return "🕌 *Assalamualaikum!* Kya help chahiye?"
     if any(w in msg for w in ["kaise ho", "how are"]):
-        return "😊 *Main badiya hoon!* Aap sunao?", "Markdown"
-    return "🙏 *Batao kya help chahiye?* Tasks, reminders, kharcha, diary?", "Markdown"
+        return "😊 *Main badiya hoon!* Aap sunao?"
+    return "🙏 *Batao kya help chahiye?* Tasks, reminders, kharcha, diary?"
 
 # ================================================================
 # MAIN
