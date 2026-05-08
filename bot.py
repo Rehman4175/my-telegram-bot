@@ -6,6 +6,7 @@
 ║  ✅ Clear chat option                                          ║
 ║  ✅ OK button in alarms (reminder inactive ho jaye)            ║
 ║  ✅ Diary auto-delete after save                               ║
+║  ✅ Google Sheets FIXED — better error handling               ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -649,7 +650,7 @@ calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
 
 # ═══════════════════════════════════════════════════════════════════
-# GOOGLE SHEETS BACKUP
+# GOOGLE SHEETS BACKUP — FIXED WITH BETTER ERROR HANDLING
 # ═══════════════════════════════════════════════════════════════════
 class GoogleSheetsBackup:
     def __init__(self):
@@ -666,11 +667,26 @@ class GoogleSheetsBackup:
             ]
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             client = gspread.authorize(creds)
-            self.sheet = client.open_by_key("1kMk3veUHLbD8iKG3P7sYXBX1r5w647X9xRp__cTiajc")
+            
+            # Open sheet by key
+            sheet_key = "1kMk3veUHLbD8iKG3P7sYXBX1r5w647X9xRp__cTiajc"
+            log.info(f"🔑 Opening sheet with key: {sheet_key}")
+            self.sheet = client.open_by_key(sheet_key)
+            
+            # Test write access
+            try:
+                test_ws = self.sheet.worksheet("Tasks")
+                test_ws.update('A2', [["Test"]])
+                log.info("✅ Write access verified!")
+            except Exception as test_e:
+                log.error(f"⚠️ Write test failed: {test_e}")
+                log.error("   Make sure service account email is added as Editor in Google Sheet")
+            
             log.info("✅ Google Sheets connected!")
             self.ensure_worksheets()
         except Exception as e:
             log.error(f"❌ Sheets connect error: {e}")
+            log.error("   Please add the service account email as Editor to your Google Sheet")
 
     def ensure_worksheets(self):
         if not self.sheet:
@@ -1067,7 +1083,7 @@ class GoogleSheetsBackup:
 
     def full_sync(self):
         if not self.sheet:
-            return "❌ Sheets not connected!"
+            return "❌ Sheets not connected! Make sure service account email is added as Editor."
         ops = [
             ("Tasks",        self.save_tasks),
             ("Reminders",    self.save_reminders),
@@ -2558,7 +2574,6 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             elif r.get("repeat") == "weekly":
                 repeat_note = "\n📅 _Agli hafte!_"
 
-            # Create inline keyboard with OK button
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ OK", callback_data=f"ok_reminder_{r['id']}")]
             ])
@@ -2650,11 +2665,11 @@ async def scheduled_backup_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 def main():
     log.info("=" * 60)
-    log.info("🤖 Personal AI Bot v22.2 — Clear Chat + OK Button + Diary Auto-Delete")
+    log.info("🤖 Personal AI Bot v22.2 — Google Sheets Fixed")
     log.info("  ✅ Gemini JSON action router")
     log.info("  ✅ Real reminders/tasks/expenses from chat")
     log.info("  ✅ Background alarms with OK button & SNOOZE")
-    log.info("  ✅ Google Sheets auto-sync")
+    log.info("  ✅ Google Sheets auto-sync (improved error handling)")
     log.info("  ✅ Diary auto-delete after save")
     log.info("  ✅ Clear chat history command")
     log.info(f"⏰ IST: {now_ist().strftime('%Y-%m-%d %I:%M:%S %p')}")
