@@ -215,16 +215,16 @@ async def cmd_checksync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             diary_in_sheets = "Check failed"
     
     await update.message.reply_text(
-        f"📊 *SYNC STATUS*\n\n"
-        f"🔐 GitHub: {github_status}\n"
-        f"📊 Google Sheets: {sheets_status}\n"
-        f"🕐 Last Git Commit: {last_sync}\n"
-        f"📖 Diary in Sheets: {diary_in_sheets}\n\n"
-        f"✅ All data is secure! New deploy will NOT delete your data.\n\n"
-        f"💡 *Tip:* Check your Google Sheet here:\n"
-        f`https://docs.google.com/spreadsheets/d/{sheets_backup.sheet.id if sheets_backup.sheet else "Not connected"}`,
-        parse_mode="Markdown"
-    )
+    f"📊 *SYNC STATUS*\n\n"
+    f"🔐 GitHub: {github_status}\n"
+    f"📊 Google Sheets: {sheets_status}\n"
+    f"🕐 Last Git Commit: {last_sync}\n"
+    f"📖 Diary in Sheets: {diary_in_sheets}\n\n"
+    f"✅ All data is secure! New deploy will NOT delete your data.\n\n"
+    f"💡 *Tip:* Check your Google Sheet here:\n"
+    f"https://docs.google.com/spreadsheets/d/{sheets_backup.sheet.id if sheets_backup.sheet else 'Not connected'}",
+    parse_mode="Markdown"
+)
 
 async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
