@@ -62,7 +62,7 @@ class GoogleSheetsBackup:
     TAB_MAP = {
         "Reminders": "Reminders",
         "Tasks":     "Tasks",
-        "Memory":    "Memory / Important Notes",
+        "Memory":    "Memo",
         "Goals":     "Goals",
         "Calendar":  "Calendar Events",
         "Bills":     "Bills & Subscriptions",
@@ -684,16 +684,18 @@ class GoalStore:
 
 
 # ================================================================
-# REMINDER STORE
+# REMINDER STORE  — Fixed: proper auto-increment ID counter
 # ================================================================
 class ReminderStore:
     def __init__(self):
         self.store = PrivateStore("reminders", {"list": [], "counter": 0})
 
     def add(self, chat_id, text, remind_at, repeat="once"):
+        # Always use stored counter to generate unique ID
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        rid = self.store.data["counter"]
         r = {
-            "id":           self.store.data["counter"],
+            "id":           rid,
             "chat_id":      str(chat_id),
             "text":         text,
             "time":         remind_at,
