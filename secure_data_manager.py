@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # ================================================================
 # CONFIGURATION
 # ================================================================
-GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_TOKEN      = os.environ.get("GB_TOKEN", "")
 PRIVATE_REPO_URL  = os.environ.get("PRIVATE_REPO_URL", "")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")
 SHEET_KEY         = os.environ.get("SHEET_KEY", "1kMk3veUHLbD8iKG3P7sYXBX1r5w647X9xRp__cTiajc")
