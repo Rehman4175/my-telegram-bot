@@ -1127,10 +1127,53 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # NATURAL LANGUAGE PARSER
 # ================================================================
 
+def _parse_date_from_text(text):
+    """Try to extract a date from natural language text. Returns (date_str, remaining_text) or (None, text)."""
+    lower = text.lower()
+    now = now_ist()
+    today_d = now.date()
+
+    # Formats: 9-9-2000, 9/9/2000, 2000-09-09, 09-09-2026
+    m = _re.search(r'(\d{1,4})[-/](\d{1,2})[-/](\d{2,4})', lower)
+    if m:
+        a, b, c = m.group(1), m.group(2), m.group(3)
+        # Determine year, month, day
+        try:
+            if len(a) == 4:         # YYYY-MM-DD
+                yr, mo, dy = int(a), int(b), int(c)
+            elif len(c) == 4:       # D-M-YYYY or DD-MM-YYYY
+                dy, mo, yr = int(a), int(b), int(c)
+            else:                   # D-M-YY
+                dy, mo, yr = int(a), int(b), int(c) + 2000
+            d = date(yr, mo, dy)
+            remaining = (_re.sub(r'\d{1,4}[-/]\d{1,2}[-/]\d{2,4}', '', text)).strip()
+            return d.strftime("%Y-%m-%d"), remaining
+        except Exception:
+            pass
+
+    # "aaj", "kal", "parso"
+    if "parso" in lower:
+        d = today_d + timedelta(days=2)
+        return d.strftime("%Y-%m-%d"), _re.sub(r'parso', '', text, flags=_re.IGNORECASE).strip()
+    if "kal" in lower and "kl " in lower or lower.startswith("kl ") or " kl " in lower or lower.endswith(" kl"):
+        d = today_d + timedelta(days=1)
+        remaining = _re.sub(r'\bkl\b|\bkal\b', '', text, flags=_re.IGNORECASE).strip()
+        return d.strftime("%Y-%m-%d"), remaining
+    if "kal" in lower:
+        d = today_d + timedelta(days=1)
+        remaining = _re.sub(r'\bkal\b', '', text, flags=_re.IGNORECASE).strip()
+        return d.strftime("%Y-%m-%d"), remaining
+    if "aaj" in lower:
+        return today_d.strftime("%Y-%m-%d"), _re.sub(r'\baaj\b', '', text, flags=_re.IGNORECASE).strip()
+
+    return None, text
+
+
 def parse_user_message(user_msg):
     lower = user_msg.lower().strip()
     now = now_ist()
 
+    # ── REMINDER ──────────────────────────────────────────────────
     remind_words = ["remind", "reminder", "alarm", "yaad dilana", "bata dena", "yaad dila", "yaad dila do"]
     if any(w in lower for w in remind_words):
         m = _re.search(r'(\d+)\s*(?:min|minute|m)\b', lower)
@@ -1147,30 +1190,109 @@ def parse_user_message(user_msg):
             text = " ".join(w for w in text.split() if w.lower() not in remind_words).strip()
             return ("remind", {"time": time_str, "text": text or "Reminder!"})
 
+    # ── DIARY ─────────────────────────────────────────────────────
     if "diary" in lower or "dairy" in lower:
         text = user_msg
         for kw in ["diary", "dairy", "likho", "add", "save", "mein", "me", "main"]:
-            text = _re.sub(kw, " ", text, flags=_re.IGNORECASE)
+            text = _re.sub(r'\b' + kw + r'\b', " ", text, flags=_re.IGNORECASE)
         text = " ".join(text.split()).strip()
         return ("diary", {"text": text or user_msg})
 
-    # Task add — broader detection
-    task_add_words = ["task add", "add task", "kaam add", "new task", "task banana", "task bana",
-                      "task lagao", "task likh", "kaam likhna", "todo add"]
-    if any(w in lower for w in task_add_words):
-        title = user_msg
-        for w in task_add_words:
-            title = _re.sub(w, "", title, flags=_re.IGNORECASE)
-        title = title.strip()
-        if title:
-            return ("add_task", {"title": title[:80]})
+    # ── CALENDAR ──────────────────────────────────────────────────
+    # Triggers: "calendar", "event add", "birthday add", "cal mein"
+    cal_trigger_words = ["calendar", "cal ", "event add", "birthday add", "birthday", "janamdin", "bday"]
+    if any(w in lower for w in cal_trigger_words):
+        # Try to parse date from the message
+        date_str, remaining = _parse_date_from_text(user_msg)
+        if date_str:
+            # Strip cal/calendar/event/add words from remaining
+            title = remaining
+            for kw in ["calendar", "cal", "event", "add", "karo", "kr", "mein", "me"]:
+                title = _re.sub(r'\b' + kw + r'\b', " ", title, flags=_re.IGNORECASE)
+            title = " ".join(title.split()).strip()
+            # Detect birthday
+            is_bday = any(w in user_msg.lower() for w in ["birthday", "bday", "janamdin", "b'day"])
+            event_type = "birthday" if is_bday else "event"
+            # If birthday, adjust to next upcoming birthday year
+            if is_bday:
+                try:
+                    from datetime import date as dt
+                    birth = dt.fromisoformat(date_str)
+                    today_d = now_ist().date()
+                    next_bday = birth.replace(year=today_d.year)
+                    if next_bday < today_d:
+                        next_bday = next_bday.replace(year=today_d.year + 1)
+                    date_str = next_bday.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            if not title:
+                title = "Event"
+            return ("add_calendar", {"title": title, "date": date_str, "type": event_type})
+        # No date found — let AI handle
+        return ("chat", {"text": user_msg})
 
-    if any(w in lower for w in ["task done", "kaam ho gaya", "kaam kar liya", "complete kar liya", "task complete"]):
+    # ── BILL ADD ──────────────────────────────────────────────────
+    # Triggers: "bill add", "bill kro", "subscription add", etc.
+    bill_trigger_words = ["bill add", "bill kro", "bill daal", "subscription add", "bill lagao",
+                          "bill likh", "add bill", "naya bill"]
+    if any(w in lower for w in bill_trigger_words):
+        # Try to extract: name, amount, due day/date
+        # Patterns: "netflix 499 15" or "netflix 12 apr 26" or "netflix 499"
+        # First strip trigger words
+        title = user_msg
+        for kw in bill_trigger_words + ["bill", "add", "kro", "karo", "kr", "daal", "likh", "lagao", "naya", "subscription"]:
+            title = _re.sub(r'\b' + kw + r'\b', " ", title, flags=_re.IGNORECASE)
+        title = " ".join(title.split()).strip()
+
+        # Try to find amount (number with Rs/rupees, or standalone number)
+        amount = 0
+        amount_m = _re.search(r'(?:rs\.?|rupees?)?\s*(\d+(?:\.\d+)?)', title, _re.IGNORECASE)
+        if amount_m:
+            amount = float(amount_m.group(1))
+
+        # Try to find due_day (a day number 1-31, possibly with "tarikh" or "date")
+        due_day = 0
+        due_m = _re.search(r'(\d{1,2})\s*(?:tarikh|taarikh|date|th|st|nd|rd)?', title)
+        if due_m:
+            candidate = int(due_m.group(1))
+            if 1 <= candidate <= 31 and candidate != amount:
+                due_day = candidate
+
+        # Bill name = remaining text after removing numbers
+        name = _re.sub(r'\d+(?:\.\d+)?', '', title).strip()
+        name = " ".join(name.split()).strip() or "Bill"
+
+        # If we got a name, save it — amount/due_day can be 0 (user can set later)
+        return ("add_bill", {"name": name, "amount": amount, "due_day": due_day})
+
+    # ── TASK ADD ──────────────────────────────────────────────────
+    # "task" anywhere in message = add task (broad detection)
+    task_add_words = ["task", "kaam", "todo", "karna hai", "krna hai", "karna he", "krna he",
+                      "likhna hai", "add karo", "note karo"]
+    task_done_words = ["task done", "kaam ho gaya", "kaam kar liya", "complete kar liya", "task complete",
+                       "ho gaya", "kar liya"]
+
+    if any(w in lower for w in task_done_words):
         m = _re.search(r'#?(\d+)', lower)
         hint = m.group(1) if m else lower[:30]
         return ("complete_task", {"hint": hint})
 
-    expense_words = ["kharcha", "kharch", "spent", "rupees", "rs", "kharch kiya", "laga diye"]
+    if any(w in lower for w in task_add_words):
+        title = user_msg
+        # Remove trigger words but keep the actual task description
+        for kw in ["task", "kaam", "todo", "add", "karo", "kro", "kr", "lagao", "likh",
+                   "note", "mein", "me", "naya", "new"]:
+            title = _re.sub(r'\b' + kw + r'\b', " ", title, flags=_re.IGNORECASE)
+        # Remove date words like "kl", "kal", "aaj" from title (already extracted above)
+        for kw in ["kl", "kal", "aaj", "parso"]:
+            title = _re.sub(r'\b' + kw + r'\b', " ", title, flags=_re.IGNORECASE)
+        title = " ".join(title.split()).strip()
+        if title and len(title) > 1:
+            return ("add_task", {"title": title[:80]})
+
+    # ── EXPENSE ───────────────────────────────────────────────────
+    expense_words = ["kharcha", "kharch", "spent", "rupees", "rs", "kharch kiya", "laga diye",
+                     "lagaya", "laga", "khaya", "piya", "liya", "diye"]
     if any(w in lower for w in expense_words):
         m = _re.search(r'(\d+(?:\.\d+)?)', lower)
         if m:
@@ -1179,6 +1301,7 @@ def parse_user_message(user_msg):
             desc = " ".join(w for w in desc.split() if w.lower() not in expense_words).strip()
             return ("expense", {"amount": amount, "desc": desc or "Expense"})
 
+    # ── HABIT ─────────────────────────────────────────────────────
     if "habit add" in lower or "add habit" in lower or "naya habit" in lower:
         name = _re.sub(r'habit add|add habit|naya habit', "", user_msg, flags=_re.IGNORECASE).strip()
         return ("add_habit", {"name": name[:50]})
@@ -1188,6 +1311,7 @@ def parse_user_message(user_msg):
         keyword = m.group(1) if m else lower[:30]
         return ("habit_done", {"keyword": keyword})
 
+    # ── WATER ─────────────────────────────────────────────────────
     if any(w in lower for w in ["paani piya", "water piya", "water log", "paani liya"]):
         m = _re.search(r'(\d+)\s*(ml|glass|bottle)', lower)
         ml = 250
@@ -1269,6 +1393,43 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.message.reply_text("❓ Kaunsa habit? ID ya naam batao")
+    elif action_type == "add_calendar":
+        title    = params.get("title", "Event")
+        ev_date  = params.get("date", today_str())
+        ev_type  = params.get("type", "event")
+        e = calendar.add(title, ev_date, "", "", "", ev_type)
+        type_emoji = "🎂" if ev_type == "birthday" else "📅"
+        if ev_type == "birthday":
+            msg = (
+                f"{type_emoji} *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n"
+                f"#{e['id']} 🎂 *{ev_date}*\n"
+                f"👤 {title}\n\n"
+                f"✅ Ek din pehle remind karunga InshAllah!\n"
+                f"📊 'Calendar Events' sheet mein save!"
+            )
+        else:
+            msg = (
+                f"{type_emoji} *Event Add Ho Gaya!* ✅\n\n"
+                f"#{e['id']} 📅 *{ev_date}*\n"
+                f"📌 {title}\n\n"
+                f"✅ Ek din pehle remind karunga InshAllah!\n"
+                f"📊 'Calendar Events' sheet mein save!"
+            )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    elif action_type == "add_bill":
+        name     = params.get("name", "Bill")
+        amount   = params.get("amount", 0)
+        due_day  = params.get("due_day", 0)
+        b = bills.add(name, amount, due_day)
+        await update.message.reply_text(
+            f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n"
+            f"#{b['id']} *{name}*\n"
+            f"💰 Rs.{amount}\n"
+            f"📅 Due: {due_day} tarikh (0 = not set)\n\n"
+            f"📊 'Bills & Subscriptions' sheet mein save!\n"
+            f"💡 Edit karne ke liye: /billadd",
+            parse_mode="Markdown"
+        )
     elif action_type == "water":
         total = water.add(params.get("ml", 250))
         goal = water.goal()
