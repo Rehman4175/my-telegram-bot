@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER - Private GitHub Repo + Google Sheets Backup
-UPDATED:
-  - Chat history → "Miscellaneous" tab (not Daily_Logs)
-  - Calendar full support added
-  - Delete from Sheets when task/reminder/habit deleted
-  - Diary password properly enforced (handled in bot)
-  - Bulk alarm acknowledge (same text → all off)
+SECURE DATA MANAGER
+- TAB_MAP exactly matches your Google Sheet tab names
+- Reminders: ID, Time, Text, Repeat, Status, Created Date, Chat ID, Last Fired, Acknowledged, Remarks
+- Bills & Subscriptions tab supported fully
+- Calendar Events tab (exact name)
+- Memory / Important Notes tab
+- Daily_Logs for chat history
+- delete_row_by_value() for Sheets delete sync
+- CalendarStore: birthday/event type, remind_day_before flag
 """
 
 import os
@@ -18,9 +20,6 @@ import time
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 
-# ================================================================
-# LOGGING
-# ================================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -28,9 +27,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ================================================================
-# CONFIGURATION
-# ================================================================
 GITHUB_TOKEN      = os.environ.get("GB_TOKEN", "")
 PRIVATE_REPO_URL  = os.environ.get("PRIVATE_REPO_URL", "")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")
@@ -38,9 +34,6 @@ SHEET_KEY         = os.environ.get("SHEET_KEY", "1kMk3veUHLbD8iKG3P7sYXBX1r5w647
 
 DATA_DIR = "bot_private_data"
 
-# ================================================================
-# TIMEZONE
-# ================================================================
 IST = timezone(timedelta(hours=5, minutes=30))
 
 def now_ist():
@@ -55,45 +48,43 @@ def now_str():
 def yesterday_str():
     return (now_ist() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-# ================================================================
-# GOOGLE SHEETS SETUP
-# ================================================================
 HAS_GSHEETS = False
 try:
     import gspread
     HAS_GSHEETS = True
-    log.info("✅ gspread library found")
+    log.info("gspread found")
 except ImportError:
-    log.error("❌ gspread not installed! Run: pip install gspread google-auth")
+    log.error("gspread not installed!")
 
 
 class GoogleSheetsBackup:
-    """
-    Writes to BotBackup sheet tabs.
-    TAB_MAP keys = internal names
-    TAB_MAP values = EXACT tab names in your Google Sheet
-    """
-
+    # EXACT tab names as they appear in your Google Sheet
     TAB_MAP = {
-        "Diary":          "Diary",
-        "Expenses":       "Expenses",
-        "Habits":         "Habits",
-        "Water":          "Water Intake",
-        "Reminders":      "Reminders",
-        "Tasks":          "Tasks",
-        "Calendar":       "Calendar Events",
-        "Miscellaneous":  "Miscellaneous",   # Chat history + misc logs go here
+        "Reminders": "Reminders",
+        "Tasks":     "Tasks",
+        "Memory":    "Memory / Important Notes",
+        "Goals":     "Goals",
+        "Calendar":  "Calendar Events",
+        "Bills":     "Bills & Subscriptions",
+        "Expenses":  "Expenses",
+        "Habits":    "Habits",
+        "Water":     "Water Intake",
+        "Logs":      "Daily_Logs",
+        "Diary":     "Diary",
     }
 
     HEADERS = {
-        "Diary":         ["Date", "Time", "Text", "Mood"],
-        "Expenses":      ["Date", "Time", "Amount", "Description", "Category"],
-        "Habits":        ["Date", "Time", "Habit Name", "Streak"],
-        "Water":         ["Date", "Time", "ML Added", "Day Total"],
-        "Reminders":     ["Date", "Set For", "Text", "Action"],
-        "Tasks":         ["ID", "Title", "Priority", "Status", "Created", "Done Date"],
-        "Calendar":      ["ID", "Title", "Date", "Time", "Location", "Notes", "Created"],
-        "Miscellaneous": ["Timestamp", "Date", "Role", "User", "Message"],
+        "Reminders": ["ID", "Time", "Text", "Repeat", "Status", "Created Date", "Chat ID", "Last Fired", "Acknowledged", "Remarks"],
+        "Tasks":     ["ID", "Title", "Priority", "Status", "Created", "Done Date"],
+        "Memory":    ["Date", "Time", "Fact"],
+        "Goals":     ["ID", "Title", "Progress", "Status", "Deadline", "Created"],
+        "Calendar":  ["ID", "Title", "Date", "Time", "Location", "Notes", "Type", "Created"],
+        "Bills":     ["ID", "Name", "Amount", "Due Day", "Status", "Auto Pay", "Payment Method", "Notes", "Created"],
+        "Expenses":  ["Date", "Time", "Amount", "Description", "Category"],
+        "Habits":    ["Date", "Time", "Habit Name", "Streak"],
+        "Water":     ["Date", "Time", "ML Added", "Day Total"],
+        "Logs":      ["Timestamp", "Date", "Role", "User", "Message"],
+        "Diary":     ["Date", "Time", "Text", "Mood"],
     }
 
     def __init__(self):
@@ -104,67 +95,50 @@ class GoogleSheetsBackup:
 
     def _connect(self):
         if not HAS_GSHEETS:
-            log.error("❌ gspread not installed — Sheets will not work")
             return
         if not GOOGLE_CREDS_JSON:
-            log.error("❌ GOOGLE_CREDS_JSON is empty. Set it as environment variable!")
+            log.error("GOOGLE_CREDS_JSON empty")
             return
-
         try:
             creds_dict = json.loads(GOOGLE_CREDS_JSON)
-            log.info(f"✅ GOOGLE_CREDS_JSON parsed — client_email: {creds_dict.get('client_email','?')}")
         except json.JSONDecodeError as e:
-            log.error(f"❌ GOOGLE_CREDS_JSON is not valid JSON: {e}")
+            log.error(f"GOOGLE_CREDS_JSON invalid: {e}")
             return
 
         authorized = False
-
         try:
             from google.oauth2.service_account import Credentials
-            scopes = [
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ]
-            creds        = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            creds = Credentials.from_service_account_info(
+                creds_dict,
+                scopes=["https://www.googleapis.com/auth/spreadsheets",
+                        "https://www.googleapis.com/auth/drive"]
+            )
             self._client = gspread.authorize(creds)
-            authorized   = True
-            log.info("✅ Auth: google-auth SUCCESS")
+            authorized = True
         except Exception as e1:
-            log.warning(f"google-auth failed ({e1}), trying oauth2client...")
+            log.warning(f"google-auth failed: {e1}")
 
         if not authorized:
             try:
                 from oauth2client.service_account import ServiceAccountCredentials
-                scope        = ["https://spreadsheets.google.com/feeds",
-                                "https://www.googleapis.com/auth/drive"]
-                creds        = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                creds = ServiceAccountCredentials.from_json_keyfile_dict(
+                    creds_dict,
+                    ["https://spreadsheets.google.com/feeds",
+                     "https://www.googleapis.com/auth/drive"]
+                )
                 self._client = gspread.authorize(creds)
-                authorized   = True
-                log.info("✅ Auth: oauth2client SUCCESS")
+                authorized = True
             except Exception as e2:
-                log.error(f"❌ All auth methods failed: {e2}")
+                log.error(f"All auth failed: {e2}")
                 return
 
         try:
             self._book = self._client.open_by_key(SHEET_KEY)
-            log.info(f"✅ Sheet opened: '{self._book.title}'")
             for ws in self._book.worksheets():
                 self._ws_cache[ws.title] = ws
-            log.info(f"📋 Sheet tabs found: {list(self._ws_cache.keys())}")
-
-            for key, tab_name in self.TAB_MAP.items():
-                if tab_name not in self._ws_cache:
-                    log.warning(f"⚠️  Tab '{tab_name}' NOT FOUND — will be auto-created on first write")
-
-        except gspread.exceptions.SpreadsheetNotFound:
-            log.error(f"❌ Sheet not found (key={SHEET_KEY}). Check SHEET_KEY env var.")
-        except gspread.exceptions.APIError as e:
-            if "403" in str(e):
-                log.error("❌ Permission denied (403). Share sheet with service account email as Editor!")
-            else:
-                log.error(f"❌ Sheets API error: {e}")
+            log.info(f"Sheet tabs: {list(self._ws_cache.keys())}")
         except Exception as e:
-            log.error(f"❌ Cannot open sheet: {e}")
+            log.error(f"Cannot open sheet: {e}")
 
     @property
     def connected(self):
@@ -186,51 +160,42 @@ class GoogleSheetsBackup:
                 ws = self._book.add_worksheet(title=tab_name, rows=2000, cols=len(headers))
                 ws.append_row(headers, value_input_option="USER_ENTERED")
                 self._ws_cache[tab_name] = ws
-                log.info(f"📋 Created new tab: '{tab_name}'")
+                log.info(f"Created tab: '{tab_name}'")
                 return ws
             except Exception as e:
-                log.error(f"❌ Cannot create tab '{tab_name}': {e}")
+                log.error(f"Cannot create tab '{tab_name}': {e}")
                 return None
         except Exception as e:
-            log.error(f"❌ Error getting tab '{tab_name}': {e}")
+            log.error(f"Error tab '{tab_name}': {e}")
             return None
 
     def _append(self, key, row):
         if not self._book:
-            log.warning(f"⚠️  Sheets NOT connected — skipping sync for [{key}]")
             return False
         ws = self._ws(key)
         if not ws:
-            log.error(f"❌ Sheets tab [{key}] not accessible — data NOT synced")
             return False
         try:
             ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
-            log.info(f"📤 Sheets ✅ [{self.TAB_MAP.get(key,key)}] row added: {row[:3]}")
+            log.info(f"[{self.TAB_MAP.get(key,key)}] row appended")
             return True
         except gspread.exceptions.APIError as e:
             if "RESOURCE_EXHAUSTED" in str(e):
-                log.warning("⏳ Sheets rate limit hit, retrying in 65s...")
+                log.warning("Rate limit, retry 65s...")
                 time.sleep(65)
                 try:
                     ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
-                    log.info(f"📤 Sheets ✅ [{key}] row added after retry")
                     return True
                 except Exception as e2:
-                    log.error(f"❌ Sheets [{key}] retry also failed: {e2}")
+                    log.error(f"Retry failed [{key}]: {e2}")
             else:
-                log.error(f"❌ Sheets [{key}] API error: {e}")
+                log.error(f"API error [{key}]: {e}")
             return False
         except Exception as e:
-            log.error(f"❌ Sheets [{key}] unexpected error: {e}")
+            log.error(f"Append error [{key}]: {e}")
             return False
 
-    # ── DELETE a row from Sheets by matching a value in a column ──
     def delete_row_by_value(self, key, col_index, match_value):
-        """
-        Delete first row where column col_index (1-based) matches match_value.
-        col_index=1 means column A (e.g. ID column in Tasks).
-        Returns True if deleted, False otherwise.
-        """
         if not self._book:
             return False
         ws = self._ws(key)
@@ -240,65 +205,122 @@ class GoogleSheetsBackup:
             all_values = ws.get_all_values()
             for i, row in enumerate(all_values):
                 if i == 0:
-                    continue  # skip header
+                    continue
                 if len(row) >= col_index and str(row[col_index - 1]).strip() == str(match_value).strip():
-                    ws.delete_rows(i + 1)  # gspread is 1-indexed
-                    log.info(f"🗑️  Sheets [{key}] deleted row where col{col_index}='{match_value}'")
+                    ws.delete_rows(i + 1)
+                    log.info(f"Deleted row [{key}] col{col_index}='{match_value}'")
                     return True
-            log.warning(f"⚠️  Sheets [{key}] row with col{col_index}='{match_value}' not found")
             return False
         except Exception as e:
-            log.error(f"❌ Sheets delete_row error [{key}]: {e}")
+            log.error(f"delete_row [{key}]: {e}")
             return False
 
-    # ── Public sync methods ───────────────────────────────────────
-    def diary(self, text, mood="📝"):
-        log.info(f"📤 Syncing diary to Sheets: '{text[:50]}'")
-        ok = self._append("Diary", [today_str(), now_str(), text, mood])
-        if not ok:
-            log.error("❌ DIARY DID NOT SYNC TO SHEETS")
-        return ok
+    def update_row_by_value(self, key, col_index, match_value, new_row):
+        if not self._book:
+            return False
+        ws = self._ws(key)
+        if not ws:
+            return False
+        try:
+            all_values = ws.get_all_values()
+            for i, row in enumerate(all_values):
+                if i == 0:
+                    continue
+                if len(row) >= col_index and str(row[col_index - 1]).strip() == str(match_value).strip():
+                    row_num = i + 1
+                    for j, val in enumerate(new_row):
+                        ws.update_cell(row_num, j + 1, str(val))
+                    log.info(f"Updated row [{key}] col{col_index}='{match_value}'")
+                    return True
+            return False
+        except Exception as e:
+            log.error(f"update_row [{key}]: {e}")
+            return False
 
-    def expense(self, amount, desc, category="general"):
-        log.info(f"📤 Syncing expense to Sheets: ₹{amount} {desc}")
-        return self._append("Expenses", [today_str(), now_str(), amount, desc, category])
+    # Public sync methods
 
-    def habit(self, name, streak):
-        log.info(f"📤 Syncing habit to Sheets: {name} streak={streak}")
-        return self._append("Habits", [today_str(), now_str(), name, streak])
-
-    def water(self, ml_added, day_total):
-        return self._append("Water", [today_str(), now_str(), ml_added, day_total])
-
-    def reminder(self, text, set_for, action="created"):
-        return self._append("Reminders", [today_str(), set_for, text, action])
+    def reminder(self, r, action="created"):
+        """Reminder row: ID, Time, Text, Repeat, Status, Created Date, Chat ID, Last Fired, Acknowledged, Remarks"""
+        row = [
+            r.get("id",""),
+            r.get("time",""),
+            r.get("text",""),
+            r.get("repeat","once"),
+            "Active" if r.get("active") else "Inactive",
+            r.get("date", today_str()),
+            r.get("chat_id",""),
+            r.get("last_fired",""),
+            str(r.get("acknowledged", False)),
+            r.get("remarks",""),
+        ]
+        if action == "created":
+            return self._append("Reminders", row)
+        else:
+            ok = self.update_row_by_value("Reminders", 1, str(r.get("id","")), row)
+            return ok if ok else self._append("Reminders", row)
 
     def task(self, t):
         return self._append("Tasks", [
-            t.get("id",""), t.get("title",""), t.get("priority",""),
-            "done" if t.get("done") else "pending",
+            t.get("id",""), t.get("title",""), t.get("priority","medium"),
+            "Done" if t.get("done") else "Pending",
             t.get("created",""), t.get("done_date","")
+        ])
+
+    def task_update(self, t):
+        row = [t.get("id",""), t.get("title",""), t.get("priority","medium"),
+               "Done" if t.get("done") else "Pending", t.get("created",""), t.get("done_date","")]
+        ok = self.update_row_by_value("Tasks", 1, str(t.get("id","")), row)
+        return ok if ok else self._append("Tasks", row)
+
+    def memory(self, text):
+        return self._append("Memory", [today_str(), now_str(), text])
+
+    def goal(self, g):
+        return self._append("Goals", [
+            g.get("id",""), g.get("title",""), g.get("progress",0),
+            "Done" if g.get("done") else "Active",
+            g.get("deadline",""), g.get("created","")
         ])
 
     def calendar_event(self, e):
         return self._append("Calendar", [
             e.get("id",""), e.get("title",""), e.get("date",""),
-            e.get("time",""), e.get("location",""), e.get("notes",""), e.get("created","")
+            e.get("time",""), e.get("location",""), e.get("notes",""),
+            e.get("type","event"), e.get("created","")
         ])
 
-    def miscellaneous(self, role, user, message):
-        """Chat history and misc logs → Miscellaneous tab"""
-        return self._append("Miscellaneous", [
-            now_ist().isoformat(), today_str(), role, user, message
-        ])
+    def bill(self, b, action="created"):
+        row = [
+            b.get("id",""), b.get("name",""), b.get("amount",""),
+            b.get("due_day",""),
+            "Active" if b.get("active") else "Inactive",
+            b.get("auto_pay","No"), b.get("payment_method",""),
+            b.get("notes",""), b.get("created","")
+        ]
+        if action == "created":
+            return self._append("Bills", row)
+        else:
+            ok = self.update_row_by_value("Bills", 1, str(b.get("id","")), row)
+            return ok if ok else self._append("Bills", row)
+
+    def expense(self, amount, desc, category="general"):
+        return self._append("Expenses", [today_str(), now_str(), amount, desc, category])
+
+    def habit(self, name, streak):
+        return self._append("Habits", [today_str(), now_str(), name, streak])
+
+    def water(self, ml_added, day_total):
+        return self._append("Water", [today_str(), now_str(), ml_added, day_total])
+
+    def log_event(self, role, user, message):
+        return self._append("Logs", [now_ist().isoformat(), today_str(), role, user, message])
+
+    def diary(self, text, mood="📝"):
+        return self._append("Diary", [today_str(), now_str(), text, mood])
 
     def test_connection(self):
-        log.info("🧪 Testing Sheets connection...")
-        ok = self.miscellaneous("system", "Bot", f"Started at {now_ist().strftime('%H:%M:%S IST')}")
-        if ok:
-            log.info("✅ Sheets test PASSED")
-        else:
-            log.error("❌ Sheets test FAILED")
+        ok = self.log_event("system", "Bot", f"Started {now_ist().strftime('%H:%M IST')}")
+        log.info("Sheets test PASSED" if ok else "Sheets test FAILED")
         return ok
 
 
@@ -311,23 +333,18 @@ class PrivateRepoManager:
         self.repo_url     = PRIVATE_REPO_URL
         self.token        = GITHUB_TOKEN
         self.is_connected = False
-
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
         self._configure_git()
-
         if not self.repo_url or not self.token:
-            log.warning("⚠️ GitHub credentials not set — saving locally only")
+            log.warning("GitHub creds not set — local only")
             return
-
         self.is_connected = True
         self._setup_repo()
 
     def _configure_git(self):
         try:
-            subprocess.run(["git", "config", "--global", "user.email", "botdata@bot.local"],
-                           capture_output=True)
-            subprocess.run(["git", "config", "--global", "user.name",  "BotDataManager"],
-                           capture_output=True)
+            subprocess.run(["git","config","--global","user.email","botdata@bot.local"], capture_output=True)
+            subprocess.run(["git","config","--global","user.name","BotDataManager"], capture_output=True)
         except Exception:
             pass
 
@@ -345,22 +362,12 @@ class PrivateRepoManager:
             return
         try:
             if not self._is_git_repo():
-                r = subprocess.run(["git", "clone", auth_url, self.data_dir],
-                                   capture_output=True, text=True)
-                if r.returncode == 0:
-                    log.info("✅ Private data repo cloned")
-                else:
-                    log.warning(f"Clone failed: {r.stderr.strip()}")
-                    subprocess.run(["git", "-C", self.data_dir, "init"], capture_output=True)
+                r = subprocess.run(["git","clone",auth_url,self.data_dir], capture_output=True, text=True)
+                if r.returncode != 0:
+                    subprocess.run(["git","-C",self.data_dir,"init"], capture_output=True)
             else:
-                r = subprocess.run(
-                    ["git", "-C", self.data_dir, "pull", auth_url, "main", "--rebase"],
-                    capture_output=True, text=True
-                )
-                if r.returncode == 0:
-                    log.info("✅ Private repo pulled latest")
-                else:
-                    log.warning(f"Pull warning: {r.stderr.strip()}")
+                subprocess.run(["git","-C",self.data_dir,"pull",auth_url,"main","--rebase"],
+                               capture_output=True, text=True)
         except Exception as e:
             log.warning(f"Git setup: {e}")
 
@@ -371,22 +378,13 @@ class PrivateRepoManager:
         if not auth_url:
             return
         try:
-            subprocess.run(["git", "-C", self.data_dir, "add", "."],
-                           check=True, capture_output=True)
-            r = subprocess.run(
-                ["git", "-C", self.data_dir, "commit", "-m", commit_msg],
-                capture_output=True, text=True
-            )
+            subprocess.run(["git","-C",self.data_dir,"add","."], check=True, capture_output=True)
+            r = subprocess.run(["git","-C",self.data_dir,"commit","-m",commit_msg],
+                               capture_output=True, text=True)
             if "nothing to commit" in (r.stdout + r.stderr):
                 return
-            p = subprocess.run(
-                ["git", "-C", self.data_dir, "push", auth_url, "main"],
-                capture_output=True, text=True
-            )
-            if p.returncode == 0:
-                log.info(f"📤 GitHub ✅ committed & pushed: {commit_msg}")
-            else:
-                log.warning(f"Push failed: {p.stderr.strip()}")
+            subprocess.run(["git","-C",self.data_dir,"push",auth_url,"main"],
+                           capture_output=True, text=True)
         except Exception as e:
             log.warning(f"Push error: {e}")
 
@@ -406,14 +404,13 @@ class PrivateRepoManager:
             default = {}
         filepath = Path(self.data_dir) / filename
         if not filepath.exists():
-            log.info(f"📄 Creating {filename} with defaults")
             self.save_file(filename, default)
             return default
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         except json.JSONDecodeError:
-            log.error(f"❌ Corrupt {filename}! Resetting to defaults.")
+            log.error(f"Corrupt {filename}! Resetting.")
             self.save_file(filename, default)
             return default
         except Exception as e:
@@ -422,15 +419,12 @@ class PrivateRepoManager:
 
 
 # ================================================================
-# INITIALIZE GLOBAL OBJECTS
+# GLOBAL OBJECTS
 # ================================================================
 repo_manager  = PrivateRepoManager()
 sheets_backup = GoogleSheetsBackup()
 
 
-# ================================================================
-# STORE BASE
-# ================================================================
 class PrivateStore:
     def __init__(self, name, default=None):
         self.name    = name
@@ -453,6 +447,10 @@ class MemoryStore:
         facts.append({"f": text, "d": today_str()})
         self.store.data["facts"] = facts[-200:]
         self.store.save()
+        try:
+            sheets_backup.memory(text)
+        except Exception:
+            pass
 
     def get_all_facts(self):
         return self.store.data.get("facts", [])
@@ -476,37 +474,31 @@ class TaskStore:
         self.store.data["list"].append(t)
         self.store.save()
         try:
-            ok = sheets_backup.task(t)
-            log.info(f"📤 Task '{title}' → Sheets: {'✅' if ok else '❌'}")
-        except Exception as e:
-            log.error(f"Task sheets sync error: {e}")
+            sheets_backup.task(t)
+        except Exception:
+            pass
         return t
 
     def complete(self, tid):
         for t in self.store.data["list"]:
             if t["id"] == tid and not t["done"]:
-                t["done"] = True
+                t["done"]      = True
                 t["done_date"] = today_str()
                 self.store.save()
                 try:
-                    # Update row in Sheets — delete old row, add updated one
-                    sheets_backup.delete_row_by_value("Tasks", 1, str(tid))
-                    ok = sheets_backup.task(t)
-                    log.info(f"📤 Task #{tid} complete → Sheets: {'✅' if ok else '❌'}")
-                except Exception as e:
-                    log.error(f"Task complete sheets error: {e}")
+                    sheets_backup.task_update(t)
+                except Exception:
+                    pass
                 return t
         return None
 
     def delete(self, tid):
-        """Delete task locally AND from Google Sheets"""
         self.store.data["list"] = [t for t in self.store.data["list"] if t["id"] != tid]
         self.store.save()
         try:
-            ok = sheets_backup.delete_row_by_value("Tasks", 1, str(tid))
-            log.info(f"🗑️  Task #{tid} deleted from Sheets: {'✅' if ok else '⚠️ not found'}")
-        except Exception as e:
-            log.error(f"Task delete sheets error: {e}")
+            sheets_backup.delete_row_by_value("Tasks", 1, str(tid))
+        except Exception:
+            pass
 
     def pending(self):
         return [t for t in self.store.data.get("list", []) if not t["done"]]
@@ -534,21 +526,13 @@ class DiaryStore:
 
     def add(self, text, mood="📝"):
         td = today_str()
-        ts = now_str()
-
         self.store.data.setdefault("entries", {}).setdefault(td, [])
-        self.store.data["entries"][td].append({"text": text, "mood": mood, "time": ts})
+        self.store.data["entries"][td].append({"text": text, "mood": mood, "time": now_str()})
         self.store.save()
-        log.info(f"📖 Diary saved locally: '{text[:60]}'")
-
         try:
-            ok = sheets_backup.diary(text, mood)
-            if ok:
-                log.info(f"✅ Diary synced to Sheets successfully")
-            else:
-                log.error(f"❌ Diary FAILED to sync to Sheets")
-        except Exception as e:
-            log.error(f"❌ Diary sheets sync EXCEPTION: {e}")
+            sheets_backup.diary(text, mood)
+        except Exception:
+            pass
 
     def get(self, d):
         return self.store.data.get("entries", {}).get(d, [])
@@ -577,7 +561,7 @@ class HabitStore:
 
     def log(self, hid):
         td, yd = today_str(), yesterday_str()
-        logs   = self.store.data.get("logs", {})
+        logs = self.store.data.get("logs", {})
         logs.setdefault(td, [])
         if hid in logs[td]:
             return False, 0
@@ -592,10 +576,9 @@ class HabitStore:
         self.store.save()
         try:
             name = next((h["name"] for h in self.store.data["list"] if h["id"] == hid), f"#{hid}")
-            ok = sheets_backup.habit(name, streak)
-            log.info(f"📤 Habit '{name}' → Sheets: {'✅' if ok else '❌'}")
-        except Exception as e:
-            log.error(f"Habit sheets sync error: {e}")
+            sheets_backup.habit(name, streak)
+        except Exception:
+            pass
         return True, streak
 
     def log_by_name(self, keyword):
@@ -618,11 +601,8 @@ class HabitStore:
         return self.store.data.get("list", [])
 
     def delete(self, hid):
-        """Delete habit locally — Sheets rows are logs not deletable by ID easily, just remove local"""
-        name = next((h["name"] for h in self.store.data.get("list", []) if h["id"] == hid), f"#{hid}")
         self.store.data["list"] = [h for h in self.store.data["list"] if h["id"] != hid]
         self.store.save()
-        log.info(f"🗑️  Habit '{name}' #{hid} deleted locally")
 
 
 # ================================================================
@@ -639,10 +619,9 @@ class ExpenseStore:
         })
         self.store.save()
         try:
-            ok = sheets_backup.expense(amount, desc, category)
-            log.info(f"📤 Expense ₹{amount} '{desc}' → Sheets: {'✅' if ok else '❌'}")
-        except Exception as e:
-            log.error(f"Expense sheets sync error: {e}")
+            sheets_backup.expense(amount, desc, category)
+        except Exception:
+            pass
 
     def set_budget(self, amount):
         self.store.data["budget"] = amount
@@ -681,6 +660,10 @@ class GoalStore:
         }
         self.store.data["list"].append(g)
         self.store.save()
+        try:
+            sheets_backup.goal(g)
+        except Exception:
+            pass
         return g
 
     def update_progress(self, gid, pct):
@@ -726,7 +709,7 @@ class ReminderStore:
         self.store.data["list"].append(r)
         self.store.save()
         try:
-            sheets_backup.reminder(text, remind_at, "created")
+            sheets_backup.reminder(r, action="created")
         except Exception:
             pass
         return r
@@ -744,19 +727,14 @@ class ReminderStore:
         return None
 
     def delete(self, rid):
-        """Delete reminder locally AND from Sheets"""
-        # Find text before deleting (for Sheets match)
         target = self.get_by_id(rid)
         self.store.data["list"] = [r for r in self.store.data["list"] if r["id"] != rid]
         self.store.save()
         if target:
             try:
-                # Reminders sheet col3 = Text, col2 = Set For
-                # We match by reminder text in col3
-                sheets_backup.delete_row_by_value("Reminders", 3, target["text"])
-                log.info(f"🗑️  Reminder #{rid} deleted from Sheets")
-            except Exception as e:
-                log.error(f"Reminder delete sheets error: {e}")
+                sheets_backup.delete_row_by_value("Reminders", 1, str(rid))
+            except Exception:
+                pass
 
     def mark_fired(self, rid):
         for r in self.store.data["list"]:
@@ -768,7 +746,6 @@ class ReminderStore:
                 break
 
     def acknowledge(self, rid, remark="OK pressed"):
-        """Acknowledge one reminder by ID"""
         for r in self.store.data["list"]:
             if r["id"] == rid and r.get("active"):
                 r["active"]       = False
@@ -776,20 +753,15 @@ class ReminderStore:
                 r["remarks"]      = remark
                 r["last_fired"]   = now_ist().isoformat()
                 self.store.save()
-                log.info(f"✅ Reminder #{rid} acknowledged: {remark}")
                 try:
-                    sheets_backup.reminder(r["text"], r["time"], "acknowledged")
+                    sheets_backup.reminder(r, action="update")
                 except Exception:
                     pass
                 return True
         return False
 
     def acknowledge_all_by_text(self, text):
-        """
-        Acknowledge ALL active reminders whose text matches (same text).
-        This is called when user presses OK on one alarm — dismisses all duplicates too.
-        Returns count of dismissed reminders.
-        """
+        """Dismiss ALL active reminders matching text — bulk OK press"""
         count = 0
         text_clean = text.strip().lower().lstrip("🔁 ")
         for r in self.store.data["list"]:
@@ -799,10 +771,9 @@ class ReminderStore:
             if r_text == text_clean or text_clean in r_text or r_text in text_clean:
                 r["active"]       = False
                 r["acknowledged"] = True
-                r["remarks"]      = "Bulk OK — dismissed with group"
+                r["remarks"]      = "Bulk dismissed"
                 r["last_fired"]   = now_ist().isoformat()
                 count += 1
-                log.info(f"✅ Bulk-dismissed reminder #{r['id']}: {r['text'][:40]}")
         if count:
             self.store.save()
         return count
@@ -816,25 +787,12 @@ class ReminderStore:
                 changed = True
         if changed:
             self.store.save()
-        log.info("🔄 Daily reminders reset at midnight")
+        log.info("Daily reminders reset")
 
     def due_now(self):
         now_hm = now_ist().strftime("%H:%M")
-        return [
-            r for r in self.store.data.get("list", [])
-            if (r.get("active")
-                and not r.get("acknowledged", False)
-                and not r.get("fired_today", False)
-                and r["time"] == now_hm)
-        ]
-
-    def ringing(self):
-        return [
-            r for r in self.store.data.get("list", [])
-            if (r.get("active")
-                and not r.get("acknowledged", False)
-                and r.get("fired_today", False))
-        ]
+        return [r for r in self.store.data.get("list", [])
+                if r.get("active") and not r.get("acknowledged") and r["time"] == now_hm]
 
 
 # ================================================================
@@ -851,10 +809,9 @@ class WaterStore:
         self.store.save()
         total = self.today_total()
         try:
-            ok = sheets_backup.water(ml, total)
-            log.info(f"📤 Water {ml}ml → Sheets: {'✅' if ok else '❌'}")
-        except Exception as e:
-            log.error(f"Water sheets sync error: {e}")
+            sheets_backup.water(ml, total)
+        except Exception:
+            pass
         return total
 
     def today_total(self):
@@ -869,26 +826,42 @@ class WaterStore:
 
 
 # ================================================================
-# BILL STORE
+# BILL STORE  →  "Bills & Subscriptions"
 # ================================================================
 class BillStore:
     def __init__(self):
         self.store = PrivateStore("bills", {"list": [], "counter": 0})
 
-    def add(self, name, amount, due_day):
+    def add(self, name, amount, due_day, auto_pay="No", payment_method="", notes=""):
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
         b = {
-            "id": self.store.data["counter"], "name": name,
-            "amount": amount, "due_day": due_day, "active": True,
-            "paid_months": [], "created": today_str(),
-            "auto_pay": "No", "payment_method": "", "notes": ""
+            "id":             self.store.data["counter"],
+            "name":           name,
+            "amount":         amount,
+            "due_day":        due_day,
+            "active":         True,
+            "paid_months":    [],
+            "created":        today_str(),
+            "auto_pay":       auto_pay,
+            "payment_method": payment_method,
+            "notes":          notes
         }
         self.store.data["list"].append(b)
         self.store.save()
+        try:
+            sheets_backup.bill(b, action="created")
+        except Exception:
+            pass
         return b
 
     def all_active(self):
         return [b for b in self.store.data.get("list", []) if b.get("active")]
+
+    def get_by_id(self, bid):
+        for b in self.store.data.get("list", []):
+            if b["id"] == bid:
+                return b
+        return None
 
     def mark_paid(self, bid):
         ym = today_str()[:7]
@@ -896,8 +869,20 @@ class BillStore:
             if b["id"] == bid and ym not in b.get("paid_months", []):
                 b["paid_months"].append(ym)
                 self.store.save()
+                try:
+                    sheets_backup.bill(b, action="update")
+                except Exception:
+                    pass
                 return True
         return False
+
+    def delete(self, bid):
+        self.store.data["list"] = [b for b in self.store.data["list"] if b["id"] != bid]
+        self.store.save()
+        try:
+            sheets_backup.delete_row_by_value("Bills", 1, str(bid))
+        except Exception:
+            pass
 
     def is_paid_this_month(self, bid):
         ym = today_str()[:7]
@@ -906,47 +891,56 @@ class BillStore:
                 return ym in b.get("paid_months", [])
         return False
 
+    def due_soon(self, days=3):
+        today_day = now_ist().day
+        result = []
+        for b in self.all_active():
+            try:
+                due = int(b.get("due_day", 0))
+                if 0 < due - today_day <= days:
+                    result.append(b)
+            except Exception:
+                pass
+        return result
+
 
 # ================================================================
-# CALENDAR STORE — FULL IMPLEMENTATION
+# CALENDAR STORE  →  "Calendar Events"
 # ================================================================
 class CalendarStore:
     def __init__(self):
         self.store = PrivateStore("calendar", {"events": [], "counter": 0})
 
-    def add(self, title, event_date, event_time="", location="", notes=""):
+    def add(self, title, event_date, event_time="", location="", notes="", event_type="event"):
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
         e = {
-            "id":       self.store.data["counter"],
-            "title":    title,
-            "date":     event_date,
-            "time":     event_time,
-            "location": location,
-            "notes":    notes,
-            "created":  today_str()
+            "id":                self.store.data["counter"],
+            "title":             title,
+            "date":              event_date,
+            "time":              event_time,
+            "location":          location,
+            "notes":             notes,
+            "type":              event_type,   # birthday / event / meeting / bill etc.
+            "created":           today_str(),
+            "remind_day_before": True,
         }
         self.store.data["events"].append(e)
         self.store.save()
         try:
-            ok = sheets_backup.calendar_event(e)
-            log.info(f"📤 Calendar event '{title}' → Sheets: {'✅' if ok else '❌'}")
-        except Exception as ex:
-            log.error(f"Calendar sheets sync error: {ex}")
+            sheets_backup.calendar_event(e)
+        except Exception:
+            pass
         return e
 
     def delete(self, eid):
-        """Delete event locally AND from Sheets"""
-        target = next((e for e in self.store.data.get("events", []) if e["id"] == eid), None)
         self.store.data["events"] = [e for e in self.store.data["events"] if e["id"] != eid]
         self.store.save()
-        if target:
-            try:
-                sheets_backup.delete_row_by_value("Calendar", 1, str(eid))
-                log.info(f"🗑️  Calendar event #{eid} deleted from Sheets")
-            except Exception as ex:
-                log.error(f"Calendar delete sheets error: {ex}")
+        try:
+            sheets_backup.delete_row_by_value("Calendar", 1, str(eid))
+        except Exception:
+            pass
 
-    def upcoming(self, days=7):
+    def upcoming(self, days=30):
         today_d = now_ist().date()
         cutoff  = today_d + timedelta(days=days)
         return sorted(
@@ -957,6 +951,14 @@ class CalendarStore:
 
     def today_events(self):
         return [e for e in self.store.data.get("events", []) if e["date"] == today_str()]
+
+    def tomorrow_events(self):
+        tomorrow = (now_ist().date() + timedelta(days=1)).strftime("%Y-%m-%d")
+        return [e for e in self.store.data.get("events", []) if e["date"] == tomorrow]
+
+    def events_needing_reminder(self):
+        """Events tomorrow — for day-before reminder job"""
+        return self.tomorrow_events()
 
     def all_events(self):
         return sorted(self.store.data.get("events", []), key=lambda x: x["date"])
@@ -969,7 +971,7 @@ class CalendarStore:
 
 
 # ================================================================
-# CHAT HISTORY STORE — now syncs to Miscellaneous tab
+# CHAT HISTORY STORE  →  Daily_Logs
 # ================================================================
 class ChatHistoryStore:
     def __init__(self):
@@ -982,11 +984,10 @@ class ChatHistoryStore:
         })
         self.store.data["history"] = self.store.data["history"][-500:]
         self.store.save()
-        # Sync to Miscellaneous tab in Sheets
         try:
-            sheets_backup.miscellaneous(role, user_name, content)
-        except Exception as e:
-            log.error(f"Chat history sheets sync error: {e}")
+            sheets_backup.log_event(role, user_name, content)
+        except Exception:
+            pass
 
     def get_all(self):
         return self.store.data.get("history", [])
@@ -1016,25 +1017,14 @@ bills     = BillStore()
 calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
 
-# ================================================================
-# STARTUP TEST
-# ================================================================
 try:
     ok = sheets_backup.test_connection()
-    if ok:
-        log.info("✅ Sheets startup test PASSED — all data will sync!")
-    else:
-        log.error("❌ Sheets startup test FAILED — data will save to GitHub only")
-        log.error(f"   Sheet Key: {SHEET_KEY}")
+    log.info("Sheets PASSED" if ok else "Sheets FAILED — GitHub only")
 except Exception as e:
-    log.error(f"Sheets startup test exception: {e}")
+    log.error(f"Sheets startup: {e}")
 
-# ================================================================
-# STATUS SUMMARY
-# ================================================================
 log.info("=" * 60)
-log.info("🔐 SECURE DATA MANAGER READY")
-log.info(f"   📁 Data dir : {DATA_DIR}/")
-log.info(f"   🔐 GitHub   : {'✅ Connected' if repo_manager.is_connected  else '⚠️  Local only'}")
-log.info(f"   📊 Sheets   : {'✅ Connected' if sheets_backup.connected    else '❌ NOT connected'}")
+log.info("SECURE DATA MANAGER READY")
+log.info(f"  GitHub : {'Connected' if repo_manager.is_connected else 'Local only'}")
+log.info(f"  Sheets : {'Connected' if sheets_backup.connected   else 'NOT connected'}")
 log.info("=" * 60)
