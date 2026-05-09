@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER
-- TAB_MAP exactly matches your Google Sheet tab names
-- Reminders: ID, Time, Text, Repeat, Status, Created Date, Chat ID, Last Fired, Acknowledged, Remarks
-- Bills & Subscriptions tab supported fully
-- Calendar Events tab (exact name)
-- Memory / Important Notes tab
-- Daily_Logs for chat history
-- delete_row_by_value() for Sheets delete sync
-- CalendarStore: birthday/event type, remind_day_before flag
+SECURE DATA MANAGER — FIXED VERSION
+Changes:
+  - Daily_Logs tab REMOVED — chat history now goes to "Miscellaneous" tab
+  - Habits → Google Sheet "Habits" tab properly synced
+  - Goals  → Google Sheet "Goals" tab properly synced
+  - Diary  → read operations (show/view) do NOT write to sheet
+  - TAB_MAP updated accordingly
 """
 
 import os
@@ -62,14 +60,14 @@ class GoogleSheetsBackup:
     TAB_MAP = {
         "Reminders": "Reminders",
         "Tasks":     "Tasks",
-        "Memory":    "Memo",
+        "Memory":    "Memory / Important Notes",
         "Goals":     "Goals",
         "Calendar":  "Calendar Events",
         "Bills":     "Bills & Subscriptions",
         "Expenses":  "Expenses",
         "Habits":    "Habits",
         "Water":     "Water Intake",
-        "Logs":      "Daily_Logs",
+        "Misc":      "Miscellaneous",      # ← Daily_Logs + chat history yahan
         "Diary":     "Diary",
     }
 
@@ -83,7 +81,7 @@ class GoogleSheetsBackup:
         "Expenses":  ["Date", "Time", "Amount", "Description", "Category"],
         "Habits":    ["Date", "Time", "Habit Name", "Streak"],
         "Water":     ["Date", "Time", "ML Added", "Day Total"],
-        "Logs":      ["Timestamp", "Date", "Role", "User", "Message"],
+        "Misc":      ["Timestamp", "Date", "Role", "User", "Message"],  # ← Miscellaneous headers
         "Diary":     ["Date", "Time", "Text", "Mood"],
     }
 
@@ -177,7 +175,7 @@ class GoogleSheetsBackup:
             return False
         try:
             ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
-            log.info(f"[{self.TAB_MAP.get(key,key)}] row appended")
+            log.info(f"[{self.TAB_MAP.get(key, key)}] row appended")
             return True
         except gspread.exceptions.APIError as e:
             if "RESOURCE_EXHAUSTED" in str(e):
@@ -237,86 +235,111 @@ class GoogleSheetsBackup:
             log.error(f"update_row [{key}]: {e}")
             return False
 
-    # Public sync methods
+    # ── Public sync methods ───────────────────────────────────────
 
     def reminder(self, r, action="created"):
-        """Reminder row: ID, Time, Text, Repeat, Status, Created Date, Chat ID, Last Fired, Acknowledged, Remarks"""
         row = [
-            r.get("id",""),
-            r.get("time",""),
-            r.get("text",""),
-            r.get("repeat","once"),
+            r.get("id", ""),
+            r.get("time", ""),
+            r.get("text", ""),
+            r.get("repeat", "once"),
             "Active" if r.get("active") else "Inactive",
             r.get("date", today_str()),
-            r.get("chat_id",""),
-            r.get("last_fired",""),
+            r.get("chat_id", ""),
+            r.get("last_fired", ""),
             str(r.get("acknowledged", False)),
-            r.get("remarks",""),
+            r.get("remarks", ""),
         ]
         if action == "created":
             return self._append("Reminders", row)
         else:
-            ok = self.update_row_by_value("Reminders", 1, str(r.get("id","")), row)
+            ok = self.update_row_by_value("Reminders", 1, str(r.get("id", "")), row)
             return ok if ok else self._append("Reminders", row)
 
     def task(self, t):
         return self._append("Tasks", [
-            t.get("id",""), t.get("title",""), t.get("priority","medium"),
+            t.get("id", ""), t.get("title", ""), t.get("priority", "medium"),
             "Done" if t.get("done") else "Pending",
-            t.get("created",""), t.get("done_date","")
+            t.get("created", ""), t.get("done_date", "")
         ])
 
     def task_update(self, t):
-        row = [t.get("id",""), t.get("title",""), t.get("priority","medium"),
-               "Done" if t.get("done") else "Pending", t.get("created",""), t.get("done_date","")]
-        ok = self.update_row_by_value("Tasks", 1, str(t.get("id","")), row)
+        row = [t.get("id", ""), t.get("title", ""), t.get("priority", "medium"),
+               "Done" if t.get("done") else "Pending", t.get("created", ""), t.get("done_date", "")]
+        ok = self.update_row_by_value("Tasks", 1, str(t.get("id", "")), row)
         return ok if ok else self._append("Tasks", row)
 
     def memory(self, text):
         return self._append("Memory", [today_str(), now_str(), text])
 
     def goal(self, g):
+        """Goals tab mein sync — FIXED"""
         return self._append("Goals", [
-            g.get("id",""), g.get("title",""), g.get("progress",0),
+            g.get("id", ""),
+            g.get("title", ""),
+            g.get("progress", 0),
             "Done" if g.get("done") else "Active",
-            g.get("deadline",""), g.get("created","")
+            g.get("deadline", ""),
+            g.get("created", "")
         ])
+
+    def goal_update(self, g):
+        """Goal progress update karo sheet mein"""
+        row = [
+            g.get("id", ""),
+            g.get("title", ""),
+            g.get("progress", 0),
+            "Done" if g.get("done") else "Active",
+            g.get("deadline", ""),
+            g.get("created", "")
+        ]
+        ok = self.update_row_by_value("Goals", 1, str(g.get("id", "")), row)
+        return ok if ok else self._append("Goals", row)
 
     def calendar_event(self, e):
         return self._append("Calendar", [
-            e.get("id",""), e.get("title",""), e.get("date",""),
-            e.get("time",""), e.get("location",""), e.get("notes",""),
-            e.get("type","event"), e.get("created","")
+            e.get("id", ""), e.get("title", ""), e.get("date", ""),
+            e.get("time", ""), e.get("location", ""), e.get("notes", ""),
+            e.get("type", "event"), e.get("created", "")
         ])
 
     def bill(self, b, action="created"):
         row = [
-            b.get("id",""), b.get("name",""), b.get("amount",""),
-            b.get("due_day",""),
+            b.get("id", ""), b.get("name", ""), b.get("amount", ""),
+            b.get("due_day", ""),
             "Active" if b.get("active") else "Inactive",
-            b.get("auto_pay","No"), b.get("payment_method",""),
-            b.get("notes",""), b.get("created","")
+            b.get("auto_pay", "No"), b.get("payment_method", ""),
+            b.get("notes", ""), b.get("created", "")
         ]
         if action == "created":
             return self._append("Bills", row)
         else:
-            ok = self.update_row_by_value("Bills", 1, str(b.get("id","")), row)
+            ok = self.update_row_by_value("Bills", 1, str(b.get("id", "")), row)
             return ok if ok else self._append("Bills", row)
 
     def expense(self, amount, desc, category="general"):
         return self._append("Expenses", [today_str(), now_str(), amount, desc, category])
 
     def habit(self, name, streak):
+        """Habits tab mein sync — FIXED: tab naam aur columns correct hain"""
         return self._append("Habits", [today_str(), now_str(), name, streak])
 
     def water(self, ml_added, day_total):
         return self._append("Water", [today_str(), now_str(), ml_added, day_total])
 
     def log_event(self, role, user, message):
-        return self._append("Logs", [now_ist().isoformat(), today_str(), role, user, message])
+        """Chat history → Miscellaneous tab (Daily_Logs nahi)"""
+        return self._append("Misc", [now_ist().isoformat(), today_str(), role, user, message])
 
-    def diary(self, text, mood="📝"):
+    def diary_write(self, text, mood="📝"):
+        """
+        ONLY call this when WRITING a diary entry.
+        Reading/showing diary → is function ko call mat karo.
+        """
         return self._append("Diary", [today_str(), now_str(), text, mood])
+
+    # NOTE: diary() alias hata diya — ab sirf diary_write() hai
+    # Bot code mein sheets_backup.diary() ki jagah sheets_backup.diary_write() use karo
 
     def test_connection(self):
         ok = self.log_event("system", "Bot", f"Started {now_ist().strftime('%H:%M IST')}")
@@ -343,8 +366,8 @@ class PrivateRepoManager:
 
     def _configure_git(self):
         try:
-            subprocess.run(["git","config","--global","user.email","botdata@bot.local"], capture_output=True)
-            subprocess.run(["git","config","--global","user.name","BotDataManager"], capture_output=True)
+            subprocess.run(["git", "config", "--global", "user.email", "botdata@bot.local"], capture_output=True)
+            subprocess.run(["git", "config", "--global", "user.name", "BotDataManager"], capture_output=True)
         except Exception:
             pass
 
@@ -362,11 +385,11 @@ class PrivateRepoManager:
             return
         try:
             if not self._is_git_repo():
-                r = subprocess.run(["git","clone",auth_url,self.data_dir], capture_output=True, text=True)
+                r = subprocess.run(["git", "clone", auth_url, self.data_dir], capture_output=True, text=True)
                 if r.returncode != 0:
-                    subprocess.run(["git","-C",self.data_dir,"init"], capture_output=True)
+                    subprocess.run(["git", "-C", self.data_dir, "init"], capture_output=True)
             else:
-                subprocess.run(["git","-C",self.data_dir,"pull",auth_url,"main","--rebase"],
+                subprocess.run(["git", "-C", self.data_dir, "pull", auth_url, "main", "--rebase"],
                                capture_output=True, text=True)
         except Exception as e:
             log.warning(f"Git setup: {e}")
@@ -378,12 +401,12 @@ class PrivateRepoManager:
         if not auth_url:
             return
         try:
-            subprocess.run(["git","-C",self.data_dir,"add","."], check=True, capture_output=True)
-            r = subprocess.run(["git","-C",self.data_dir,"commit","-m",commit_msg],
+            subprocess.run(["git", "-C", self.data_dir, "add", "."], check=True, capture_output=True)
+            r = subprocess.run(["git", "-C", self.data_dir, "commit", "-m", commit_msg],
                                capture_output=True, text=True)
             if "nothing to commit" in (r.stdout + r.stderr):
                 return
-            subprocess.run(["git","-C",self.data_dir,"push",auth_url,"main"],
+            subprocess.run(["git", "-C", self.data_dir, "push", auth_url, "main"],
                            capture_output=True, text=True)
         except Exception as e:
             log.warning(f"Push error: {e}")
@@ -441,6 +464,10 @@ class PrivateStore:
 class MemoryStore:
     def __init__(self):
         self.store = PrivateStore("memory", {"facts": []})
+
+    def add(self, text):
+        """add() method — bot_fixed.py se call hota hai"""
+        return self.add_fact(text)
 
     def add_fact(self, text):
         facts = self.store.data.get("facts", [])
@@ -519,30 +546,35 @@ class TaskStore:
 
 # ================================================================
 # DIARY STORE
+# IMPORTANT: add() → sheet mein likhta hai
+#            get() / get_all_entries() → sirf read, sheet mein kuch nahi
 # ================================================================
 class DiaryStore:
     def __init__(self):
         self.store = PrivateStore("diary", {"entries": {}})
 
     def add(self, text, mood="📝"):
+        """WRITE diary entry — local + sheet dono mein save"""
         td = today_str()
         self.store.data.setdefault("entries", {}).setdefault(td, [])
         self.store.data["entries"][td].append({"text": text, "mood": mood, "time": now_str()})
         self.store.save()
         try:
-            sheets_backup.diary(text, mood)
+            sheets_backup.diary_write(text, mood)   # ← diary_write() use karo, diary() nahi
         except Exception:
             pass
 
     def get(self, d):
+        """READ only — NO sheet write"""
         return self.store.data.get("entries", {}).get(d, [])
 
     def get_all_entries(self):
+        """READ only — NO sheet write"""
         return self.store.data.get("entries", {})
 
 
 # ================================================================
-# HABIT STORE
+# HABIT STORE  — FIXED: log() mein sheets_backup.habit() properly call hota hai
 # ================================================================
 class HabitStore:
     def __init__(self):
@@ -565,20 +597,28 @@ class HabitStore:
         logs.setdefault(td, [])
         if hid in logs[td]:
             return False, 0
+
         logs[td].append(hid)
-        streak = 1
+        streak   = 1
+        hab_name = f"#{hid}"
+
         for h in self.store.data.get("list", []):
             if h["id"] == hid:
                 h["streak"]      = h.get("streak", 0) + 1 if hid in logs.get(yd, []) else 1
                 h["best_streak"] = max(h.get("best_streak", 0), h["streak"])
                 streak           = h["streak"]
+                hab_name         = h["name"]
+
         self.store.data["logs"] = logs
         self.store.save()
+
+        # ── FIXED: yahan sheets_backup.habit() call guaranteed hota hai ──
         try:
-            name = next((h["name"] for h in self.store.data["list"] if h["id"] == hid), f"#{hid}")
-            sheets_backup.habit(name, streak)
-        except Exception:
-            pass
+            sheets_backup.habit(hab_name, streak)
+            log.info(f"Habit synced to sheet: {hab_name} streak={streak}")
+        except Exception as e:
+            log.error(f"Habit sheet sync failed: {e}")
+
         return True, streak
 
     def log_by_name(self, keyword):
@@ -645,7 +685,7 @@ class ExpenseStore:
 
 
 # ================================================================
-# GOAL STORE
+# GOAL STORE  — FIXED: add() aur update_progress() dono sheet mein sync hote hain
 # ================================================================
 class GoalStore:
     def __init__(self):
@@ -654,16 +694,22 @@ class GoalStore:
     def add(self, title, deadline=""):
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
         g = {
-            "id": self.store.data["counter"], "title": title,
-            "progress": 0, "done": False, "deadline": deadline,
-            "created": today_str(), "milestones": ""
+            "id":         self.store.data["counter"],
+            "title":      title,
+            "progress":   0,
+            "done":       False,
+            "deadline":   deadline,
+            "created":    today_str(),
+            "milestones": ""
         }
         self.store.data["list"].append(g)
         self.store.save()
+        # ── FIXED: goal sheet sync guaranteed ──
         try:
             sheets_backup.goal(g)
-        except Exception:
-            pass
+            log.info(f"Goal synced to sheet: {g['title']}")
+        except Exception as e:
+            log.error(f"Goal sheet sync failed: {e}")
         return g
 
     def update_progress(self, gid, pct):
@@ -673,6 +719,10 @@ class GoalStore:
                 if g["progress"] == 100:
                     g["done"] = True
                 self.store.save()
+                try:
+                    sheets_backup.goal_update(g)
+                except Exception as e:
+                    log.error(f"Goal update sheet sync failed: {e}")
                 return g
         return None
 
@@ -684,14 +734,13 @@ class GoalStore:
 
 
 # ================================================================
-# REMINDER STORE  — Fixed: proper auto-increment ID counter
+# REMINDER STORE
 # ================================================================
 class ReminderStore:
     def __init__(self):
         self.store = PrivateStore("reminders", {"list": [], "counter": 0})
 
     def add(self, chat_id, text, remind_at, repeat="once"):
-        # Always use stored counter to generate unique ID
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
         rid = self.store.data["counter"]
         r = {
@@ -729,14 +778,12 @@ class ReminderStore:
         return None
 
     def delete(self, rid):
-        target = self.get_by_id(rid)
         self.store.data["list"] = [r for r in self.store.data["list"] if r["id"] != rid]
         self.store.save()
-        if target:
-            try:
-                sheets_backup.delete_row_by_value("Reminders", 1, str(rid))
-            except Exception:
-                pass
+        try:
+            sheets_backup.delete_row_by_value("Reminders", 1, str(rid))
+        except Exception:
+            pass
 
     def mark_fired(self, rid):
         for r in self.store.data["list"]:
@@ -763,7 +810,6 @@ class ReminderStore:
         return False
 
     def acknowledge_all_by_text(self, text):
-        """Dismiss ALL active reminders matching text — bulk OK press"""
         count = 0
         text_clean = text.strip().lower().lstrip("🔁 ")
         for r in self.store.data["list"]:
@@ -828,7 +874,7 @@ class WaterStore:
 
 
 # ================================================================
-# BILL STORE  →  "Bills & Subscriptions"
+# BILL STORE
 # ================================================================
 class BillStore:
     def __init__(self):
@@ -907,7 +953,7 @@ class BillStore:
 
 
 # ================================================================
-# CALENDAR STORE  →  "Calendar Events"
+# CALENDAR STORE
 # ================================================================
 class CalendarStore:
     def __init__(self):
@@ -922,7 +968,7 @@ class CalendarStore:
             "time":              event_time,
             "location":          location,
             "notes":             notes,
-            "type":              event_type,   # birthday / event / meeting / bill etc.
+            "type":              event_type,
             "created":           today_str(),
             "remind_day_before": True,
         }
@@ -959,7 +1005,6 @@ class CalendarStore:
         return [e for e in self.store.data.get("events", []) if e["date"] == tomorrow]
 
     def events_needing_reminder(self):
-        """Events tomorrow — for day-before reminder job"""
         return self.tomorrow_events()
 
     def all_events(self):
@@ -973,7 +1018,7 @@ class CalendarStore:
 
 
 # ================================================================
-# CHAT HISTORY STORE  →  Daily_Logs
+# CHAT HISTORY STORE  →  Miscellaneous tab (Daily_Logs NAHI)
 # ================================================================
 class ChatHistoryStore:
     def __init__(self):
@@ -987,6 +1032,7 @@ class ChatHistoryStore:
         self.store.data["history"] = self.store.data["history"][-500:]
         self.store.save()
         try:
+            # ← Miscellaneous tab mein jata hai ab
             sheets_backup.log_event(role, user_name, content)
         except Exception:
             pass
