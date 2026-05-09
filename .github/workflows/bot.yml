@@ -57,7 +57,7 @@ jobs:
           GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
           GROQ_API_KEY:      ${{ secrets.GROQ_API_KEY }}
           ADMIN_CHAT_ID:     ${{ secrets.ADMIN_CHAT_ID }}
-          GB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GB_TOKEN: ${{ secrets.GB_TOKEN }}
           DIARY_PASSWORD:    ${{ secrets.DIARY_PASSWORD }}
           PRIVATE_REPO_URL: "https://github.com/Rehman4175/my-bot-data.git"
         run: python bot.py
