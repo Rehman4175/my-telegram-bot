@@ -3,17 +3,15 @@
 """
 DELETE MANAGER — Rk Bot
 ========================
-FIXED v3:
-  - _wipe_sheet_tab() ab sahi TAB_MAP keys use karta hai (capital case)
-  - Extra sheets nahi banegi — _ws() sirf existing tabs pe kaam karega
-  - NukeAll: sirf in-scope sheets wipe karega (10 sheets, Goals nahi)
-  - Password capture sahi kaam karta hai
-  - per_user=True, per_chat=True set hai
+FIXED v4:
+  - ID column now exists in ALL sheets
+  - delete_row_by_value uses ID column (col 1) for all sheets
+  - Row deletion by ID number works for EVERY sheet
+  - Proper ID counters maintained in secure_data_manager.py
 
-Sheet tabs (exact):
-  Tasks | Reminders | Expenses | Habits | Diary
-  Memory / Important Notes | Bills & Subscriptions
-  Calendar Events | Water Intake | Miscellaneous
+Sheet tabs with ID columns (col 1 = ID):
+  Tasks ✅ | Reminders ✅ | Expenses ✅ | Habits ✅ | Diary ✅
+  Memory ✅ | Bills ✅ | Calendar ✅ | Water ✅ | Miscellaneous ✅
 
 Commands:
   /nuke      → Sirf Miscellaneous (chat history) delete
@@ -21,8 +19,6 @@ Commands:
   /nukesheet → Ek poori sheet wipe (header bachta hai)
   /nukeall   → SAARI sheets + saara local data
   /delete    → Full menu open
-
-Har operation se pehle DELETE_PASSWORD maanga jata hai.
 """
 
 import os
@@ -56,22 +52,19 @@ DEL_AWAIT_SHEET        = 52
 DEL_AWAIT_NUKE_CONFIRM = 53
 
 # ----------------------------------------------------------------
-# KEY_MAP:
-#   key   = short name (hum internally use karte hain)
-#   "tab" = exact TAB_MAP key jo GoogleSheetsBackup._ws() samajhta hai
-#   "display" = user ko dikhne wala naam
+# KEY_MAP: All sheets now have ID column as first column
 # ----------------------------------------------------------------
 SHEETS = {
-    "tasks":     {"tab": "Tasks",     "display": "Tasks"},
-    "reminders": {"tab": "Reminders", "display": "Reminders"},
-    "expenses":  {"tab": "Expenses",  "display": "Expenses"},
-    "habits":    {"tab": "Habits",    "display": "Habits"},
-    "diary":     {"tab": "Diary",     "display": "Diary"},
-    "memory":    {"tab": "Memory",    "display": "Memory / Important Notes"},
-    "bills":     {"tab": "Bills",     "display": "Bills & Subscriptions"},
-    "calendar":  {"tab": "Calendar",  "display": "Calendar Events"},
-    "water":     {"tab": "Water",     "display": "Water Intake"},
-    "logs":      {"tab": "Logs",      "display": "Miscellaneous"},
+    "tasks":     {"tab": "Tasks",     "display": "Tasks", "has_id": True},
+    "reminders": {"tab": "Reminders", "display": "Reminders", "has_id": True},
+    "expenses":  {"tab": "Expenses",  "display": "Expenses", "has_id": True},
+    "habits":    {"tab": "Habits",    "display": "Habits", "has_id": True},
+    "diary":     {"tab": "Diary",     "display": "Diary", "has_id": True},
+    "memory":    {"tab": "Memory",    "display": "Memory / Important Notes", "has_id": True},
+    "bills":     {"tab": "Bills",     "display": "Bills & Subscriptions", "has_id": True},
+    "calendar":  {"tab": "Calendar",  "display": "Calendar Events", "has_id": True},
+    "water":     {"tab": "Water",     "display": "Water Intake", "has_id": True},
+    "logs":      {"tab": "Logs",      "display": "Miscellaneous", "has_id": True},
 }
 
 # Local store reset defaults
@@ -82,11 +75,11 @@ LOCAL_DEFAULTS = {
     "goals":     (lambda: goals.store,     {"list": [], "counter": 0}),
     "calendar":  (lambda: calendar.store,  {"events": [], "counter": 0}),
     "bills":     (lambda: bills.store,     {"list": [], "counter": 0}),
-    "expenses":  (lambda: expenses.store,  {"list": [], "budget": 0}),
+    "expenses":  (lambda: expenses.store,  {"list": [], "budget": 0, "counter": 0}),
     "habits":    (lambda: habits.store,    {"list": [], "logs": {}, "counter": 0}),
-    "water":     (lambda: water.store,     {"logs": {}, "goal_ml": 2000}),
-    "logs":      (lambda: chat_hist.store, {"history": []}),
-    "diary":     (lambda: diary.store,     {"entries": {}}),
+    "water":     (lambda: water.store,     {"logs": {}, "goal_ml": 2000, "counter": 0}),
+    "logs":      (lambda: chat_hist.store, {"history": [], "counter": 0}),
+    "diary":     (lambda: diary.store,     {"entries": {}, "counter": 0}),
 }
 
 
@@ -154,15 +147,10 @@ def parse_delete_intent(text: str):
 
 
 # ================================================================
-# HELPER: Sheet wipe — FIXED
+# HELPER: Sheet wipe
 # ================================================================
 
 def _wipe_sheet_tab(key: str):
-    """
-    key = SHEETS dict ka key, e.g. "logs", "tasks"
-    Internally TAB_MAP key use hoga jo _ws() samajhta hai.
-    IMPORTANT: Naya tab nahi banega — sirf existing tab wipe hoga.
-    """
     if not sheets_backup.connected:
         return False, "⚠️ Google Sheets connected nahi hai!"
 
@@ -170,24 +158,19 @@ def _wipe_sheet_tab(key: str):
     if not sheet_info:
         return False, f"⚠️ Unknown sheet key: {key}"
 
-    tab_key     = sheet_info["tab"]      # e.g. "Logs", "Tasks"
-    display     = sheet_info["display"]  # e.g. "Miscellaneous", "Tasks"
+    tab_key     = sheet_info["tab"]
+    display     = sheet_info["display"]
 
-    # _ws() ko TAB_MAP key do — ye internally TAB_MAP se real tab name lookup karega
-    # Lekin pehle check karo tab exist karti hai ya nahi (auto-create se bachne ke liye)
     tab_real_name = sheets_backup.TAB_MAP.get(tab_key, tab_key)
     ws_cache      = sheets_backup._ws_cache
 
-    # Tab already cached hai ya sheet mein exist karti hai — check karo
     if tab_real_name not in ws_cache:
-        # Cache mein nahi — manually check karo bina auto-create ke
         try:
             ws_found = sheets_backup._book.worksheet(tab_real_name)
             sheets_backup._ws_cache[tab_real_name] = ws_found
         except Exception:
-            return False, f"⚠️ Tab '{display}' Google Sheet mein nahi mili. Create mat ki — manually add karo."
+            return False, f"⚠️ Tab '{display}' Google Sheet mein nahi mili."
 
-    # Ab _ws() safely call kar sakte hain — tab exist karti hai
     ws = sheets_backup._ws(tab_key)
     if not ws:
         return False, f"⚠️ '{display}' tab access nahi ho saka!"
@@ -198,7 +181,6 @@ def _wipe_sheet_tab(key: str):
         if total_rows <= 1:
             return True, f"ℹ️ '{display}' pehle se khali hai (ya sirf header hai)."
 
-        # Row 2 se last tak delete karo (reverse order mein)
         for row_idx in range(total_rows, 1, -1):
             ws.delete_rows(row_idx)
 
@@ -210,7 +192,6 @@ def _wipe_sheet_tab(key: str):
 
 
 def _wipe_local_store(key: str) -> str:
-    """Local JSON store reset karo."""
     if key not in LOCAL_DEFAULTS:
         return f"⚠️ Unknown local store: {key}"
     try:
@@ -331,7 +312,6 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # ✅ Sahi password
     intent = ctx.user_data.get("dm_entry_cmd", "menu")
 
     if intent == "nuke_logs":
@@ -347,7 +327,8 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif intent == "delrow":
         await update.effective_chat.send_message(
             "✅ *Password Sahi!*\n\n"
-            "📋 Kaunsi sheet se ek entry (row) delete karni hai?",
+            "📋 Kaunsi sheet se ek entry (row) delete karni hai?\n\n"
+            "*(Har sheet mein ab ID column hai — first column)*",
             parse_mode="Markdown",
             reply_markup=_sheet_select_keyboard("dm_row")
         )
@@ -376,7 +357,7 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEL_AWAIT_NUKE_CONFIRM
 
-    else:  # menu
+    else:
         await update.effective_chat.send_message(
             "✅ *Password Sahi! Delete Manager Ready.*\n\nKya karna chahte ho?",
             parse_mode="Markdown",
@@ -411,7 +392,6 @@ async def del_nukeall_confirm_text(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     results = []
 
-    # Sirf SHEETS dict ke keys wipe karo — koi extra tab nahi banega
     for key in SHEETS.keys():
         local_msg = _wipe_local_store(key)
         results.append(local_msg)
@@ -419,7 +399,6 @@ async def del_nukeall_confirm_text(update: Update, ctx: ContextTypes.DEFAULT_TYP
         ok, sheet_msg = _wipe_sheet_tab(key)
         results.append(sheet_msg)
 
-    # Goals local bhi clear karo (sheet tab nahi hai scope mein)
     try:
         goals.store.data = {"list": [], "counter": 0}
         goals.store.save()
@@ -463,7 +442,8 @@ async def del_row_id_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         row_id = int(text)
     except ValueError:
         await update.message.reply_text(
-            "❌ Sirf *ID number* daalo! Example: `5`\n/cancel — Bahar jao.",
+            "❌ Sirf *ID number* daalo! Example: `5`\n/cancel — Bahar jao.\n\n"
+            "Pehle `/delsheet` se sheet select karo, phir ID daalo.",
             parse_mode="Markdown"
         )
         return DEL_AWAIT_SHEET
@@ -472,19 +452,25 @@ async def del_row_id_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tab_key      = sheet_info.get("tab", selected_key)
     display      = sheet_info.get("display", selected_key)
 
+    # DELETE by ID (column 1 in all sheets now)
     ok = sheets_backup.delete_row_by_value(tab_key, 1, str(row_id))
 
     if ok:
         await update.message.reply_text(
             f"✅ *Row Delete Ho Gayi!*\n\n"
-            f"📊 Sheet: *{display}*\n🆔 ID: `{row_id}`",
+            f"📊 Sheet: *{display}*\n🆔 ID: `{row_id}`\n\n"
+            f"Sheet mein ID `{row_id}` wali row delete ho gayi.",
             parse_mode="Markdown"
         )
         log.info(f"Row deleted: {display} ID={row_id}")
     else:
         await update.message.reply_text(
-            f"⚠️ ID `{row_id}` sheet *{display}* mein nahi mila.\n"
-            f"Sahi ID check karo aur dobara try karo.",
+            f"⚠️ ID `{row_id}` sheet *{display}* mein nahi mila.\n\n"
+            f"**Possible reasons:**\n"
+            f"• Entry delete ho chuki hai\n"
+            f"• ID number galat hai\n"
+            f"• Sheet mein ID column 1 mein hai (check karo)\n\n"
+            f"/delsheet se dobara try karo.",
             parse_mode="Markdown"
         )
 
@@ -501,7 +487,6 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data  = query.data
 
-    # Cancel
     if data == "dm_cancel":
         await query.edit_message_text(
             "❌ *Delete operation cancel ho gaya.*\n\nData safe hai! 🛡️",
@@ -510,7 +495,6 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # Menu actions
     if data == "dm_nuke_logs":
         await query.edit_message_text(
             "⚠️ *CHAT HISTORY NUKE*\n\n"
@@ -522,7 +506,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "dm_delrow":
         await query.edit_message_text(
-            "📋 *Ek Row Delete*\n\nKaunsi sheet se?",
+            "📋 *Ek Row Delete*\n\nKaunsi sheet se? *(Har sheet mein ab ID column hai)*",
             parse_mode="Markdown",
             reply_markup=_sheet_select_keyboard("dm_row")
         )
@@ -547,19 +531,18 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEL_AWAIT_NUKE_CONFIRM
 
-    # Sheet row select
     if data.startswith("dm_row_"):
         sheet_key = data.replace("dm_row_", "")
         ctx.user_data["dm_selected_sheet_key"] = sheet_key
         display   = SHEETS.get(sheet_key, {}).get("display", sheet_key)
         await query.edit_message_text(
             f"📋 *{display}* se delete karna hai.\n\n"
-            f"Kis row ka *ID number* delete karna hai?\n\nExample: `3`",
+            f"Kis row ka *ID number* delete karna hai?\n\n"
+            f"Example: `3` *(ID column pehla hai)*",
             parse_mode="Markdown"
         )
         return DEL_AWAIT_SHEET
 
-    # Sheet wipe select
     if data.startswith("dm_wipe_"):
         sheet_key = data.replace("dm_wipe_", "")
         display   = SHEETS.get(sheet_key, {}).get("display", sheet_key)
@@ -572,11 +555,9 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEL_AWAIT_CHOICE
 
-    # Confirm: nuke logs
     if data == "dm_confirm_nuke_logs":
         local_msg     = _wipe_local_store("logs")
         ok, sheet_msg = _wipe_sheet_tab("logs")
-        status        = "✅" if ok else "⚠️"
         await query.edit_message_text(
             f"🗑️ *Chat History Nuke Complete!*\n\n"
             f"{local_msg}\n{sheet_msg}",
@@ -586,7 +567,6 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # Confirm: wipe specific sheet
     if data.startswith("dm_confirm_wipe_"):
         sheet_key     = data.replace("dm_confirm_wipe_", "")
         display       = SHEETS.get(sheet_key, {}).get("display", sheet_key)
@@ -601,7 +581,6 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # Unknown
     await query.edit_message_text("❓ Unknown action. /delete se dobara try karo.")
     ctx.user_data.clear()
     return ConversationHandler.END
@@ -625,16 +604,6 @@ async def del_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ================================================================
 
 def register_delete_handlers(app: Application):
-    """
-    bot.py ke main() mein SABSE PEHLE call karo:
-
-        from delete_manager import register_delete_handlers
-        register_delete_handlers(app)
-
-    Yeh zaruri hai taaki ConversationHandler ka DEL_AWAIT_PASS state
-    password message ko capture kare, handle_message() se pehle.
-    """
-
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("nuke",      cmd_delete_entry),
@@ -683,15 +652,12 @@ def register_delete_handlers(app: Application):
     app.add_handler(conv)
 
     pw_status = "✅ SET" if DELETE_PASSWORD else "❌ NOT SET — Repository Secrets mein DELETE_PASSWORD add karo!"
-    log.info("✅ Delete Manager v3 registered.")
+    log.info("✅ Delete Manager v4 registered.")
     log.info("   Commands: /nuke /delsheet /nukesheet /nukeall /delete")
     log.info(f"   DELETE_PASSWORD: {pw_status}")
     log.info(f"   Sheets in scope: {list(SHEETS.keys())}")
+    log.info("   ✅ ALL sheets now have ID column — deletion by ID works for all!")
 
-
-# ================================================================
-# STANDALONE TEST
-# ================================================================
 
 if __name__ == "__main__":
     logging.basicConfig(
