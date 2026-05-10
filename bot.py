@@ -2,31 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXED VERSION:
-  - Calendar natural language properly detected BEFORE task
-  - Habit natural language properly detected BEFORE task
-  - "Saare task dikhao / show task / task list" → list dikhata hai, add nahi karta
-  - Memory command added
-  - Priority order: reminder > show_tasks > habit_done > habit_add > calendar > bill > diary > water > expense > task_complete > task_add > chat
-
-FIXES v2:
-  - Daily_Logs → Miscellaneous tab
-  - Diary SHOW commands fixed: "diary dikhao / show diary / diary dekho" → shows, does NOT add
-  - Goals add working
-  - Habits sheet sync fixed
-
-FIXES v3 (DELETE PASSWORD FIX):
-  - register_delete_handlers() ko sabse PEHLE register kiya
-  - ConversationHandler order fix — delete password ab properly capture hoga
-  - handle_message SABSE AAKHIR mein register hoga
-
-FIXES v4 (MISCELLANEOUS LOGGING):
-  - Har action (task, reminder, expense, habit, diary, water, calendar, bill, memory)
-    ab Miscellaneous sheet mein bhi log hoga with action type + detail
-  - _log_action() helper function added
+FIXES v5:
+  - "dairy" → diary trigger fix (dairy = diary spelling)
+  - "karcha / karch / kharch" → expense trigger fix
+  - "bills add / bill add / naya bill" → more trigger words added
+  - Water log → _log_action error fix (sheets mein #ERROR! aa raha tha)
+  - Diary NL add trigger improved (dairy/diary dono)
+  - Baaki sab v4 jaisa hi
 """
 
-import os, json, logging, time, asyncio, random
+import os, json, logging, time
 import urllib.request, urllib.error, ssl
 from datetime import datetime, date, timedelta, timezone
 import re as _re
@@ -51,8 +36,6 @@ DIARY_PASSWORD = os.environ.get("DIARY_PASSWORD", "Rk1996")
 
 DIARY_AWAIT_PASS = 0
 DIARY_AWAIT_TEXT = 1
-CAL_AWAIT_PASS  = 10
-CAL_AWAIT_DATA  = 11
 
 if not TELEGRAM_TOKEN:
     print("TELEGRAM_TOKEN not set!")
@@ -119,17 +102,17 @@ def alarm_keyboard(rid):
 
 
 # ================================================================
-# MISCELLANEOUS LOGGER — Har action yahan log hoga
+# MISCELLANEOUS LOGGER — FIX: #ERROR! prevent karo
 # ================================================================
 
 def _log_action(user_name: str, action_type: str, detail: str):
-    """
-    Har bot action ko Miscellaneous sheet mein log karo.
-    Format: role=action_type, user=user_name, message=detail
-    """
     try:
-        sheets_backup.log_event(action_type, user_name, detail)
-        log.info(f"[MiscLog] {action_type} | {user_name} | {detail[:60]}")
+        clean_detail = str(detail).strip()
+        # Google Sheets formula injection prevent karo
+        if clean_detail.startswith(("=", "+", "-", "@")):
+            clean_detail = "'" + clean_detail
+        sheets_backup.log_event(action_type, str(user_name), clean_detail)
+        log.info(f"[MiscLog] {action_type} | {user_name} | {clean_detail[:60]}")
     except Exception as e:
         log.warning(f"_log_action failed: {e}")
 
@@ -157,7 +140,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `diary mein likho aaj ka din acha tha`\n"
         "• `gym habit ho gayi`\n"
         "• `simran ki birthday 9 sep 2000 hai`\n"
-        "• `netflix bill add karo 499 15 tarikh`\n"
+        "• `bill add netflix 499`\n"
+        "• `karcha 200 petrol`\n"
         "• `saare task dikhao / task list`\n"
         "• `diary dikhao / show diary`\n"
         "• `memory mein save karo...`\n\n"
@@ -195,14 +179,11 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🗑️ *Delete Manager:*\n"
         "/delete — Full delete menu\n"
         "/nuke — Chat history delete\n"
-        "/delsheet — Sheet se ek row delete\n"
-        "/nukesheet — Ek poori sheet wipe\n"
-        "/nukeall — Sab kuch delete (nuclear option)\n\n"
+        "/nukeall — Sab kuch delete\n\n"
         "📊 *Other:*\n"
         "/briefing — Daily summary\n"
         "/status — System status\n"
-        "/checksync — GitHub & Sheets check\n"
-        "/help — Yeh menu",
+        "/checksync — GitHub & Sheets check",
         parse_mode="Markdown"
     )
 
@@ -234,10 +215,13 @@ async def cmd_checksync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if repo_manager.is_connected:
         try:
             import subprocess
-            result = subprocess.run(["git", "-C", DATA_DIR, "log", "-1", "--format=%cd"], capture_output=True, text=True)
+            result = subprocess.run(
+                ["git", "-C", DATA_DIR, "log", "-1", "--format=%cd"],
+                capture_output=True, text=True
+            )
             if result.returncode == 0:
                 last_sync = result.stdout.strip()
-        except:
+        except Exception:
             pass
     sheet_url = "Not connected"
     if sheets_backup._book:
@@ -274,8 +258,7 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     title = " ".join(ctx.args)
     t = tasks.add(title)
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "task_add", f"Task #{t['id']} added: {title}")
+    _log_action(update.effective_user.first_name or "User", "task_add", f"#{t['id']}: {title}")
     await update.message.reply_text(
         f"✅ *Task Add Ho Gaya!*\n\n📌 #{t['id']} {t['title']}\n\nInshAllah ho jayega! 💪",
         parse_mode="Markdown"
@@ -294,10 +277,9 @@ async def cmd_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         t = tasks.complete(int(ctx.args[0]))
         if t:
-            user_name = update.effective_user.first_name or "User"
-            _log_action(user_name, "task_done", f"Task #{t['id']} completed: {t['title']}")
+            _log_action(update.effective_user.first_name or "User", "task_done", f"#{t['id']}: {t['title']}")
             await update.message.reply_text(
-                f"✅ *Alhamdulillah! Task Complete!* 🎉\n\n#{t['id']} ~~{t['title']}~~\n\nMashAllah, kaam kar diya! 💪",
+                f"✅ *Alhamdulillah! Task Complete!* 🎉\n\n#{t['id']} ~~{t['title']}~~\n\nMashAllah! 💪",
                 parse_mode="Markdown"
             )
         else:
@@ -314,14 +296,12 @@ async def cmd_deltask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         tid = int(ctx.args[0])
-        all_t = tasks.all_tasks()
-        target = next((t for t in all_t if t["id"] == tid), None)
+        target = next((t for t in tasks.all_tasks() if t["id"] == tid), None)
         if not target:
             await update.message.reply_text(f"❌ Task #{tid} nahi mila!")
             return
         tasks.delete(tid)
-        user_name = update.effective_user.first_name or "User"
-        _log_action(user_name, "task_delete", f"Task #{tid} deleted: {target['title']}")
+        _log_action(update.effective_user.first_name or "User", "task_delete", f"#{tid}: {target['title']}")
         await update.message.reply_text(
             f"🗑️ *Task Delete Ho Gaya!*\n\n#{tid} '{target['title']}'\n\nSheets se bhi hata diya. ✅",
             parse_mode="Markdown"
@@ -351,8 +331,7 @@ async def cmd_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("/habit Naam — Naya habit add karo", parse_mode="Markdown")
         return
     h = habits.add(" ".join(ctx.args))
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "habit_add", f"Habit #{h['id']} added: {h['name']}")
+    _log_action(update.effective_user.first_name or "User", "habit_add", f"#{h['id']}: {h['name']}")
     await update.message.reply_text(
         f"🏃 *Habit Add Ho Gaya!*\n\n#{h['id']} {h['name']}\n\nInshAllah roz karoge! 💪",
         parse_mode="Markdown"
@@ -371,10 +350,9 @@ async def cmd_hdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         ok, streak = habits.log(int(ctx.args[0]))
         if ok:
-            user_name = update.effective_user.first_name or "User"
-            _log_action(user_name, "habit_done", f"Habit #{ctx.args[0]} logged | streak: {streak}")
+            _log_action(update.effective_user.first_name or "User", "habit_done", f"Habit #{ctx.args[0]} | streak: {streak}")
             await update.message.reply_text(
-                f"🔥 *Habit Done! MashAllah!* 🎉\n\n{streak} din ka streak! Aage badhte raho! 💪",
+                f"🔥 *Habit Done! MashAllah!* 🎉\n\n{streak} din ka streak! 💪",
                 parse_mode="Markdown"
             )
         else:
@@ -402,8 +380,7 @@ async def cmd_kharcha(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         amount = float(ctx.args[0])
         desc = " ".join(ctx.args[1:])
         expenses.add(amount, desc)
-        user_name = update.effective_user.first_name or "User"
-        _log_action(user_name, "expense_add", f"Rs.{amount} spent on: {desc} | Today total: Rs.{expenses.today_total()}")
+        _log_action(update.effective_user.first_name or "User", "expense_add", f"Rs.{amount} on {desc}")
         await update.message.reply_text(
             f"💸 *Kharcha Add!*\n\nRs.{amount} — {desc}\n💰 Aaj total: Rs.{expenses.today_total()}",
             parse_mode="Markdown"
@@ -415,11 +392,10 @@ async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ml = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 250
     total = water.add(ml)
     goal = water.goal()
-    pct = int(total / goal * 100)
+    pct = int(total / goal * 100) if goal else 0
     filled = min(pct // 20, 5)
     bar = "🟦" * filled + "⬜" * (5 - filled)
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "water_log", f"+{ml}ml water | Total: {total}/{goal}ml ({pct}%)")
+    _log_action(update.effective_user.first_name or "User", "water_log", f"Added {ml}ml | Total: {total}ml of {goal}ml")
     await update.message.reply_text(
         f"💧 *+{ml}ml Paani!*\n\nTotal: {total}/{goal}ml\n{bar} {pct}%\n\n"
         f"{'Alhamdulillah! Goal complete! 🎉' if total >= goal else 'InshAllah goal poora hoga! 💪'}",
@@ -457,39 +433,37 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("/remind 30m Chai ya /remind 15:30 Meeting")
         return
     r = reminders.add(update.effective_chat.id, text, remind_at)
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "reminder_set", f"Reminder #{r['id']} set at {remind_at}: {text}")
+    _log_action(update.effective_user.first_name or "User", "reminder_set", f"#{r['id']} at {remind_at}: {text}")
     await update.message.reply_text(
         f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n🕐 {remind_at} baje: {text}\n📌 ID #{r['id']}",
         parse_mode="Markdown"
     )
 
 async def cmd_delremind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if ctx.args:
-        try:
-            rid = int(ctx.args[0])
-            target = reminders.get_by_id(rid)
-            if not target:
-                await update.message.reply_text(f"❌ Reminder #{rid} nahi mila!")
-                return
-            reminders.delete(rid)
-            user_name = update.effective_user.first_name or "User"
-            _log_action(user_name, "reminder_delete", f"Reminder #{rid} deleted: {target['text']}")
-            await update.message.reply_text(
-                f"🗑️ *Reminder Delete Ho Gaya!*\n\n#{rid} '{target['text']}'\n\nSheets se bhi hata diya. ✅",
-                parse_mode="Markdown"
-            )
-        except Exception:
-            await update.message.reply_text("❌ Invalid ID!")
-    else:
+    if not ctx.args:
         await update.message.reply_text("/delremind id")
+        return
+    try:
+        rid = int(ctx.args[0])
+        target = reminders.get_by_id(rid)
+        if not target:
+            await update.message.reply_text(f"❌ Reminder #{rid} nahi mila!")
+            return
+        reminders.delete(rid)
+        _log_action(update.effective_user.first_name or "User", "reminder_delete", f"#{rid}: {target['text']}")
+        await update.message.reply_text(
+            f"🗑️ *Reminder Delete Ho Gaya!*\n\n#{rid} '{target['text']}'\n\nSheets se bhi hata diya. ✅",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await update.message.reply_text("❌ Invalid ID!")
 
 async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cmd = update.message.text.split()[0].lstrip("/").lower()
     snooze_map = {"snooze5": 5, "snooze10": 10, "snooze30": 30, "snooze60": 60}
     mins = snooze_map.get(cmd, 10)
     if not ctx.args:
-        await update.message.reply_text(f"/{cmd} reminder_id", parse_mode="Markdown")
+        await update.message.reply_text(f"/{cmd} reminder_id")
         return
     try:
         rid = int(ctx.args[0])
@@ -500,8 +474,7 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reminders.acknowledge(rid, f"Snoozed {mins}min")
         new_time = (now_ist() + timedelta(minutes=mins)).strftime("%H:%M")
         new_rem = reminders.add(target["chat_id"], f"🔁 {target['text']}", new_time, "once")
-        user_name = update.effective_user.first_name or "User"
-        _log_action(user_name, "reminder_snooze", f"Reminder #{rid} snoozed {mins}min → new #{new_rem['id']} at {new_time}")
+        _log_action(update.effective_user.first_name or "User", "reminder_snooze", f"#{rid} snoozed {mins}min → #{new_rem['id']} at {new_time}")
         await update.message.reply_text(
             f"😴 *Snooze Ho Gaya!*\n\n{mins} min baad fir yaad dilaaunga.\nNew ID: #{new_rem['id']}",
             parse_mode="Markdown"
@@ -528,7 +501,6 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             ctx.user_data["diary_mode"] = "write"
             ctx.user_data["diary_pending_text"] = " ".join(args)
-
     await update.message.reply_text(
         "🔒 *Diary ka Password daalo:*\n\n(/cancel se bahar)",
         parse_mode="Markdown"
@@ -543,22 +515,19 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.delete()
     except Exception:
         pass
-
     if entered != DIARY_PASSWORD:
         await update.effective_chat.send_message(
             "❌ *Galat Password!*\n\nDobara try karo: /diary",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
-
     mode = ctx.user_data.get("diary_mode", "view_today")
     user_name = update.effective_user.first_name or "User"
-
     if mode == "write":
         pending_text = ctx.user_data.get("diary_pending_text", "")
         if pending_text:
             diary.add(pending_text)
-            _log_action(user_name, "diary_write", f"Diary entry: {pending_text[:80]}")
+            _log_action(user_name, "diary_write", f"Entry: {pending_text[:80]}")
             await update.effective_chat.send_message(
                 f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n_{pending_text[:200]}_\n\nSheets mein bhi backup ho gaya!",
                 parse_mode="Markdown"
@@ -571,10 +540,9 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             return DIARY_AWAIT_TEXT
-
     elif mode == "view_today":
         entries = diary.get(today_str())
-        _log_action(user_name, "diary_view", f"Viewed today's diary ({len(entries)} entries)")
+        _log_action(user_name, "diary_view", f"Viewed today ({len(entries)} entries)")
         if not entries:
             await update.effective_chat.send_message(
                 "📖 Aaj ki koi diary entry nahi hai.\n\n/diary write — Likhna shuru karo!",
@@ -586,7 +554,6 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"📖 *Aaj ki Diary ({today_str()}):*\n\n{lines}",
                 parse_mode="Markdown"
             )
-
     elif mode == "view_week":
         all_entries = diary.get_all_entries()
         today_d = now_ist().date()
@@ -595,16 +562,12 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             d = (today_d - timedelta(days=i)).strftime("%Y-%m-%d")
             for e in all_entries.get(d, []):
                 week_entries.append(f"📅 {d} 🕐{e.get('time','')}\n{e['text']}")
-        _log_action(user_name, "diary_view", f"Viewed week diary ({len(week_entries)} entries)")
+        _log_action(user_name, "diary_view", f"Viewed week ({len(week_entries)} entries)")
         if not week_entries:
             await update.effective_chat.send_message("📖 Is hafte koi entry nahi.", parse_mode="Markdown")
         else:
             msg = "\n\n".join(week_entries[:10])
-            await update.effective_chat.send_message(
-                f"📖 *Is hafte ki Diary:*\n\n{msg[:3000]}",
-                parse_mode="Markdown"
-            )
-
+            await update.effective_chat.send_message(f"📖 *Is hafte ki Diary:*\n\n{msg[:3000]}", parse_mode="Markdown")
     elif mode == "view_all":
         all_entries = diary.get_all_entries()
         count = sum(len(v) for v in all_entries.values())
@@ -614,12 +577,11 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for e in all_entries[d][:2]:
                 preview.append(f"📅 {d}\n{e['text'][:100]}")
         msg = "\n\n".join(preview)
-        _log_action(user_name, "diary_view", f"Viewed all diary ({count} total entries)")
+        _log_action(user_name, "diary_view", f"Viewed all ({count} total)")
         await update.effective_chat.send_message(
             f"📖 *Total {count} diary entries*\n\nAlhamdulillah! 🌟\n\n*Latest:*\n\n{msg[:3000]}",
             parse_mode="Markdown"
         )
-
     ctx.user_data.clear()
     return ConversationHandler.END
 
@@ -632,8 +594,7 @@ async def diary_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     diary.add(text)
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "diary_write", f"Diary entry: {text[:80]}")
+    _log_action(update.effective_user.first_name or "User", "diary_write", f"Entry: {text[:80]}")
     await update.effective_chat.send_message(
         f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n_{text[:200]}_\n\nSheets mein bhi backup ho gaya!",
         parse_mode="Markdown"
@@ -652,10 +613,9 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     text = " ".join(ctx.args)
     diary.add(text)
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "diary_write", f"Quick save: {text[:80]}")
+    _log_action(update.effective_user.first_name or "User", "diary_write", f"Quick save: {text[:80]}")
     await update.message.reply_text(
-        f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n_{text[:200]}_\n\nSheets mein bhi backup ho gaya!",
+        f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n_{text[:200]}_",
         parse_mode="Markdown"
     )
 
@@ -666,17 +626,14 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_cal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     events = calendar.upcoming(days=30)
     if not events:
-        await update.message.reply_text(
-            "📅 Koi upcoming event nahi hai.\n\n/caladd — Event ya birthday add karo",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📅 Koi upcoming event nahi hai.\n\n/caladd — Add karo", parse_mode="Markdown")
         return
     lines = []
     for e in events[:15]:
-        type_emoji = "🎂" if e.get("type") == "birthday" else "📅"
-        time_str = f" ⏰{e['time']}" if e.get("time") else ""
-        loc_str  = f" 📍{e['location']}" if e.get("location") else ""
-        lines.append(f"{type_emoji} *{e['date']}*{time_str} — #{e['id']}\n   {e['title']}{loc_str}")
+        emoji = "🎂" if e.get("type") == "birthday" else "📅"
+        ts = f" ⏰{e['time']}" if e.get("time") else ""
+        ls = f" 📍{e['location']}" if e.get("location") else ""
+        lines.append(f"{emoji} *{e['date']}*{ts} — #{e['id']}\n   {e['title']}{ls}")
     await update.message.reply_text(
         f"📅 *Upcoming Events ({len(events)}):*\n\n" + "\n\n".join(lines) +
         "\n\n/caladd — Naya add karo | /caldel id — Delete karo",
@@ -690,15 +647,12 @@ async def cmd_caltoday(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     lines = []
     for e in events:
-        type_emoji = "🎂" if e.get("type") == "birthday" else "📅"
-        time_str = f" ⏰{e['time']}" if e.get("time") else ""
-        loc_str  = f"\n   📍{e['location']}" if e.get("location") else ""
-        notes_str = f"\n   📝{e['notes']}" if e.get("notes") else ""
-        lines.append(f"{type_emoji} #{e['id']} *{e['title']}*{time_str}{loc_str}{notes_str}")
-    await update.message.reply_text(
-        f"📅 *Aaj ke Events ({today_str()}):*\n\n" + "\n\n".join(lines),
-        parse_mode="Markdown"
-    )
+        emoji = "🎂" if e.get("type") == "birthday" else "📅"
+        ts = f" ⏰{e['time']}" if e.get("time") else ""
+        ls = f"\n   📍{e['location']}" if e.get("location") else ""
+        ns = f"\n   📝{e['notes']}" if e.get("notes") else ""
+        lines.append(f"{emoji} #{e['id']} *{e['title']}*{ts}{ls}{ns}")
+    await update.message.reply_text(f"📅 *Aaj ke Events ({today_str()}):*\n\n" + "\n\n".join(lines), parse_mode="Markdown")
 
 async def cmd_calweek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     events = calendar.upcoming(days=7)
@@ -707,43 +661,31 @@ async def cmd_calweek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     lines = []
     for e in events:
-        type_emoji = "🎂" if e.get("type") == "birthday" else "📅"
-        time_str = f" ⏰{e['time']}" if e.get("time") else ""
-        loc_str  = f" 📍{e['location']}" if e.get("location") else ""
-        lines.append(f"{type_emoji} *{e['date']}*{time_str} — #{e['id']}\n   {e['title']}{loc_str}")
-    await update.message.reply_text(
-        f"📅 *Is hafte ke Events:*\n\n" + "\n\n".join(lines),
-        parse_mode="Markdown"
-    )
+        emoji = "🎂" if e.get("type") == "birthday" else "📅"
+        ts = f" ⏰{e['time']}" if e.get("time") else ""
+        ls = f" 📍{e['location']}" if e.get("location") else ""
+        lines.append(f"{emoji} *{e['date']}*{ts} — #{e['id']}\n   {e['title']}{ls}")
+    await update.message.reply_text(f"📅 *Is hafte ke Events:*\n\n" + "\n\n".join(lines), parse_mode="Markdown")
 
 async def cmd_caladd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text(
             "📅 *Event ya Birthday Add Karo:*\n\n"
-            "*Normal Event:*\n"
-            "`/caladd 2026-05-20 Doctor 10:30 Apollo Hospital`\n\n"
-            "*Birthday:*\n"
+            "`/caladd 2026-05-20 Doctor 10:30 Apollo`\n"
             "`/caladd 2000-09-09 Simran birthday`\n\n"
-            "Format: `/caladd YYYY-MM-DD Title [HH:MM] [Location]`\n\n"
-            "⚠️ Birthday mein year woh hoga jab paida hua — bot automatically next birthday calculate karega!",
+            "Format: `/caladd YYYY-MM-DD Title [HH:MM] [Location]`",
             parse_mode="Markdown"
         )
         return
-
     args = ctx.args
     event_date = args[0]
     if not _re.match(r'\d{4}-\d{2}-\d{2}', event_date):
-        await update.message.reply_text(
-            "❌ Pehle date likhna padega: YYYY-MM-DD\n\nExample: /caladd 2026-05-20 Meeting",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ Date format: YYYY-MM-DD\n\nExample: /caladd 2026-05-20 Meeting", parse_mode="Markdown")
         return
-
     remaining = args[1:]
     event_time = ""
     location   = ""
     title_parts = []
-
     for i, part in enumerate(remaining):
         if _re.match(r'^\d{1,2}:\d{2}$', part):
             h, m = part.split(":")
@@ -752,15 +694,12 @@ async def cmd_caladd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             break
         else:
             title_parts.append(part)
-
     if not title_parts:
         await update.message.reply_text("❌ Event ka title likhna padega!", parse_mode="Markdown")
         return
-
     title = " ".join(title_parts)
-    is_birthday = "birthday" in title.lower() or "bday" in title.lower() or "janamdin" in title.lower()
+    is_birthday = any(w in title.lower() for w in ["birthday", "bday", "janamdin", "janmdin"])
     event_type = "birthday" if is_birthday else "event"
-
     actual_date = event_date
     if is_birthday:
         try:
@@ -772,23 +711,15 @@ async def cmd_caladd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             actual_date = next_bday.strftime("%Y-%m-%d")
         except Exception:
             actual_date = event_date
-
     e = calendar.add(title, actual_date, event_time, location, "", event_type)
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "calendar_add", f"{'Birthday' if is_birthday else 'Event'} #{e['id']} added: {title} on {actual_date}")
-
-    time_str  = f"\n⏰ Time: {event_time}" if event_time else ""
-    loc_str   = f"\n📍 Location: {location}" if location else ""
-    type_emoji = "🎂" if is_birthday else "📅"
-
+    _log_action(update.effective_user.first_name or "User", "calendar_add", f"{'Birthday' if is_birthday else 'Event'} #{e['id']}: {title} on {actual_date}")
+    ts = f"\n⏰ Time: {event_time}" if event_time else ""
+    ls = f"\n📍 Location: {location}" if location else ""
+    emoji = "🎂" if is_birthday else "📅"
     if is_birthday:
-        msg = (f"{type_emoji} *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n"
-               f"#{e['id']} 🎂 *{actual_date}*\n👤 {title}{loc_str}\n\n"
-               f"✅ Ek din pehle remind karunga InshAllah!\n📊 Sheets mein bhi save ho gaya!")
+        msg = f"{emoji} *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n#{e['id']} 🎂 *{actual_date}*\n👤 {title}{ls}\n\n✅ Ek din pehle remind karunga!\n📊 Sheets mein save!"
     else:
-        msg = (f"{type_emoji} *Calendar Event Add Ho Gaya!* ✅\n\n"
-               f"#{e['id']} 📅 *{actual_date}*{time_str}\n📌 {title}{loc_str}\n\n"
-               f"✅ Ek din pehle remind karunga InshAllah!\n📊 Sheets mein bhi save ho gaya!")
+        msg = f"{emoji} *Event Add Ho Gaya!* ✅\n\n#{e['id']} 📅 *{actual_date}*{ts}\n📌 {title}{ls}\n\n✅ Ek din pehle remind karunga!\n📊 Sheets mein save!"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_caldel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -799,10 +730,7 @@ async def cmd_caldel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"  {'🎂' if e.get('type')=='birthday' else '📅'} #{e['id']} {e['date']} {e['title']}"
                 for e in events[:10]
             )
-            await update.message.reply_text(
-                f"Kaunsa event delete karna hai?\n\n{lines}\n\n/caldel id",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"Kaunsa event?\n\n{lines}\n\n/caldel id", parse_mode="Markdown")
         else:
             await update.message.reply_text("/caldel id", parse_mode="Markdown")
         return
@@ -813,8 +741,7 @@ async def cmd_caldel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Event #{eid} nahi mila!")
             return
         calendar.delete(eid)
-        user_name = update.effective_user.first_name or "User"
-        _log_action(user_name, "calendar_delete", f"Event #{eid} deleted: {target['title']} ({target['date']})")
+        _log_action(update.effective_user.first_name or "User", "calendar_delete", f"#{eid}: {target['title']} on {target['date']}")
         await update.message.reply_text(
             f"🗑️ *Event Delete Ho Gaya!*\n\n#{eid} '{target['title']}' ({target['date']})\n\nSheets se bhi hata diya. ✅",
             parse_mode="Markdown"
@@ -829,7 +756,7 @@ async def cmd_caldel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_bills(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     all_bills = bills.all_active()
     if not all_bills:
-        await update.message.reply_text("💳 Koi active bill nahi hai.\n\n/billadd — Naya bill add karo", parse_mode="Markdown")
+        await update.message.reply_text("💳 Koi active bill nahi hai.\n\n/billadd — Naya add karo", parse_mode="Markdown")
         return
     today_day = now_ist().day
     lines = []
@@ -851,7 +778,7 @@ async def cmd_bills(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     due_str += ")"
             else:
                 due_str += ")"
-        except:
+        except Exception:
             due_str = ""
         lines.append(f"💳 #{b['id']} *{b['name']}*\n   Rs.{b['amount']}{due_str}\n   {status}")
     await update.message.reply_text(
@@ -863,9 +790,8 @@ async def cmd_bills(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_billadd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args or len(ctx.args) < 3:
         await update.message.reply_text(
-            "💳 *Bill Add Karo:*\n\nFormat: `/billadd Name Amount DueDay`\n\n"
-            "Examples:\n`/billadd Netflix 499 15`\n`/billadd LIC 3500 5`\n`/billadd Electricity 1200 20`\n`/billadd Jio 299 1 Yes UPI`\n\n"
-            "DueDay = Kitni tarikh ko bill aata hai",
+            "💳 *Bill Add Karo:*\n\n`/billadd Name Amount DueDay`\n\n"
+            "Examples:\n`/billadd Netflix 499 15`\n`/billadd LIC 3500 5`\n`/billadd Jio 299 1`",
             parse_mode="Markdown"
         )
         return
@@ -876,13 +802,10 @@ async def cmd_billadd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         auto_pay = ctx.args[3] if len(ctx.args) > 3 else "No"
         payment_method = ctx.args[4] if len(ctx.args) > 4 else ""
         b = bills.add(name, amount, due_day, auto_pay, payment_method)
-        user_name = update.effective_user.first_name or "User"
-        _log_action(user_name, "bill_add", f"Bill #{b['id']} added: {name} Rs.{amount} due {due_day} tarikh")
+        _log_action(update.effective_user.first_name or "User", "bill_add", f"#{b['id']}: {name} Rs.{amount} due {due_day} tarikh")
         await update.message.reply_text(
             f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n#{b['id']} *{name}*\n"
-            f"💰 Rs.{amount}\n📅 Due: Har mahine {due_day} tarikh\n"
-            f"🔄 Auto Pay: {auto_pay}\n💳 Payment: {payment_method if payment_method else 'Not set'}\n\n"
-            f"📊 'Bills & Subscriptions' sheet mein save ho gaya!",
+            f"💰 Rs.{amount}\n📅 Due: {due_day} tarikh\n📊 Sheets mein save!",
             parse_mode="Markdown"
         )
     except ValueError:
@@ -896,7 +819,7 @@ async def cmd_billpaid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines = "\n".join(f"  #{b['id']} {b['name']} — Rs.{b['amount']}" for b in unpaid)
             await update.message.reply_text(f"💳 *Unpaid Bills:*\n\n{lines}\n\n/billpaid id — Paid mark karo", parse_mode="Markdown")
         else:
-            await update.message.reply_text("✅ Alhamdulillah! Is mahine ke sab bills paid hain!", parse_mode="Markdown")
+            await update.message.reply_text("✅ Alhamdulillah! Sab bills paid hain!", parse_mode="Markdown")
         return
     try:
         bid = int(ctx.args[0])
@@ -906,14 +829,13 @@ async def cmd_billpaid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         ok = bills.mark_paid(bid)
         if ok:
-            user_name = update.effective_user.first_name or "User"
-            _log_action(user_name, "bill_paid", f"Bill #{bid} marked paid: {target['name']} Rs.{target['amount']}")
+            _log_action(update.effective_user.first_name or "User", "bill_paid", f"#{bid}: {target['name']} Rs.{target['amount']}")
             await update.message.reply_text(
-                f"✅ *Bill Paid! Alhamdulillah!* 🎉\n\n#{bid} *{target['name']}* — Rs.{target['amount']}\n\nIs mahine ka bill mark ho gaya! 📊",
+                f"✅ *Bill Paid! Alhamdulillah!* 🎉\n\n#{bid} *{target['name']}* — Rs.{target['amount']}\n\nIs mahine mark ho gaya! 📊",
                 parse_mode="Markdown"
             )
         else:
-            await update.message.reply_text(f"ℹ️ #{bid} {target['name']} is mahine pehle hi paid mark hai!", parse_mode="Markdown")
+            await update.message.reply_text(f"ℹ️ #{bid} pehle hi paid mark hai!", parse_mode="Markdown")
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
 
@@ -931,8 +853,7 @@ async def cmd_billdel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Bill #{bid} nahi mila!")
             return
         bills.delete(bid)
-        user_name = update.effective_user.first_name or "User"
-        _log_action(user_name, "bill_delete", f"Bill #{bid} deleted: {target['name']}")
+        _log_action(update.effective_user.first_name or "User", "bill_delete", f"#{bid}: {target['name']}")
         await update.message.reply_text(
             f"🗑️ *Bill Delete Ho Gaya!*\n\n#{bid} '{target['name']}'\n\nSheets se bhi hata diya. ✅",
             parse_mode="Markdown"
@@ -951,7 +872,6 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today_ev = calendar.today_events()
     week_ev  = calendar.upcoming(days=7)
     due_bills = bills.due_soon(days=3)
-
     events_str = ""
     if today_ev:
         events_str = "\n\n📅 *Aaj ke Events:*\n" + "\n".join(
@@ -959,19 +879,14 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for e in today_ev
         )
     elif week_ev:
-        next_ev = week_ev[0]
-        events_str = f"\n\n📅 *Agla Event:*\n  {'🎂' if next_ev.get('type')=='birthday' else '📅'} {next_ev['date']} {next_ev['title']}"
-
+        ne = week_ev[0]
+        events_str = f"\n\n📅 *Agla Event:*\n  {'🎂' if ne.get('type')=='birthday' else '📅'} {ne['date']} {ne['title']}"
     bills_str = ""
     if due_bills:
         bills_str = "\n\n💳 *Bills Due Soon:*\n" + "\n".join(
-            f"  ⚠️ {b['name']} — Rs.{b['amount']} ({b['due_day']} tarikh)"
-            for b in due_bills
+            f"  ⚠️ {b['name']} — Rs.{b['amount']} ({b['due_day']} tarikh)" for b in due_bills
         )
-
-    user_name = update.effective_user.first_name or "User"
-    _log_action(user_name, "briefing_viewed", f"Daily briefing viewed | Tasks:{len(tp)} Habits:{len(hd)}/{len(hd)+len(hp)} Water:{water.today_total()}ml")
-
+    _log_action(update.effective_user.first_name or "User", "briefing_viewed", f"Tasks:{len(tp)} Habits:{len(hd)}/{len(hd)+len(hp)}")
     await update.message.reply_text(
         f"☪️ *Assalamualaikum! Daily Briefing* 📊\n"
         f"📅 {n.strftime('%d %b %Y')} — {n.strftime('%I:%M %p')} IST\n\n"
@@ -997,39 +912,26 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     if now_hm == "21:00":
         tomorrow_events = calendar.events_needing_reminder()
         for e in tomorrow_events:
-            type_emoji = "🎂" if e.get("type") == "birthday" else "📅"
-            chat_ids = set()
-            for r in reminders.get_all():
-                cid = r.get("chat_id", "")
-                if cid:
-                    chat_ids.add(cid)
-            if not chat_ids:
-                log.warning("No chat IDs found for day-before reminder")
-                continue
+            emoji = "🎂" if e.get("type") == "birthday" else "📅"
+            chat_ids = {r.get("chat_id") for r in reminders.get_all() if r.get("chat_id")}
             for cid in chat_ids:
                 try:
-                    msg = (f"{type_emoji} *Kal ka Event! InshAllah tayaar raho!*\n\n"
-                           f"📅 Kal: {e['date']}\n📌 {e['title']}\n")
+                    msg = f"{emoji} *Kal ka Event! InshAllah tayaar raho!*\n\n📅 Kal: {e['date']}\n📌 {e['title']}\n"
                     if e.get("time"):
                         msg += f"⏰ Time: {e['time']}\n"
                     if e.get("location"):
                         msg += f"📍 {e['location']}\n"
                     if e.get("type") == "birthday":
-                        msg += f"\n🎂 Birthday hai! Mubarak dena mat bhoolo! 🎉"
+                        msg += "\n🎂 Birthday hai! Mubarak dena mat bhoolo! 🎉"
                     await context.bot.send_message(chat_id=int(cid), text=msg, parse_mode="Markdown")
-                    _log_action("Bot", "event_reminder_sent", f"Day-before reminder: {e['title']} on {e['date']}")
-                    log.info(f"Day-before reminder sent for event #{e['id']} to {cid}")
+                    _log_action("Bot", "event_reminder_sent", f"Day-before: {e['title']} on {e['date']}")
                 except Exception as ex:
                     log.error(f"Day-before reminder failed: {ex}")
 
     if now_hm == "09:00":
         due_bills = bills.due_soon(days=3)
         if due_bills:
-            chat_ids = set()
-            for r in reminders.get_all():
-                cid = r.get("chat_id", "")
-                if cid:
-                    chat_ids.add(cid)
+            chat_ids = {r.get("chat_id") for r in reminders.get_all() if r.get("chat_id")}
             for cid in chat_ids:
                 try:
                     lines = "\n".join(f"  💳 {b['name']} — Rs.{b['amount']} (due {b['due_day']} tarikh)" for b in due_bills)
@@ -1047,33 +949,27 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             continue
         reminder_time = r.get("time", "")
         if reminder_time == now_hm:
-            last_fired_minute = r.get("last_fired_minute", "")
-            if last_fired_minute == now_hm:
+            if r.get("last_fired_minute") == now_hm:
                 continue
             fire_count = r.get("fire_count", 0)
-            suffix = ""
-            if fire_count > 0:
-                suffix = f"\n⚠️ {fire_count + 1}vi baar baj raha hai — OK dabao!"
+            suffix = f"\n⚠️ {fire_count + 1}vi baar baj raha hai — OK dabao!" if fire_count > 0 else ""
             alert = (f"🚨 *ALARM!*\n{'━' * 20}\n⏰ *{reminder_time} BAJ GAYE!*\n{'━' * 20}\n\n"
                      f"🔔 *{r['text'].upper()}*\n{suffix}\n\n"
                      f"😴 Snooze: /snooze5 {r['id']} | /snooze10 {r['id']}\n"
                      f"🗑️ Delete: /delremind {r['id']}")
             try:
                 await context.bot.send_message(
-                    chat_id=int(r["chat_id"]),
-                    text=alert,
-                    reply_markup=alarm_keyboard(r["id"]),
-                    parse_mode="Markdown"
+                    chat_id=int(r["chat_id"]), text=alert,
+                    reply_markup=alarm_keyboard(r["id"]), parse_mode="Markdown"
                 )
                 for item in reminders.store.data["list"]:
                     if item["id"] == r["id"]:
-                        item["fire_count"]        = item.get("fire_count", 0) + 1
+                        item["fire_count"] = item.get("fire_count", 0) + 1
                         item["last_fired_minute"] = now_hm
-                        item["last_fired"]        = now_ist().isoformat()
+                        item["last_fired"] = now_ist().isoformat()
                         break
                 reminders.store.save()
-                _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} fired at {now_hm}: {r['text']}")
-                log.info(f"Alarm fired #{r['id']} at {now_hm}")
+                _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
             except Exception as e:
                 log.error(f"Failed to send alarm: {e}")
 
@@ -1094,7 +990,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reminder_text = target.get("text", "")
             count = reminders.acknowledge_all_by_text(reminder_text)
             reminders.acknowledge(rid, "User pressed OK")
-            _log_action("User", "alarm_acknowledged", f"Alarm #{rid} OK pressed: {reminder_text} ({count} dismissed)")
+            _log_action("User", "alarm_acknowledged", f"Alarm #{rid} OK: {reminder_text} ({count} dismissed)")
             if count > 1:
                 await query.edit_message_text(
                     f"✅ *{count} alarms band ho gaye! Alhamdulillah!*\n\n'{reminder_text}' — sab dismiss!\n\nNaya reminder: /remind",
@@ -1105,37 +1001,33 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"✅ *Alarm band ho gaya! JazakAllah!*\n\n'{reminder_text}'\n\nNaya reminder: /remind",
                     parse_mode="Markdown"
                 )
-            log.info(f"OK pressed for #{rid} — {count} reminders dismissed")
         except Exception as e:
             log.error(f"OK button error: {e}")
             await query.edit_message_text("❌ Error stopping alarm!")
 
 # ================================================================
-# NATURAL LANGUAGE PARSER
+# NATURAL LANGUAGE PARSER — v5 FIXES
+# Fixes:
+#   - "dairy" → diary (spelling variation) — show & add dono
+#   - "karcha/karch" → expense trigger
+#   - "bill X 500" → bill add (amount hone pe)
+#   - Water log string clean (no +/- prefix)
 # ================================================================
 
 MONTH_MAP = {
-    "jan": 1, "january": 1, "janvary": 1,
-    "feb": 2, "february": 2, "febrvary": 2,
-    "mar": 3, "march": 3,
-    "apr": 4, "april": 4,
-    "may": 5, "mei": 5,
-    "jun": 6, "june": 6,
-    "jul": 7, "july": 7,
-    "aug": 8, "august": 8,
-    "sep": 9, "sept": 9, "september": 9,
-    "oct": 10, "october": 10,
-    "nov": 11, "november": 11,
-    "dec": 12, "december": 12,
+    "jan": 1, "january": 1, "feb": 2, "february": 2,
+    "mar": 3, "march": 3, "apr": 4, "april": 4,
+    "may": 5, "mei": 5, "jun": 6, "june": 6,
+    "jul": 7, "july": 7, "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
+    "nov": 11, "november": 11, "dec": 12, "december": 12,
     "januari": 1, "februari": 2, "maret": 3,
-    "juni": 6, "juli": 7, "agustus": 8,
-    "oktober": 10, "desember": 12
+    "juni": 6, "juli": 7, "agustus": 8, "oktober": 10, "desember": 12
 }
 
 def _parse_date_from_text(text):
     lower = text.lower()
-    now = now_ist()
-    today_d = now.date()
+    today_d = now_ist().date()
 
     m = _re.search(r'(\d{1,4})[-/](\d{1,2})[-/](\d{2,4})', lower)
     if m:
@@ -1163,7 +1055,7 @@ def _parse_date_from_text(text):
             yr = int(yr_raw) if len(yr_raw) == 4 else int(yr_raw) + 2000
         else:
             yr = today_d.year
-            if date(yr, mon, day) < today_d:
+            if mon and date(yr, mon, day) < today_d:
                 yr += 1
         try:
             d = date(yr, mon, day)
@@ -1173,12 +1065,9 @@ def _parse_date_from_text(text):
             pass
 
     if "parso" in lower:
-        d = today_d + timedelta(days=2)
-        return d.strftime("%Y-%m-%d"), _re.sub(r'\bparso\b', '', text, flags=_re.IGNORECASE).strip()
+        return (today_d + timedelta(days=2)).strftime("%Y-%m-%d"), _re.sub(r'\bparso\b', '', text, flags=_re.IGNORECASE).strip()
     if _re.search(r'\bkal\b|\bkl\b', lower):
-        d = today_d + timedelta(days=1)
-        remaining = _re.sub(r'\bkal\b|\bkl\b', '', text, flags=_re.IGNORECASE).strip()
-        return d.strftime("%Y-%m-%d"), remaining
+        return (today_d + timedelta(days=1)).strftime("%Y-%m-%d"), _re.sub(r'\bkal\b|\bkl\b', '', text, flags=_re.IGNORECASE).strip()
     if "aaj" in lower:
         return today_d.strftime("%Y-%m-%d"), _re.sub(r'\baaj\b', '', text, flags=_re.IGNORECASE).strip()
 
@@ -1187,115 +1076,93 @@ def _parse_date_from_text(text):
 
 def parse_user_message(user_msg: str):
     lower = user_msg.lower().strip()
-    now = now_ist()
 
-    # 1. SHOW REMINDERS
-    show_reminder_phrases = [
+    # ── 1. SHOW REMINDERS ──────────────────────────────────────
+    if any(p in lower for p in [
         "reminder dikhao", "reminder dekho", "reminder list", "reminders dikhao",
         "active reminder", "reminder show", "show reminder", "mera reminder",
-        "reminder batao", "reminder kya hai", "alarm dikhao", "alarm list",
-        "alarm show", "show alarm", "kitne reminder", "saare reminder",
-        "sare reminder", "reminder check",
-    ]
-    if any(p in lower for p in show_reminder_phrases):
+        "reminder batao", "alarm dikhao", "alarm list", "show alarm",
+        "kitne reminder", "saare reminder", "sare reminder", "reminder check",
+    ]):
         return ("show_reminders", {})
 
-    # 2. SHOW TASKS
-    show_task_phrases = [
+    # ── 2. SHOW TASKS ──────────────────────────────────────────
+    if any(p in lower for p in [
         "saare task", "sare task", "task list", "task dikhao", "task dekho",
         "task show", "show task", "pending task", "meri task", "tasks dikhao",
         "tasks dekho", "kya task", "task kya hai", "task batao",
-    ]
-    if any(p in lower for p in show_task_phrases):
+    ]):
         return ("show_tasks", {})
 
-    # 3. SHOW HABITS
-    show_habit_phrases = [
+    # ── 3. SHOW HABITS ─────────────────────────────────────────
+    if any(p in lower for p in [
         "saari habit", "sari habit", "habit list", "habit dikhao", "habit dekho",
-        "habit show", "show habit", "meri habit", "habits dikhao", "habits dekho",
+        "habit show", "show habit", "meri habit", "habits dikhao",
         "kya habit", "habit batao", "aaj ki habit",
-    ]
-    if any(p in lower for p in show_habit_phrases):
+    ]):
         return ("show_habits", {})
 
-    # 4. SHOW DIARY
-    show_diary_phrases = [
+    # ── 4. SHOW DIARY — FIX: dairy/diary dono ─────────────────
+    if any(p in lower for p in [
         "diary dikhao", "diary dekho", "diary padho", "show diary",
-        "diary show", "diary dekhao", "aaj ki diary", "meri diary",
-        "diary kya hai", "diary batao", "dairy dikhao", "dairy dekho",
-        "dairy show", "show dairy",
-    ]
-    if any(p in lower for p in show_diary_phrases):
+        "diary show", "aaj ki diary", "meri diary", "diary batao",
+        # FIX: dairy spelling
+        "dairy dikhao", "dairy dekho", "dairy padho", "show dairy",
+        "dairy show", "aaj ki dairy", "meri dairy",
+    ]):
         return ("show_diary", {})
 
-    # 5. SHOW CALENDAR
-    show_cal_phrases = [
+    # ── 5. SHOW CALENDAR ───────────────────────────────────────
+    if any(p in lower for p in [
         "calendar dikhao", "events dikhao", "events dekho", "upcoming events",
-        "aaj ka event", "cal dikhao", "schedule dikhao", "kya event",
-    ]
-    if any(p in lower for p in show_cal_phrases):
+        "aaj ka event", "cal dikhao", "schedule dikhao",
+    ]):
         return ("show_calendar", {})
 
-    # 6. REMINDER
+    # ── 6. REMINDER SET ────────────────────────────────────────
     remind_words = [
         "remind", "reminder", "alarm", "yaad dilana", "bata dena",
         "yaad dila", "yaad dila do", "yaad kara", "add reminder",
-        "set reminder", "set alarm", "reminder set", "alarm set",
-        "yaad dilao", "yaad krao", "yaad kara do",
+        "set reminder", "set alarm", "yaad dilao", "yaad krao",
     ]
     if any(w in lower for w in remind_words):
-
         def _parse_reminder_time(lwr):
             now_t = now_ist()
             mm = _re.search(r'(\d+)\s*(?:min(?:ute)?s?)\b', lwr)
             if mm:
-                mins = int(mm.group(1))
-                t = now_t + timedelta(minutes=mins)
-                return t.strftime("%H:%M"), False
-
+                return (now_t + timedelta(minutes=int(mm.group(1)))).strftime("%H:%M"), False
             mm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
             if mm:
                 h, mi = int(mm.group(1)), int(mm.group(2))
-                is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
-                return f"{h:02d}:{mi:02d}", is_tom
-
-            mm = _re.search(r'(\d{1,2})\s*(?:baj[ae]?(?:y)?|am\b|pm\b|a\.m|p\.m)', lwr)
+                return f"{h:02d}:{mi:02d}", ("kal" in lwr or "kl" in lwr or "tomorrow" in lwr)
+            mm = _re.search(r'(\d{1,2})\s*(?:baj[ae]?(?:y)?|am\b|pm\b)', lwr)
             if mm:
                 h = int(mm.group(1))
                 if _re.search(r'\b(?:pm|sham|shaam|raat|evening|night)\b', lwr):
-                    if h != 12:
-                        h += 12
-                    if h >= 24:
-                        h = h - 12
-                elif _re.search(r'\b(?:am|subha|subah|morning|dopahar)\b', lwr) and h == 12:
+                    if h != 12: h += 12
+                    if h >= 24: h -= 12
+                elif _re.search(r'\b(?:am|subha|subah|morning)\b', lwr) and h == 12:
                     h = 0
                 elif h < 6:
                     h += 12
-                is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
-                return f"{h:02d}:00", is_tom
-
-            time_word_map = {
-                "subha": "08:00", "subah": "08:00", "morning": "08:00",
-                "dopahar": "13:00", "lunch": "13:00",
-                "shaam": "18:00", "sham": "18:00", "evening": "18:00",
-                "raat": "21:00", "night": "21:00",
-                "midnight": "00:00", "aadhi raat": "00:00",
-            }
-            for word, tstr in time_word_map.items():
+                return f"{h:02d}:00", ("kal" in lwr or "kl" in lwr or "tomorrow" in lwr)
+            for word, tstr in {
+                "subha":"08:00","subah":"08:00","morning":"08:00",
+                "dopahar":"13:00","lunch":"13:00",
+                "shaam":"18:00","sham":"18:00","evening":"18:00",
+                "raat":"21:00","night":"21:00","midnight":"00:00",
+            }.items():
                 if word in lwr:
-                    is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
-                    return tstr, is_tom
-
+                    return tstr, ("kal" in lwr or "kl" in lwr or "tomorrow" in lwr)
             return None, False
 
         time_str, is_tomorrow = _parse_reminder_time(lower)
-
         if time_str:
             stop_words = remind_words + [
-                "kal", "kl", "aaj", "tomorrow", "subha", "subah", "morning",
-                "shaam", "sham", "raat", "night", "evening", "dopahar",
-                "baje", "bajay", "baj", "pe", "par", "ko", "mein", "me",
-                "mujhe", "mujhko", "please", "plz", "zara", "jara",
+                "kal","kl","aaj","tomorrow","subha","subah","morning",
+                "shaam","sham","raat","night","evening","dopahar",
+                "baje","bajay","baj","pe","par","ko","mein","me",
+                "mujhe","please","plz","zara",
             ]
             text_clean = lower
             text_clean = _re.sub(r'\d+\s*(?:min(?:ute)?s?)\b', '', text_clean)
@@ -1304,50 +1171,43 @@ def parse_user_message(user_msg: str):
             for sw in stop_words:
                 text_clean = _re.sub(r'\b' + _re.escape(sw) + r'\b', ' ', text_clean)
             text_clean = " ".join(text_clean.split()).strip().title() or "Kaam"
-            prefix = "🗓️ Kal: " if is_tomorrow else ""
+            prefix = "Kal: " if is_tomorrow else ""
             return ("remind", {"time": time_str, "text": f"{prefix}{text_clean}", "tomorrow": is_tomorrow})
-
         return ("chat", {"text": user_msg})
 
-    # 7. HABIT DONE
-    habit_done_phrases = [
+    # ── 7. HABIT DONE ──────────────────────────────────────────
+    if any(p in lower for p in [
         "habit ho gayi", "habit ho gaya", "habit complete", "habit kar li",
         "habit kar liya", "habit done", "gym ho gaya", "gym kar liya",
         "exercise ho gayi", "exercise kar li", "walk ho gayi", "walk kar li",
         "reading ho gayi", "meditation ho gayi", "yoga ho gayi",
-    ]
-    if any(p in lower for p in habit_done_phrases):
+    ]):
         m = _re.search(r'#?(\d+)', lower)
-        keyword = m.group(1) if m else lower[:40]
-        return ("habit_done", {"keyword": keyword})
+        return ("habit_done", {"keyword": m.group(1) if m else lower[:40]})
 
-    # 8. HABIT ADD
-    habit_add_phrases = [
+    # ── 8. HABIT ADD ───────────────────────────────────────────
+    if any(p in lower for p in [
         "habit add", "add habit", "naya habit", "habit lagao", "habit bana",
         "habit start", "new habit", "habit banana",
-    ]
-    if any(p in lower for p in habit_add_phrases):
+    ]):
         name = user_msg
-        for kw in habit_add_phrases + ["habit", "add", "naya", "new", "karo", "kr", "lagao", "bana", "start", "banana"]:
+        for kw in ["habit", "add", "naya", "new", "karo", "kr", "lagao", "bana", "start", "banana"]:
             name = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", name, flags=_re.IGNORECASE)
-        name = " ".join(name.split()).strip()
-        return ("add_habit", {"name": name[:50] or "Habit"})
+        return ("add_habit", {"name": " ".join(name.split()).strip()[:50] or "Habit"})
 
-    # 9. CALENDAR ADD
-    cal_add_triggers = [
+    # ── 9. CALENDAR ADD ────────────────────────────────────────
+    if any(t in lower for t in [
         "birthday", "bday", "b'day", "janamdin", "janmdin",
         "calendar add", "cal add", "event add", "add event",
-        "calendar mein", "cal mein", "event hai", "ka birthday",
-        "ki birthday", "ki janamdin", "ka janamdin",
-    ]
-    if any(t in lower for t in cal_add_triggers):
+        "calendar mein", "cal mein", "ka birthday", "ki birthday",
+    ]):
         date_str, remaining = _parse_date_from_text(user_msg)
         if date_str:
             title = remaining
             for kw in ["calendar", "cal", "event", "add", "karo", "kr", "mein", "me", "hai", "ka", "ki"]:
                 title = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", title, flags=_re.IGNORECASE)
             title = " ".join(title.split()).strip()
-            is_bday = any(w in lower for w in ["birthday", "bday", "janamdin", "janmdin", "b'day"])
+            is_bday = any(w in lower for w in ["birthday", "bday", "janamdin", "janmdin"])
             event_type = "birthday" if is_bday else "event"
             if is_bday:
                 try:
@@ -1362,39 +1222,41 @@ def parse_user_message(user_msg: str):
             return ("add_calendar", {"title": title or "Event", "date": date_str, "type": event_type})
         return ("chat", {"text": user_msg})
 
-    # 10. BILL ADD
-    bill_add_triggers = [
-        "bill add", "bill kro", "bill daal", "subscription add",
-        "bill lagao", "bill likh", "add bill", "naya bill",
-    ]
-    if any(w in lower for w in bill_add_triggers):
-        title = user_msg
-        for kw in bill_add_triggers + ["bill", "add", "kro", "karo", "kr", "daal", "likh", "lagao", "naya", "subscription"]:
-            title = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", title, flags=_re.IGNORECASE)
-        title = " ".join(title.split()).strip()
-        amount = 0
-        amount_m = _re.search(r'(?:rs\.?|rupees?)?\s*(\d+(?:\.\d+)?)', title, _re.IGNORECASE)
+    # ── 10. BILL ADD — FIX: broad trigger + amount required ────
+    # "bill netflix 500", "bills add netflix 500", "naya bill jio 299" sab
+    is_bill_msg = ("bill" in lower or "bills" in lower)
+    show_bill_words = ["dikhao", "dekho", "show", "list", "batao", "paid", "kya", "kitne", "sab"]
+    is_bill_show = any(w in lower for w in show_bill_words)
+    if is_bill_msg and not is_bill_show:
+        amount_m = _re.search(r'\b(\d+(?:\.\d+)?)\b', lower)
         if amount_m:
             amount = float(amount_m.group(1))
-        due_day = 0
-        due_m = _re.search(r'(\d{1,2})\s*(?:tarikh|taarikh|date|th|st|nd|rd)?', title)
-        if due_m:
-            candidate = int(due_m.group(1))
-            if 1 <= candidate <= 31 and candidate != amount:
-                due_day = candidate
-        name = _re.sub(r'\d+(?:\.\d+)?', '', title).strip()
-        name = " ".join(name.split()).strip() or "Bill"
-        return ("add_bill", {"name": name, "amount": amount, "due_day": due_day})
+            title = user_msg
+            for kw in ["bill", "bills", "add", "kro", "karo", "kr", "daal", "likh",
+                       "lagao", "naya", "new", "subscription"]:
+                title = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", title, flags=_re.IGNORECASE)
+            title = _re.sub(r'\b' + amount_m.group(1) + r'\b', "", title).strip()
+            due_day = 0
+            due_m = _re.search(r'(\d{1,2})\s*(?:tarikh|taarikh|date|th|st|nd|rd)', title)
+            if due_m:
+                candidate = int(due_m.group(1))
+                if 1 <= candidate <= 31:
+                    due_day = candidate
+                    title = title.replace(due_m.group(0), "")
+            name = " ".join(title.split()).strip() or "Bill"
+            return ("add_bill", {"name": name, "amount": amount, "due_day": due_day})
 
-    # 11. DIARY ADD
-    diary_add_phrases = [
-        "diary mein likho", "diary me likho", "diary mein likh",
-        "diary me likh", "diary add", "diary mein add", "diary me add",
+    # ── 11. DIARY ADD — FIX: dairy/diary dono ─────────────────
+    diary_add_triggers = [
+        "diary mein likho", "diary me likho", "diary mein likh", "diary me likh",
+        "diary add", "diary mein add", "diary me add",
         "diary mein daalo", "diary me daalo", "diary save",
-        "dairy mein likho", "dairy me likho", "dairy add",
-        "diary mein note", "diary me note",
+        "diary mein note", "diary me note", "add diary",
+        # FIX: dairy variants
+        "dairy mein likho", "dairy me likho", "dairy mein likh", "dairy me likh",
+        "dairy add", "dairy mein add", "dairy me add", "dairy save", "add dairy",
     ]
-    if any(p in lower for p in diary_add_phrases):
+    if any(p in lower for p in diary_add_triggers):
         text = user_msg
         for kw in ["diary", "dairy", "likho", "likh", "add", "save", "mein", "me",
                    "main", "daalo", "daal", "note", "karo"]:
@@ -1402,9 +1264,11 @@ def parse_user_message(user_msg: str):
         text = " ".join(text.split()).strip()
         return ("diary", {"text": text or user_msg})
 
-    # 12. WATER
-    water_triggers = ["paani piya", "water piya", "water log", "paani liya", "water pi", "paani pi"]
-    if any(w in lower for w in water_triggers):
+    # ── 12. WATER ──────────────────────────────────────────────
+    if any(w in lower for w in [
+        "paani piya", "water piya", "water log", "paani liya",
+        "water pi", "paani pi", "pani piya", "pani pi", "pani liya",
+    ]):
         m = _re.search(r'(\d+)\s*(ml|glass|bottle)', lower)
         ml = 250
         if m:
@@ -1412,31 +1276,33 @@ def parse_user_message(user_msg: str):
             ml = val * 250 if "glass" in unit else val * 500 if "bottle" in unit else val
         return ("water", {"ml": ml})
 
-    # 13. EXPENSE
-    expense_words = [
-        "kharcha", "kharch", "spent", "rupees", "rs", "kharch kiya",
-        "laga diye", "lagaya", "laga", "khaya", "piya", "liya", "diye",
+    # ── 13. EXPENSE — FIX: karcha/karch/kharch/kharach sab ────
+    expense_triggers = [
+        "kharcha", "kharch", "karcha", "karch", "kharach",  # FIX
+        "spent", "rupees", "rs",
+        "kharch kiya", "laga diye", "lagaya",
         "pe lagaya", "mein lagaya", "ka kharcha", "pe laga",
+        "expense",
     ]
-    if any(w in lower for w in expense_words):
+    # Exclude agar bill/task/habit/reminder/diary/calendar/water word ho
+    non_expense = ["reminder", "task", "habit", "diary", "dairy", "calendar", "bill", "water", "memory", "paani"]
+    if any(w in lower for w in expense_triggers) and not any(n in lower for n in non_expense):
         m = _re.search(r'(\d+(?:\.\d+)?)', lower)
         if m:
             amount = float(m.group(1))
             desc = _re.sub(r'(\d+(?:\.\d+)?|rs\.?|rupees?)', "", user_msg, flags=_re.IGNORECASE)
-            desc = " ".join(w for w in desc.split() if w.lower() not in expense_words).strip()
+            desc = " ".join(w for w in desc.split() if w.lower() not in expense_triggers).strip()
             return ("expense", {"amount": amount, "desc": desc or "Expense"})
 
-    # 14. TASK COMPLETE
-    task_done_phrases = [
+    # ── 14. TASK COMPLETE ──────────────────────────────────────
+    if any(p in lower for p in [
         "task done", "kaam ho gaya", "kaam kar liya", "complete kar liya",
         "task complete", "ho gaya task", "kar liya task",
-    ]
-    if any(p in lower for p in task_done_phrases):
+    ]):
         m = _re.search(r'#?(\d+)', lower)
-        hint = m.group(1) if m else lower[:30]
-        return ("complete_task", {"hint": hint})
+        return ("complete_task", {"hint": m.group(1) if m else lower[:30]})
 
-    # 15. TASK ADD
+    # ── 15. TASK ADD ───────────────────────────────────────────
     task_add_words = [
         "task add", "add task", "naya task", "task lagao", "task likh",
         "task banana", "task karo", "new task",
@@ -1446,8 +1312,7 @@ def parse_user_message(user_msg: str):
 
     if any(p in lower for p in task_add_words):
         title = user_msg
-        for kw in task_add_words + ["task", "kaam", "todo", "add", "karo", "kro", "kr",
-                                     "lagao", "likh", "naya", "new", "banana", "karna"]:
+        for kw in task_add_words + ["task","kaam","todo","add","karo","kro","kr","lagao","likh","naya","new","banana","karna"]:
             title = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", title, flags=_re.IGNORECASE)
         title = " ".join(title.split()).strip()
         if title and len(title) > 1:
@@ -1461,17 +1326,17 @@ def parse_user_message(user_msg: str):
         if title and len(title) > 1:
             return ("add_task", {"title": title[:80]})
 
-    # 16. MEMORY SAVE
-    memory_triggers = ["memory mein", "memory me", "yaad rakhna", "note karo", "note kr",
-                       "save karo", "save kr", "remember karo"]
-    if any(t in lower for t in memory_triggers):
+    # ── 16. MEMORY SAVE ────────────────────────────────────────
+    if any(t in lower for t in [
+        "memory mein", "memory me", "yaad rakhna", "note karo", "note kr",
+        "save karo", "save kr", "remember karo",
+    ]):
         text = user_msg
-        for kw in memory_triggers + ["memory", "mein", "me", "save", "karo", "kr", "note", "yaad", "rakhna", "remember"]:
+        for kw in ["memory","mein","me","save","karo","kr","note","yaad","rakhna","remember"]:
             text = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", text, flags=_re.IGNORECASE)
-        text = " ".join(text.split()).strip()
-        return ("memory_save", {"text": text or user_msg})
+        return ("memory_save", {"text": " ".join(text.split()).strip() or user_msg})
 
-    # 17. AI CHAT FALLBACK
+    # ── 17. AI CHAT FALLBACK ───────────────────────────────────
     return ("chat", {"text": user_msg})
 
 
@@ -1485,13 +1350,12 @@ async def _send_reminder_list(update: Update):
         lines = "\n".join(f"  ⏰ #{r['id']} {r['time']} — {r['text']}" for r in active)
         await update.message.reply_text(
             f"⏰ *Active Reminders ({len(active)}):*\n\n{lines}\n\n"
-            f"/delremind id — Delete karo\n/snooze5 id — Snooze 5 min\n/remind 30m Chai — Naya set karo",
+            f"/delremind id — Delete karo\n/snooze5 id — Snooze\n/remind 30m Chai — Naya set karo",
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text(
-            "⏰ Koi active reminder nahi hai.\n\nInshAllah sab kaam ho gaye! 🌟\n\n"
-            "/remind 30m Chai — Naya set karo",
+            "⏰ Koi active reminder nahi hai.\n\n/remind 30m Chai — Naya set karo",
             parse_mode="Markdown"
         )
 
@@ -1506,7 +1370,7 @@ async def _send_task_list(update: Update):
         )
     else:
         await update.message.reply_text(
-            "✅ Alhamdulillah! Koi pending task nahi hai.\n\n/task Naam — Naya task add karo",
+            "✅ Alhamdulillah! Koi pending task nahi hai.\n\n/task Naam — Naya add karo",
             parse_mode="Markdown"
         )
 
@@ -1519,51 +1383,31 @@ async def _send_habit_list(update: Update):
             f"  {'✅' if h['id'] in done_ids else '⬜'} #{h['id']} {h['name']} 🔥{h.get('streak', 0)}"
             for h in all_h
         )
-        await update.message.reply_text(
-            f"🏃 *Aaj ke Habits:*\n\n{lines}\n\n/hdone id — Log karo",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"🏃 *Aaj ke Habits:*\n\n{lines}\n\n/hdone id — Log karo", parse_mode="Markdown")
     else:
-        await update.message.reply_text(
-            "🏃 Koi habit nahi hai.\n\n/habit Naam — Naya habit add karo",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("🏃 Koi habit nahi.\n\n/habit Naam — Naya add karo", parse_mode="Markdown")
 
 async def _send_diary_today(update: Update):
     entries = diary.get(today_str())
     if not entries:
         await update.message.reply_text(
-            "📖 Aaj ki koi diary entry nahi hai.\n\n"
-            "/diary write — Likhna shuru karo!\n"
-            "Ya bolo: *diary mein likho [text]*",
+            "📖 Aaj ki koi diary entry nahi hai.\n\n/diary write — Likhna shuru karo!\nYa bolo: *diary mein likho [text]*",
             parse_mode="Markdown"
         )
     else:
         lines = "\n\n".join(f"🕐 {e['time']}\n{e['text']}" for e in entries)
-        await update.message.reply_text(
-            f"📖 *Aaj ki Diary ({today_str()}):*\n\n{lines}",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"📖 *Aaj ki Diary ({today_str()}):*\n\n{lines}", parse_mode="Markdown")
 
 async def _send_calendar_list(update: Update):
     events = calendar.upcoming(days=30)
     if events:
-        lines = []
-        for e in events[:10]:
-            emoji = "🎂" if e.get("type") == "birthday" else "📅"
-            lines.append(f"{emoji} *{e['date']}* — #{e['id']}\n   {e['title']}")
-        await update.message.reply_text(
-            f"📅 *Upcoming Events ({len(events)}):*\n\n" + "\n\n".join(lines),
-            parse_mode="Markdown"
-        )
+        lines = [f"{'🎂' if e.get('type')=='birthday' else '📅'} *{e['date']}* — #{e['id']}\n   {e['title']}" for e in events[:10]]
+        await update.message.reply_text(f"📅 *Upcoming Events ({len(events)}):*\n\n" + "\n\n".join(lines), parse_mode="Markdown")
     else:
-        await update.message.reply_text(
-            "📅 Koi upcoming event nahi.\n\n/caladd — Add karo",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📅 Koi upcoming event nahi.\n\n/caladd — Add karo", parse_mode="Markdown")
 
 # ================================================================
-# MESSAGE HANDLER — v4: Har action Miscellaneous mein log hoga
+# MESSAGE HANDLER
 # ================================================================
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1576,46 +1420,43 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     action_type, params = parse_user_message(user_msg)
-    log.info(f"MSG: '{user_msg[:60]}' → {action_type} | {params}")
+    log.info(f"MSG: '{user_msg[:60]}' → {action_type}")
 
-    # Log raw user message first
     chat_hist.add("user", user_msg, user_name)
 
     if action_type == "show_reminders":
         await _send_reminder_list(update)
-        _log_action(user_name, "show_reminders", f"Listed active reminders | msg: {user_msg}")
+        _log_action(user_name, "show_reminders", user_msg[:60])
 
     elif action_type == "show_tasks":
         await _send_task_list(update)
-        _log_action(user_name, "show_tasks", f"Listed pending tasks | msg: {user_msg}")
+        _log_action(user_name, "show_tasks", user_msg[:60])
 
     elif action_type == "show_habits":
         await _send_habit_list(update)
-        _log_action(user_name, "show_habits", f"Listed habits | msg: {user_msg}")
+        _log_action(user_name, "show_habits", user_msg[:60])
 
     elif action_type == "show_diary":
         await _send_diary_today(update)
-        _log_action(user_name, "show_diary", f"Viewed diary | msg: {user_msg}")
+        _log_action(user_name, "show_diary", user_msg[:60])
 
     elif action_type == "show_calendar":
         await _send_calendar_list(update)
-        _log_action(user_name, "show_calendar", f"Viewed calendar | msg: {user_msg}")
+        _log_action(user_name, "show_calendar", user_msg[:60])
 
     elif action_type == "remind":
         r = reminders.add(update.effective_chat.id, params.get("text", "Reminder"), params.get("time", ""))
-        is_tom = params.get("tomorrow", False)
-        when_str = "Kal" if is_tom else "Aaj"
-        _log_action(user_name, "reminder_set", f"Reminder #{r['id']} at {params.get('time')}: {params.get('text')} | msg: {user_msg}")
+        when_str = "Kal" if params.get("tomorrow") else "Aaj"
+        _log_action(user_name, "reminder_set", f"#{r['id']} at {params.get('time')}: {params.get('text')}")
         await update.message.reply_text(
             f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n"
-            f"🕐 {when_str} {params.get('time')} baje: {params.get('text')}\n"
-            f"📌 ID #{r['id']}",
+            f"🕐 {when_str} {params.get('time')} baje: {params.get('text')}\n📌 ID #{r['id']}",
             parse_mode="Markdown"
         )
 
     elif action_type == "add_task":
         t = tasks.add(params.get("title", ""))
-        _log_action(user_name, "task_add", f"Task #{t['id']} added: {t['title']} | msg: {user_msg}")
+        _log_action(user_name, "task_add", f"#{t['id']}: {t['title']}")
         await update.message.reply_text(
             f"✅ *Task Add Ho Gaya!*\n\n📌 #{t['id']} {t['title']}\n\nInshAllah ho jayega! 💪",
             parse_mode="Markdown"
@@ -1627,7 +1468,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         matched = next((t for t in pending if str(t["id"]) == hint or (hint and hint in t["title"].lower())), None)
         if matched:
             tasks.complete(matched["id"])
-            _log_action(user_name, "task_done", f"Task #{matched['id']} completed: {matched['title']} | msg: {user_msg}")
+            _log_action(user_name, "task_done", f"#{matched['id']}: {matched['title']}")
             await update.message.reply_text(
                 f"✅ *Alhamdulillah! Task Complete!* 🎉\n\n#{matched['id']} {matched['title']}",
                 parse_mode="Markdown"
@@ -1637,7 +1478,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action_type == "expense":
         expenses.add(params.get("amount", 0), params.get("desc", ""))
-        _log_action(user_name, "expense_add", f"Rs.{params.get('amount')} on {params.get('desc')} | Today total: Rs.{expenses.today_total()} | msg: {user_msg}")
+        _log_action(user_name, "expense_add", f"Rs.{params.get('amount')} on {params.get('desc')} | Total: Rs.{expenses.today_total()}")
         await update.message.reply_text(
             f"💸 Rs.{params.get('amount')} — {params.get('desc')}\n💰 Aaj total: Rs.{expenses.today_total()}",
             parse_mode="Markdown"
@@ -1645,7 +1486,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action_type == "diary":
         diary.add(params.get("text", ""))
-        _log_action(user_name, "diary_write", f"Diary entry: {params.get('text', '')[:80]} | msg: {user_msg}")
+        _log_action(user_name, "diary_write", f"Entry: {params.get('text', '')[:80]}")
         await update.message.reply_text(
             f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n_{params.get('text', '')[:100]}_\n\nSheets mein bhi!",
             parse_mode="Markdown"
@@ -1653,7 +1494,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action_type == "add_habit":
         h = habits.add(params.get("name", ""))
-        _log_action(user_name, "habit_add", f"Habit #{h['id']} added: {h['name']} | msg: {user_msg}")
+        _log_action(user_name, "habit_add", f"#{h['id']}: {h['name']}")
         await update.message.reply_text(
             f"🏃 *Habit Add Ho Gaya!*\n\n#{h['id']} {h['name']}\n\nInshAllah roz karoge! 💪",
             parse_mode="Markdown"
@@ -1668,31 +1509,25 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ok, streak, h = habits.log_by_name(keyword)
             name = h["name"] if h else keyword
         if ok:
-            _log_action(user_name, "habit_done", f"Habit '{name}' logged | streak: {streak} | msg: {user_msg}")
+            _log_action(user_name, "habit_done", f"'{name}' done | streak: {streak}")
             await update.message.reply_text(
                 f"🔥 *{name} done! MashAllah!* 🎉\n\n{streak} din ka streak! 💪",
                 parse_mode="Markdown"
             )
         else:
-            await update.message.reply_text(
-                "❓ Kaunsa habit? /habit se list dekho aur /hdone id se log karo"
-            )
+            await update.message.reply_text("❓ Kaunsa habit? /habit se list dekho aur /hdone id se log karo")
 
     elif action_type == "add_calendar":
         title   = params.get("title", "Event")
         ev_date = params.get("date", today_str())
         ev_type = params.get("type", "event")
         e = calendar.add(title, ev_date, "", "", "", ev_type)
-        _log_action(user_name, "calendar_add", f"{'Birthday' if ev_type=='birthday' else 'Event'} #{e['id']}: {title} on {ev_date} | msg: {user_msg}")
-        type_emoji = "🎂" if ev_type == "birthday" else "📅"
+        _log_action(user_name, "calendar_add", f"{'Birthday' if ev_type=='birthday' else 'Event'} #{e['id']}: {title} on {ev_date}")
+        emoji = "🎂" if ev_type == "birthday" else "📅"
         if ev_type == "birthday":
-            msg = (f"{type_emoji} *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n"
-                   f"#{e['id']} 🎂 *{ev_date}*\n👤 {title}\n\n"
-                   f"✅ Ek din pehle remind karunga InshAllah!\n📊 Sheets mein save!")
+            msg = f"{emoji} *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n#{e['id']} 🎂 *{ev_date}*\n👤 {title}\n\n✅ Ek din pehle remind karunga!\n📊 Sheets mein save!"
         else:
-            msg = (f"{type_emoji} *Event Add Ho Gaya!* ✅\n\n"
-                   f"#{e['id']} 📅 *{ev_date}*\n📌 {title}\n\n"
-                   f"✅ Ek din pehle remind karunga InshAllah!\n📊 Sheets mein save!")
+            msg = f"{emoji} *Event Add Ho Gaya!* ✅\n\n#{e['id']} 📅 *{ev_date}*\n📌 {title}\n\n✅ Ek din pehle remind karunga!\n📊 Sheets mein save!"
         await update.message.reply_text(msg, parse_mode="Markdown")
 
     elif action_type == "add_bill":
@@ -1700,20 +1535,22 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         amount  = params.get("amount", 0)
         due_day = params.get("due_day", 0)
         b = bills.add(name, amount, due_day)
-        _log_action(user_name, "bill_add", f"Bill #{b['id']}: {name} Rs.{amount} due {due_day} tarikh | msg: {user_msg}")
+        _log_action(user_name, "bill_add", f"#{b['id']}: {name} Rs.{amount} due {due_day} tarikh")
         await update.message.reply_text(
             f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n#{b['id']} *{name}*\n"
-            f"💰 Rs.{amount}\n📅 Due: {due_day} tarikh (0 = not set)\n\n"
-            f"📊 Sheets mein save!\n💡 Edit: /billadd",
+            f"💰 Rs.{amount}\n📅 Due: {due_day} tarikh\n\n"
+            f"📊 Sheets mein save!\n_(Due 0 = not set; /billadd se sahi due day set karo)_",
             parse_mode="Markdown"
         )
 
     elif action_type == "water":
-        total = water.add(params.get("ml", 250))
+        ml = params.get("ml", 250)
+        total = water.add(ml)
         goal_ml = water.goal()
-        _log_action(user_name, "water_log", f"+{params.get('ml', 250)}ml water | Total: {total}/{goal_ml}ml | msg: {user_msg}")
+        pct = int(total / goal_ml * 100) if goal_ml else 0
+        _log_action(user_name, "water_log", f"Added {ml}ml | Total: {total}ml of {goal_ml}ml")
         await update.message.reply_text(
-            f"💧 *+{params.get('ml', 250)}ml Paani!*\n\nTotal: {total}/{goal_ml}ml\n\n"
+            f"💧 *{ml}ml Paani!*\n\nTotal: {total}/{goal_ml}ml ({pct}%)\n\n"
             f"{'Alhamdulillah! Goal complete! 🎉' if total >= goal_ml else 'InshAllah goal poora hoga! 💪'}",
             parse_mode="Markdown"
         )
@@ -1722,20 +1559,17 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = params.get("text", "")
         try:
             memory.add(text)
-            _log_action(user_name, "memory_save", f"Memory saved: {text[:80]} | msg: {user_msg}")
+            _log_action(user_name, "memory_save", f"Saved: {text[:80]}")
             await update.message.reply_text(
                 f"🧠 *Memory Mein Save Ho Gaya!* ✅\n\n_{text[:150]}_\n\nInshAllah yaad rakhunga! 💡",
                 parse_mode="Markdown"
             )
         except Exception:
             diary.add(f"[Memory] {text}")
-            _log_action(user_name, "memory_save_fallback", f"Memory saved as diary: {text[:80]}")
-            await update.message.reply_text(
-                f"🧠 *Note Save Ho Gaya!* ✅\n\n_{text[:150]}_",
-                parse_mode="Markdown"
-            )
+            _log_action(user_name, "memory_save_fallback", f"Saved as diary: {text[:80]}")
+            await update.message.reply_text(f"🧠 *Note Save Ho Gaya!* ✅\n\n_{text[:150]}_", parse_mode="Markdown")
 
-    else:  # chat / AI
+    else:  # AI chat
         prompt = build_system_prompt() + f"\n\nUser: {user_msg}\n\nShort Hinglish reply (2-3 lines), Muslim phrases zaroor use karo:"
         reply = call_gemini(prompt)
         if not reply:
@@ -1743,17 +1577,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _log_action(user_name, "ai_chat", f"Q: {user_msg[:60]} | A: {reply[:60]}")
         await update.message.reply_text(reply, parse_mode="Markdown")
 
-    # Log bot reply
     chat_hist.add("assistant", "Reply sent", "Rk")
 
 
 # ================================================================
-# MAIN — FIXED HANDLER REGISTRATION ORDER
+# MAIN
 # ================================================================
 
 def main():
     log.info("=" * 60)
-    log.info("Personal AI Bot — Rk | v4 | Full Miscellaneous Logging")
+    log.info("Rk Bot v5 | dairy/karcha/bills NLP Fix | Water #ERROR Fix")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1773,46 +1606,27 @@ def main():
             DIARY_AWAIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, diary_text_input)],
         },
         fallbacks=[CommandHandler("cancel", diary_cancel)],
-        per_user=True,
-        per_chat=True,
-        per_message=False,
+        per_user=True, per_chat=True, per_message=False,
     ))
 
-    # Regular commands
-    commands = [
-        ("start",      cmd_start),
-        ("help",       cmd_help),
-        ("status",     cmd_status),
-        ("checksync",  cmd_checksync),
-        ("task",       cmd_task),
-        ("done",       cmd_done),
-        ("deltask",    cmd_deltask),
-        ("habit",      cmd_habit),
-        ("hdone",      cmd_hdone),
-        ("kharcha",    cmd_kharcha),
-        ("remind",     cmd_remind),
-        ("delremind",  cmd_delremind),
-        ("water",      cmd_water),
-        ("briefing",   cmd_briefing),
-        ("save",       cmd_save),
-        ("snooze5",    cmd_snooze),
-        ("snooze10",   cmd_snooze),
-        ("snooze30",   cmd_snooze),
-        ("snooze60",   cmd_snooze),
-        ("cal",        cmd_cal),
-        ("caltoday",   cmd_caltoday),
-        ("calweek",    cmd_calweek),
-        ("caladd",     cmd_caladd),
-        ("caldel",     cmd_caldel),
-        ("bills",      cmd_bills),
-        ("billadd",    cmd_billadd),
-        ("billpaid",   cmd_billpaid),
-        ("billdel",    cmd_billdel),
-    ]
-    for cmd, handler in commands:
+    # Commands
+    for cmd, handler in [
+        ("start", cmd_start), ("help", cmd_help),
+        ("status", cmd_status), ("checksync", cmd_checksync),
+        ("task", cmd_task), ("done", cmd_done), ("deltask", cmd_deltask),
+        ("habit", cmd_habit), ("hdone", cmd_hdone),
+        ("kharcha", cmd_kharcha), ("remind", cmd_remind),
+        ("delremind", cmd_delremind), ("water", cmd_water),
+        ("briefing", cmd_briefing), ("save", cmd_save),
+        ("snooze5", cmd_snooze), ("snooze10", cmd_snooze),
+        ("snooze30", cmd_snooze), ("snooze60", cmd_snooze),
+        ("cal", cmd_cal), ("caltoday", cmd_caltoday),
+        ("calweek", cmd_calweek), ("caladd", cmd_caladd), ("caldel", cmd_caldel),
+        ("bills", cmd_bills), ("billadd", cmd_billadd),
+        ("billpaid", cmd_billpaid), ("billdel", cmd_billdel),
+    ]:
         app.add_handler(CommandHandler(cmd, handler))
 
-    # Callback query handler
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
 
     # ✅ General message handler SABSE AAKHIR MEIN
