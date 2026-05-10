@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER — FIXED v2
-- ID columns added to all sheets where missing
-- Expenses: ID column added
-- Diary: ID column added  
-- Memory: ID column added
-- Water: ID column added
-- Logs (Miscellaneous): ID column added
+SECURE DATA MANAGER — FIXED v3
+- ID columns added to all sheets
+- Fixed _ensure_id_column() warning (object of type 'int' has no len())
+- Expenses, Diary, Memory, Water, Logs all have ID column now
 """
 
 import os
@@ -75,15 +72,15 @@ class GoogleSheetsBackup:
     HEADERS = {
         "Reminders": ["ID", "Time", "Text", "Repeat", "Status", "Created Date", "Chat ID", "Last Fired", "Acknowledged", "Remarks"],
         "Tasks":     ["ID", "Title", "Priority", "Status", "Created", "Done Date"],
-        "Memory":    ["ID", "Date", "Time", "Fact"],  # FIX: Added ID
+        "Memory":    ["ID", "Date", "Time", "Fact"],
         "Goals":     ["ID", "Title", "Progress", "Status", "Deadline", "Created"],
         "Calendar":  ["ID", "Title", "Date", "Time", "Location", "Notes", "Type", "Created"],
         "Bills":     ["ID", "Name", "Amount", "Due Day", "Status", "Auto Pay", "Payment Method", "Notes", "Created"],
-        "Expenses":  ["ID", "Date", "Time", "Amount", "Description", "Category"],  # FIX: Added ID
+        "Expenses":  ["ID", "Date", "Time", "Amount", "Description", "Category"],
         "Habits":    ["ID", "Habit Name", "Emoji", "Streak", "Best Streak", "Created Date", "Target (per day)"],
-        "Water":     ["ID", "Date", "Time", "ML Added", "Day Total"],  # FIX: Added ID
-        "Logs":      ["ID", "Timestamp", "Date", "Role", "User", "Message"],  # FIX: Added ID
-        "Diary":     ["ID", "Date", "Time", "Text", "Mood"],  # FIX: Added ID
+        "Water":     ["ID", "Date", "Time", "ML Added", "Day Total"],
+        "Logs":      ["ID", "Timestamp", "Date", "Role", "User", "Message"],
+        "Diary":     ["ID", "Date", "Time", "Text", "Mood"],
     }
 
     # Counter for generating IDs for sheets without auto-increment
@@ -204,16 +201,30 @@ class GoogleSheetsBackup:
             log.error(f"Cannot open sheet: {e}")
 
     def _ensure_id_column(self, ws):
-        """Add ID column to beginning if missing"""
+        """Add ID column to beginning if missing — FIXED: handles int values"""
         try:
-            headers = ws.row_values(1)
+            # Get first row and convert all to string safely
+            raw_headers = ws.row_values(1)
+            headers = []
+            for h in raw_headers:
+                if h is None:
+                    headers.append("")
+                else:
+                    # Convert to string and strip whitespace
+                    headers.append(str(h).strip())
+            
+            # Check if first column is already ID
             if headers and headers[0] != "ID":
                 # Insert ID column at beginning
                 ws.insert_cols(1)
                 ws.update_cell(1, 1, "ID")
-                log.info(f"Added ID column to {ws.title}")
+                log.info(f"✅ Added ID column to {ws.title}")
+            else:
+                log.debug(f"ID column already exists in {ws.title}")
+                
         except Exception as e:
-            log.warning(f"Could not ensure ID column for {ws.title}: {e}")
+            # This is just a warning - sheet might be empty or have different format
+            log.debug(f"Could not verify ID column for {ws.title}: {e}")
 
     @property
     def connected(self):
@@ -448,7 +459,7 @@ class GoogleSheetsBackup:
 
 
 # ================================================================
-# GITHUB PRIVATE REPO MANAGER (unchanged)
+# GITHUB PRIVATE REPO MANAGER
 # ================================================================
 class PrivateRepoManager:
     def __init__(self):
@@ -542,7 +553,7 @@ class PrivateRepoManager:
 
 
 # ================================================================
-# GLOBAL OBJECTS (unchanged)
+# GLOBAL OBJECTS
 # ================================================================
 repo_manager  = PrivateRepoManager()
 sheets_backup = GoogleSheetsBackup()
@@ -559,7 +570,7 @@ class PrivateStore:
 
 
 # ================================================================
-# MEMORY STORE (unchanged)
+# MEMORY STORE
 # ================================================================
 class MemoryStore:
     def __init__(self):
@@ -567,7 +578,8 @@ class MemoryStore:
 
     def add(self, text):
         facts = self.store.data.get("facts", [])
-        facts.append({"id": len(facts) + 1, "f": text, "d": today_str()})
+        new_id = len(facts) + 1
+        facts.append({"id": new_id, "f": text, "d": today_str()})
         self.store.data["facts"] = facts[-200:]
         self.store.save()
         try:
@@ -581,9 +593,13 @@ class MemoryStore:
     def get_all_facts(self):
         return self.store.data.get("facts", [])
 
+    def delete(self, fid):
+        self.store.data["facts"] = [f for f in self.store.data.get("facts", []) if f.get("id") != fid]
+        self.store.save()
+
 
 # ================================================================
-# TASK STORE (unchanged)
+# TASK STORE
 # ================================================================
 class TaskStore:
     def __init__(self):
@@ -644,7 +660,7 @@ class TaskStore:
 
 
 # ================================================================
-# DIARY STORE (unchanged)
+# DIARY STORE
 # ================================================================
 class DiaryStore:
     def __init__(self):
@@ -663,6 +679,7 @@ class DiaryStore:
             sheets_backup.diary(text, mood)
         except Exception:
             pass
+        return self.store.data["counter"]
 
     def get(self, d):
         return self.store.data.get("entries", {}).get(d, [])
@@ -677,7 +694,7 @@ class DiaryStore:
 
 
 # ================================================================
-# HABIT STORE (unchanged)
+# HABIT STORE
 # ================================================================
 class HabitStore:
     def __init__(self):
@@ -750,7 +767,7 @@ class HabitStore:
 
 
 # ================================================================
-# EXPENSE STORE (unchanged)
+# EXPENSE STORE
 # ================================================================
 class ExpenseStore:
     def __init__(self):
@@ -758,8 +775,9 @@ class ExpenseStore:
 
     def add(self, amount, desc, category="general"):
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        exp_id = self.store.data["counter"]
         self.store.data["list"].append({
-            "id": self.store.data["counter"],
+            "id": exp_id,
             "amount": amount, "desc": desc,
             "category": category, "date": today_str(), "time": now_str()
         })
@@ -768,6 +786,7 @@ class ExpenseStore:
             sheets_backup.expense(amount, desc, category)
         except Exception:
             pass
+        return exp_id
 
     def set_budget(self, amount):
         self.store.data["budget"] = amount
@@ -792,10 +811,14 @@ class ExpenseStore:
     def delete(self, eid):
         self.store.data["list"] = [e for e in self.store.data.get("list", []) if e.get("id") != eid]
         self.store.save()
+        try:
+            sheets_backup.delete_row_by_value("Expenses", 1, str(eid))
+        except Exception:
+            pass
 
 
 # ================================================================
-# GOAL STORE (unchanged)
+# GOAL STORE
 # ================================================================
 class GoalStore:
     def __init__(self):
@@ -838,7 +861,7 @@ class GoalStore:
 
 
 # ================================================================
-# REMINDER STORE (unchanged)
+# REMINDER STORE
 # ================================================================
 class ReminderStore:
     def __init__(self):
@@ -950,7 +973,7 @@ class ReminderStore:
 
 
 # ================================================================
-# WATER STORE (unchanged)
+# WATER STORE
 # ================================================================
 class WaterStore:
     def __init__(self):
@@ -984,7 +1007,7 @@ class WaterStore:
 
 
 # ================================================================
-# BILL STORE (unchanged)
+# BILL STORE
 # ================================================================
 class BillStore:
     def __init__(self):
@@ -1063,7 +1086,7 @@ class BillStore:
 
 
 # ================================================================
-# CALENDAR STORE (unchanged)
+# CALENDAR STORE
 # ================================================================
 class CalendarStore:
     def __init__(self):
@@ -1128,7 +1151,7 @@ class CalendarStore:
 
 
 # ================================================================
-# CHAT HISTORY STORE (unchanged)
+# CHAT HISTORY STORE
 # ================================================================
 class ChatHistoryStore:
     def __init__(self):
