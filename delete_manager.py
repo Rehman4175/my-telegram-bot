@@ -3,7 +3,10 @@
 """
 DELETE MANAGER — Rk Bot
 ========================
-Alag standalone module — bot.py mein import NAHI karna (optional hai).
+FIXED v2:
+  - per_user=True, per_chat=True explicitly set — ConversationHandler state properly maintained
+  - Password ab sahi capture hoga
+  - bot.py mein sabse pehle register karo (register_delete_handlers call)
 
 Natural Hinglish se kaam karta hai, e.g.:
   "chat history delete karo"
@@ -12,7 +15,6 @@ Natural Hinglish se kaam karta hai, e.g.:
   "sab kuch delete karo"
   "logs clear karo"
   "tasks sheet wipe karo"
-  ... aur bahut saare phrases
 
 Commands bhi kaam karti hain:
   /nuke          → Sirf chat history (Miscellaneous) delete
@@ -22,27 +24,7 @@ Commands bhi kaam karti hain:
   /delete        → Full menu open
 
 Har operation se pehle DELETE_PASSWORD maanga jata hai.
-Repository Secrets mein "DELETE_PASSWORD" set karo — kaam karega. ✅
-
-Private repo mein rakho. bot.py se BILKUL ALAG file hai yeh.
-
-========================================================
-INTEGRATION (agar bot.py ke handle_message mein add karna ho):
-
-  from delete_manager import parse_delete_intent
-
-  async def handle_message(update, ctx):
-      user_msg = update.message.text.strip()
-
-      # Delete intent check — sabse pehle
-      intent = parse_delete_intent(user_msg)
-      if intent:
-          ctx.user_data["dm_entry_cmd"] = intent
-          await _ask_password_nl(update, ctx)
-          return
-
-      # ... baaki existing logic
-========================================================
+Repository Secrets mein "DELETE_PASSWORD" set karo. ✅
 """
 
 import os
@@ -68,8 +50,6 @@ log = logging.getLogger(__name__)
 # CONFIG
 # ================================================================
 DELETE_PASSWORD = os.environ.get("DELETE_PASSWORD", "")
-# ✅ Repository Secrets mein "DELETE_PASSWORD" set hai — kaam karega.
-# Agar empty rahega toh bot batayega aur operation rok dega.
 
 # Conversation states — high numbers taaki bot.py se clash na ho
 DEL_AWAIT_PASS         = 50
@@ -77,7 +57,7 @@ DEL_AWAIT_CHOICE       = 51
 DEL_AWAIT_SHEET        = 52
 DEL_AWAIT_NUKE_CONFIRM = 53
 
-# Sheet display names (Google Sheet tab names)
+# Sheet display names
 SHEET_KEY_MAP = {
     "reminders": "Reminders",
     "tasks":     "Tasks",
@@ -92,7 +72,6 @@ SHEET_KEY_MAP = {
     "diary":     "Diary",
 }
 
-# Internal key → sheets_backup key mapping
 INTERNAL_KEY_MAP = {
     "reminders": "Reminders",
     "tasks":     "Tasks",
@@ -111,12 +90,6 @@ INTERNAL_KEY_MAP = {
 # ================================================================
 # NATURAL LANGUAGE INTENT DETECTOR
 # ================================================================
-# Intent types:
-#   "nuke_logs"  → sirf chat history / logs delete
-#   "delrow"     → ek row delete by ID
-#   "nukesheet"  → ek sheet poori wipe
-#   "nukeall"    → sab kuch delete
-#   "menu"       → full delete menu
 
 _NUKEALL_PHRASES = [
     "sab kuch delete", "saara data delete", "sab data hatao",
@@ -169,7 +142,6 @@ def parse_delete_intent(text: str):
     """
     lower = text.lower().strip()
 
-    # Order matters — nukeall pehle check karo (most destructive)
     if any(p in lower for p in _NUKEALL_PHRASES):
         return "nukeall"
     if any(p in lower for p in _NUKE_LOGS_PHRASES):
@@ -205,7 +177,6 @@ def _wipe_sheet_tab(internal_key: str):
             tab_name = SHEET_KEY_MAP.get(internal_key, internal_key)
             return True, f"ℹ️ '{tab_name}' pehle se khali hai."
 
-        # Reverse order mein delete — index shift na ho
         for row_idx in range(total_rows, 1, -1):
             ws.delete_rows(row_idx)
 
@@ -312,7 +283,6 @@ async def cmd_delete_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_nl_delete_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Natural language entry — ConversationHandler regex se trigger hoga."""
-    # Intent already set hoga via parse_delete_intent
     intent = ctx.user_data.get("dm_entry_cmd", "menu")
     await _ask_password(update.effective_chat, ctx, intent)
     return DEL_AWAIT_PASS
@@ -351,7 +321,7 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # ✅ Sahi password — intent ke hisaab se aage jao
+    # ✅ Sahi password
     intent = ctx.user_data.get("dm_entry_cmd", "menu")
 
     if intent == "nuke_logs":
@@ -515,7 +485,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # ── Menu → sub actions ──────────────────────────────────────
+    # Menu → sub actions
     if data == "dm_nuke_logs":
         await query.edit_message_text(
             "⚠️ *CHAT HISTORY NUKE*\n\n"
@@ -551,7 +521,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEL_AWAIT_NUKE_CONFIRM
 
-    # ── Sheet row select ─────────────────────────────────────────
+    # Sheet row select
     if data.startswith("dm_row_"):
         sheet_key = data.replace("dm_row_", "")
         ctx.user_data["dm_selected_sheet_key"] = sheet_key
@@ -564,7 +534,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEL_AWAIT_SHEET
 
-    # ── Sheet wipe select ────────────────────────────────────────
+    # Sheet wipe select
     if data.startswith("dm_wipe_"):
         sheet_key = data.replace("dm_wipe_", "")
         tab_name  = SHEET_KEY_MAP.get(sheet_key, sheet_key)
@@ -577,7 +547,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return DEL_AWAIT_CHOICE
 
-    # ── Confirm: nuke logs ───────────────────────────────────────
+    # Confirm: nuke logs
     if data == "dm_confirm_nuke_logs":
         local_msg      = _wipe_local_store("logs")
         ok, sheet_msg  = _wipe_sheet_tab("logs")
@@ -590,7 +560,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
 
-    # ── Confirm: wipe specific sheet ─────────────────────────────
+    # Confirm: wipe specific sheet
     if data.startswith("dm_confirm_wipe_"):
         sheet_key     = data.replace("dm_confirm_wipe_", "")
         tab_name      = SHEET_KEY_MAP.get(sheet_key, sheet_key)
@@ -625,34 +595,18 @@ async def del_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# REGISTER
+# REGISTER — FIXED VERSION
 # ================================================================
 
 def register_delete_handlers(app: Application):
     """
-    Apne bot.py ke main() mein bas yeh add karo:
+    bot.py ke main() mein SABSE PEHLE call karo:
 
         from delete_manager import register_delete_handlers
-        register_delete_handlers(app)
+        register_delete_handlers(app)   # ← app.add_handler se pehle
 
-    Natural language ke liye bot.py ke handle_message mein:
-
-        from delete_manager import parse_delete_intent
-
-        async def handle_message(update, ctx):
-            user_msg = update.message.text.strip()
-
-            intent = parse_delete_intent(user_msg)
-            if intent:
-                ctx.user_data["dm_entry_cmd"] = intent
-                # Password maango directly
-                await update.effective_chat.send_message(
-                    "🔐 *Delete Password daalo:*\\n/cancel — bahar niklo",
-                    parse_mode="Markdown"
-                )
-                return  # ConversationHandler baaki handle karega
-
-            # ... tumhara existing parse_user_message logic
+    Yeh zaruri hai taaki ConversationHandler ka DEL_AWAIT_PASS state
+    password message ko capture kare, handle_message() se pehle.
     """
 
     conv = ConversationHandler(
@@ -663,7 +617,7 @@ def register_delete_handlers(app: Application):
             CommandHandler("nukesheet", cmd_delete_entry),
             CommandHandler("nukeall",   cmd_delete_entry),
             CommandHandler("delete",    cmd_delete_entry),
-            # Natural language — broad regex, parse_delete_intent primary detector hai
+            # Natural language
             MessageHandler(
                 filters.TEXT & ~filters.COMMAND & filters.Regex(
                     _re.compile(
@@ -697,7 +651,9 @@ def register_delete_handlers(app: Application):
             CallbackQueryHandler(del_callback_handler, pattern=r"^dm_cancel$"),
         ],
         allow_reentry=True,
-        per_message=False,   # Warning fix — explicitly set kiya
+        per_message=False,
+        per_user=True,   # ✅ FIX: explicitly set
+        per_chat=True,   # ✅ FIX: explicitly set
     )
 
     app.add_handler(conv)
@@ -710,7 +666,7 @@ def register_delete_handlers(app: Application):
 
 
 # ================================================================
-# STANDALONE — seedha chalao (python delete_manager.py)
+# STANDALONE
 # ================================================================
 
 if __name__ == "__main__":
