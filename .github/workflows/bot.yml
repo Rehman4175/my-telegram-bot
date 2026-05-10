@@ -59,6 +59,6 @@ jobs:
           ADMIN_CHAT_ID:     ${{ secrets.ADMIN_CHAT_ID }}
           GB_TOKEN: ${{ secrets.GB_TOKEN }}
           DIARY_PASSWORD:    ${{ secrets.DIARY_PASSWORD }}
-          DELETE_PASSWORD:    ${{ secrets.DELETE_PASSWORD }}
+          DELETE_PASSWORD:   ${{ secrets.DELETE_PASSWORD }}
           PRIVATE_REPO_URL: "https://github.com/Rehman4175/my-bot-data.git"
         run: python bot.py
