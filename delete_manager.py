@@ -3,15 +3,16 @@
 """
 DELETE MANAGER — Rk Bot
 ========================
-FIXED v4:
-  - ID column now exists in ALL sheets
+FIXED v5:
+  - Added Voice Notes and Smart Memory sheets
+  - ID column now exists in ALL sheets (including new ones)
   - delete_row_by_value uses ID column (col 1) for all sheets
   - Row deletion by ID number works for EVERY sheet
-  - Proper ID counters maintained in secure_data_manager.py
 
 Sheet tabs with ID columns (col 1 = ID):
   Tasks ✅ | Reminders ✅ | Expenses ✅ | Habits ✅ | Diary ✅
   Memory ✅ | Bills ✅ | Calendar ✅ | Water ✅ | Miscellaneous ✅
+  Voice Notes ✅ | Smart Memory ✅
 
 Commands:
   /nuke      → Sirf Miscellaneous (chat history) delete
@@ -53,33 +54,38 @@ DEL_AWAIT_NUKE_CONFIRM = 53
 
 # ----------------------------------------------------------------
 # KEY_MAP: All sheets now have ID column as first column
+# INCLUDING Voice Notes and Smart Memory
 # ----------------------------------------------------------------
 SHEETS = {
-    "tasks":     {"tab": "Tasks",     "display": "Tasks", "has_id": True},
-    "reminders": {"tab": "Reminders", "display": "Reminders", "has_id": True},
-    "expenses":  {"tab": "Expenses",  "display": "Expenses", "has_id": True},
-    "habits":    {"tab": "Habits",    "display": "Habits", "has_id": True},
-    "diary":     {"tab": "Diary",     "display": "Diary", "has_id": True},
-    "memory":    {"tab": "Memory",    "display": "Memory / Important Notes", "has_id": True},
-    "bills":     {"tab": "Bills",     "display": "Bills & Subscriptions", "has_id": True},
-    "calendar":  {"tab": "Calendar",  "display": "Calendar Events", "has_id": True},
-    "water":     {"tab": "Water",     "display": "Water Intake", "has_id": True},
-    "logs":      {"tab": "Logs",      "display": "Miscellaneous", "has_id": True},
+    "tasks":        {"tab": "Tasks",        "display": "Tasks", "has_id": True},
+    "reminders":    {"tab": "Reminders",    "display": "Reminders", "has_id": True},
+    "expenses":     {"tab": "Expenses",     "display": "Expenses", "has_id": True},
+    "habits":       {"tab": "Habits",       "display": "Habits", "has_id": True},
+    "diary":        {"tab": "Diary",        "display": "Diary", "has_id": True},
+    "memory":       {"tab": "Memory",       "display": "Memory / Important Notes", "has_id": True},
+    "bills":        {"tab": "Bills",        "display": "Bills & Subscriptions", "has_id": True},
+    "calendar":     {"tab": "Calendar",     "display": "Calendar Events", "has_id": True},
+    "water":        {"tab": "Water",        "display": "Water Intake", "has_id": True},
+    "logs":         {"tab": "Logs",         "display": "Miscellaneous", "has_id": True},
+    "voice_notes":  {"tab": "VoiceNotes",   "display": "Voice Notes", "has_id": True},
+    "smart_memory": {"tab": "SmartMemory",  "display": "Smart Memory", "has_id": True},
 }
 
 # Local store reset defaults
 LOCAL_DEFAULTS = {
-    "reminders": (lambda: reminders.store, {"list": [], "counter": 0}),
-    "tasks":     (lambda: tasks.store,     {"list": [], "counter": 0}),
-    "memory":    (lambda: memory.store,    {"facts": []}),
-    "goals":     (lambda: goals.store,     {"list": [], "counter": 0}),
-    "calendar":  (lambda: calendar.store,  {"events": [], "counter": 0}),
-    "bills":     (lambda: bills.store,     {"list": [], "counter": 0}),
-    "expenses":  (lambda: expenses.store,  {"list": [], "budget": 0, "counter": 0}),
-    "habits":    (lambda: habits.store,    {"list": [], "logs": {}, "counter": 0}),
-    "water":     (lambda: water.store,     {"logs": {}, "goal_ml": 2000, "counter": 0}),
-    "logs":      (lambda: chat_hist.store, {"history": [], "counter": 0}),
-    "diary":     (lambda: diary.store,     {"entries": {}, "counter": 0}),
+    "reminders":     (lambda: reminders.store, {"list": [], "counter": 0}),
+    "tasks":         (lambda: tasks.store,     {"list": [], "counter": 0}),
+    "memory":        (lambda: memory.store,    {"facts": []}),
+    "goals":         (lambda: goals.store,     {"list": [], "counter": 0}),
+    "calendar":      (lambda: calendar.store,  {"events": [], "counter": 0}),
+    "bills":         (lambda: bills.store,     {"list": [], "counter": 0}),
+    "expenses":      (lambda: expenses.store,  {"list": [], "budget": 0, "counter": 0}),
+    "habits":        (lambda: habits.store,    {"list": [], "logs": {}, "counter": 0}),
+    "water":         (lambda: water.store,     {"logs": {}, "goal_ml": 2000, "counter": 0}),
+    "logs":          (lambda: chat_hist.store, {"history": [], "counter": 0}),
+    "diary":         (lambda: diary.store,     {"entries": {}, "counter": 0}),
+    "voice_notes":   (lambda: None,            {}),  # Local store not needed, just sheet
+    "smart_memory":  (lambda: None,            {}),  # Local store not needed, just sheet
 }
 
 
@@ -194,14 +200,22 @@ def _wipe_sheet_tab(key: str):
 def _wipe_local_store(key: str) -> str:
     if key not in LOCAL_DEFAULTS:
         return f"⚠️ Unknown local store: {key}"
+    
+    # Skip voice_notes and smart_memory - they don't have local stores
+    if key in ["voice_notes", "smart_memory"]:
+        return f"ℹ️ '{key}' sheet only (no local store)"
+    
     try:
         get_store, default_data = LOCAL_DEFAULTS[key]
-        store_obj      = get_store()
-        store_obj.data = default_data.copy()
-        store_obj.save()
-        return f"✅ Local '{key}' cleared."
+        store_obj = get_store()
+        if store_obj:
+            store_obj.data = default_data.copy()
+            store_obj.save()
+            return f"✅ Local '{key}' cleared."
     except Exception as e:
         return f"⚠️ Local '{key}' error: {e}"
+    
+    return f"ℹ️ Local '{key}' cleared."
 
 
 # ================================================================
@@ -328,7 +342,10 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_chat.send_message(
             "✅ *Password Sahi!*\n\n"
             "📋 Kaunsi sheet se ek entry (row) delete karni hai?\n\n"
-            "*(Har sheet mein ab ID column hai — first column)*",
+            "*(Har sheet mein ab ID column hai — first column)*\n\n"
+            "Available sheets: Tasks, Reminders, Expenses, Habits, Diary,\n"
+            "Memory, Bills, Calendar, Water, Miscellaneous,\n"
+            "Voice Notes, Smart Memory",
             parse_mode="Markdown",
             reply_markup=_sheet_select_keyboard("dm_row")
         )
@@ -348,9 +365,10 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_chat.send_message(
             "✅ *Password Sahi!*\n\n"
             "☢️ *NUCLEAR OPTION — SAAB KUCH DELETE*\n\n"
-            "In *10 sheets* ka saara data + local JSON delete hoga:\n"
+            "In *12 sheets* ka saara data + local JSON delete hoga:\n"
             "Tasks, Reminders, Expenses, Habits, Diary,\n"
-            "Memory, Bills, Calendar, Water, Miscellaneous\n\n"
+            "Memory, Bills, Calendar, Water, Miscellaneous,\n"
+            "Voice Notes, Smart Memory\n\n"
             "⛔ Yeh undo NAHI hoga!\n\n"
             "Confirm karne ke liye exactly *CONFIRM* (capital mein) type karo:",
             parse_mode="Markdown"
@@ -506,7 +524,10 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "dm_delrow":
         await query.edit_message_text(
-            "📋 *Ek Row Delete*\n\nKaunsi sheet se? *(Har sheet mein ab ID column hai)*",
+            "📋 *Ek Row Delete*\n\nKaunsi sheet se? *(Har sheet mein ab ID column hai)*\n\n"
+            "Sheets: Tasks, Reminders, Expenses, Habits, Diary,\n"
+            "Memory, Bills, Calendar, Water, Miscellaneous,\n"
+            "Voice Notes, Smart Memory",
             parse_mode="Markdown",
             reply_markup=_sheet_select_keyboard("dm_row")
         )
@@ -524,7 +545,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "dm_nukeall":
         await query.edit_message_text(
             "☢️ *NUCLEAR OPTION*\n\n"
-            "SAARI 10 sheets + SAARA local data permanently delete hoga!\n\n"
+            "SAARI 12 sheets + SAARA local data permanently delete hoga!\n\n"
             "⛔ Undo NAHI hoga!\n\n"
             "Confirm ke liye exactly *CONFIRM* (capital) type karo:",
             parse_mode="Markdown"
@@ -652,11 +673,11 @@ def register_delete_handlers(app: Application):
     app.add_handler(conv)
 
     pw_status = "✅ SET" if DELETE_PASSWORD else "❌ NOT SET — Repository Secrets mein DELETE_PASSWORD add karo!"
-    log.info("✅ Delete Manager v4 registered.")
+    log.info("✅ Delete Manager v5 registered.")
     log.info("   Commands: /nuke /delsheet /nukesheet /nukeall /delete")
     log.info(f"   DELETE_PASSWORD: {pw_status}")
     log.info(f"   Sheets in scope: {list(SHEETS.keys())}")
-    log.info("   ✅ ALL sheets now have ID column — deletion by ID works for all!")
+    log.info("   ✅ ALL 12 sheets now have ID column — deletion by ID works for all!")
 
 
 if __name__ == "__main__":
