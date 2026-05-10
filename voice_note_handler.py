@@ -1,235 +1,317 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Smart Memory Handler for RK Bot
-- /memory commands
-- Auto-detect memory intents in natural language
-- Search and manage memories
+Voice Note Handler for RK Bot
+Transcribes voice messages and processes them as text commands
+- FIXED: Voice notes now go to proper sheets (not diary)
+- FIXED: Removed transcription prompt instructions
 """
 
 import logging
+import tempfile
+import os
 import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
-
-from secure_data_manager import memory, today_str, now_str, sheets_backup
+from telegram import Update
+from telegram.ext import ContextTypes, MessageHandler, filters
 
 log = logging.getLogger(__name__)
 
-async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main memory command handler with subcommands"""
-    args = context.args
-    
-    if not args:
-        # Show all memories
-        await _show_memories(update)
-        return    
-    subcmd = args[0].lower()
-    
-    if subcmd == "add":
-        if len(args) < 2:
-            await update.message.reply_text(
-                "🧠 *Usage:* `/memory add Your memory text here`\n\n"
-                "Example: `/memory add My birthday is on 28th December`",
-                parse_mode="Markdown"
-            )
-            return
-        text = " ".join(args[1:])
-        memory.add(text)
-        _log_memory_action(update.effective_user.first_name or "User", "add", text)
-        await update.message.reply_text(
-            f"🧠 *Memory Saved!* ✅\n\n_{text[:150]}_\n\nInshAllah yaad rakhunga! 💡",
-            parse_mode="Markdown"
-        )
-    
-    elif subcmd == "search":
-        if len(args) < 2:
-            await update.message.reply_text(
-                "🧠 *Usage:* `/memory search keyword`\n\n"
-                "Example: `/memory search birthday`",
-                parse_mode="Markdown"
-            )
-            return
-        keyword = " ".join(args[1:]).lower()
-        await _search_memories(update, keyword)
-    
-    elif subcmd == "clear":
-        # Confirm before clearing
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Yes, Clear All", callback_data="memory_clear_confirm"),
-            InlineKeyboardButton("❌ Cancel", callback_data="memory_clear_cancel")
-        ]])
-        await update.message.reply_text(
-            "⚠️ *Warning!*\n\nAre you sure you want to delete ALL memories?\n\nThis action cannot be undone!",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-    
-    elif subcmd == "delete":
-        if len(args) < 2:
-            await update.message.reply_text(
-                "🧠 *Usage:* `/memory delete memory_number`\n\n"
-                "Use `/memory` to see memory numbers.",
-                parse_mode="Markdown"
-            )
-            return
-        try:
-            idx = int(args[1]) - 1
-            facts = memory.get_all_facts()
-            if 0 <= idx < len(facts):
-                deleted = facts.pop(idx)
-                # Save back
-                memory.store.data["facts"] = facts
-                memory.store.save()
-                _log_memory_action(update.effective_user.first_name or "User", "delete", deleted.get("f", "")[:50])
-                await update.message.reply_text(
-                    f"🗑️ *Memory Deleted!*\n\nWas: \"{deleted.get('f', '')[:100]}\"",
-                    parse_mode="Markdown"
-                )
-            else:
-                await update.message.reply_text("❌ Invalid memory number!", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("❌ Please provide a valid number!", parse_mode="Markdown")
-    
-    else:
-        await update.message.reply_text(
-            "🧠 *Memory Commands:*\n\n"
-            "`/memory` — Show all memories\n"
-            "`/memory add text` — Save new memory\n"
-            "`/memory search word` — Search memories\n"
-            "`/memory delete number` — Delete specific memory\n"
-            "`/memory clear` — Delete ALL memories\n\n"
-            "*Natural language:*\n"
-            "• `yaad rakhna ...`\n"
-            "• `memory mein save karo ...`\n"
-            "• `remember that ...`",
-            parse_mode="Markdown"
-        )
+# Try to import speech recognition
+try:
+    import speech_recognition as sr
+    HAS_SPEECH_RECOGNITION = True
+except ImportError:
+    HAS_SPEECH_RECOGNITION = False
+    log.warning("speech_recognition not installed! Voice notes won't work.")
 
-async def _show_memories(update: Update):
-    facts = memory.get_all_facts()
-    if not facts:
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice messages - transcribe and process"""
+    if not HAS_SPEECH_RECOGNITION:
         await update.message.reply_text(
-            "🧠 *No memories saved yet!*\n\n"
-            "Use `/memory add Your text here` to save important things.\n"
-            "Or simply say: *yaad rakhna ...*",
+            "🎤 Voice note feature is not available right now. Please send text messages.",
             parse_mode="Markdown"
         )
         return
     
-    lines = []
-    for i, fact in enumerate(facts[-20:], 1):
-        date_str = fact.get("d", "unknown")
-        text = fact.get("f", str(fact))
-        lines.append(f"📌 *{i}.* _{date_str}_\n   {text[:120]}")
-    
-    total = len(facts)
-    msg = f"🧠 *Saved Memories ({total} total):*\n\n" + "\n\n".join(lines)
-    if total > 20:
-        msg += f"\n\n*+{total - 20} more memories.* Use /memory search to find them."
-    
-    await update.message.reply_text(msg[:4000], parse_mode="Markdown")
-
-async def _search_memories(update: Update, keyword: str):
-    facts = memory.get_all_facts()
-    matches = []
-    
-    for i, fact in enumerate(facts, 1):
-        text = fact.get("f", str(fact)).lower()
-        if keyword in text:
-            date_str = fact.get("d", "unknown")
-            matches.append(f"📌 *{i}.* _{date_str}_\n   {fact.get('f', str(fact))[:120]}")
-    
-    if not matches:
-        await update.message.reply_text(
-            f"🔍 *No memories found containing:* \"{keyword}\"\n\n"
-            f"Try a different word or use `/memory` to see all.",
-            parse_mode="Markdown"
-        )
+    if not update.message.voice:
         return
     
-    msg = f"🔍 *Search Results for \"{keyword}\":*\n\n" + "\n\n".join(matches[:10])
-    if len(matches) > 10:
-        msg += f"\n\n*+{len(matches) - 10} more matches.*"
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    await update.message.reply_text(msg[:4000], parse_mode="Markdown")
-
-async def _clear_memories(update: Update):
-    count = len(memory.get_all_facts())
-    memory.store.data["facts"] = []
-    memory.store.save()
-    _log_memory_action(update.effective_user.first_name or "User", "clear_all", f"{count} memories")
-    await update.message.reply_text(
-        f"🗑️ *All {count} memories have been cleared!* ✅",
+    # Send initial response
+    processing_msg = await update.message.reply_text(
+        "🎤 *Voice note received!* Transcribing... ⏳",
         parse_mode="Markdown"
     )
-
-async def handle_memory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline keyboard callbacks for memory commands"""
-    query = update.callback_query
-    await query.answer()
     
-    if query.data == "memory_clear_confirm":
-        count = len(memory.get_all_facts())
-        memory.store.data["facts"] = []
-        memory.store.save()
-        _log_memory_action(query.from_user.first_name or "User", "clear_all", f"{count} memories")
-        await query.edit_message_text(
-            f"🗑️ *All {count} memories have been cleared!* ✅",
-            parse_mode="Markdown"
-        )
-    elif query.data == "memory_clear_cancel":
-        await query.edit_message_text(
-            "✅ *Memory clear cancelled!*",
-            parse_mode="Markdown"
-        )
-
-async def check_smart_memory_intent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user message is about saving memory and handle it"""
-    if not update.message or not update.message.text:
-        return False
-    
-    text = update.message.text.lower().strip()
-    
-    # Memory intent patterns
-    patterns = [
-        r'yaad rakhna?\s+(.+)$',
-        r'yaad rakhoge?\s+(.+)$',
-        r'memory mein save karo?\s+(.+)$',
-        r'memory me save karo?\s+(.+)$',
-        r'remember\s+(.+)$',
-        r'note karlo?\s+(.+)$',
-        r'yaad karo?\s+(.+)$',
-        r'dimaag mein rakhna?\s+(.+)$',
-        r'important baat\s+(.+)$',
-        r'yaad rakhena?\s+(.+)$',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            memory_text = match.group(1).strip()
-            if memory_text:
-                memory.add(memory_text)
-                _log_memory_action(update.effective_user.first_name or "User", "smart_save", memory_text[:80])
-                await update.message.reply_text(
-                    f"🧠 *Yaad rakha!* ✅\n\n> {memory_text[:150]}\n\nInshAllah bhoolunga nahi! 💡",
-                    parse_mode="Markdown"
-                )
-                return True
-    
-    return False
-
-def _log_memory_action(user_name: str, action: str, detail: str):
-    """Log memory actions to sheets"""
     try:
-        sheets_backup.log_event("memory", user_name, f"[{action}] {detail}")
-        log.info(f"[Memory] {action} | {user_name} | {detail[:60]}")
+        # Download voice file
+        file = await context.bot.get_file(update.message.voice.file_id)
+        
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_file:
+            await file.download_to_drive(tmp_file.name)
+            tmp_path = tmp_file.name
+        
+        # Convert and transcribe
+        recognizer = sr.Recognizer()
+        
+        # Convert ogg to wav for processing
+        wav_path = tmp_path.replace('.ogg', '.wav')
+        try:
+            import subprocess
+            subprocess.run(['ffmpeg', '-i', tmp_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', wav_path, '-y'], 
+                          capture_output=True, check=True)
+        except Exception as e:
+            log.error(f"FFmpeg conversion failed: {e}")
+            await processing_msg.edit_text(
+                "❌ *Voice note conversion failed!*\n\nPlease send text message instead.",
+                parse_mode="Markdown"
+            )
+            os.unlink(tmp_path)
+            return
+        
+        # Transcribe
+        with sr.AudioFile(wav_path) as source:
+            audio = recognizer.record(source)
+            try:
+                # Try using Google Speech Recognition (free, no API key required)
+                text = recognizer.recognize_google(audio, language="hi-IN")
+            except sr.UnknownValueError:
+                text = None
+            except sr.RequestError as e:
+                log.error(f"Speech recognition request error: {e}")
+                text = None
+        
+        # Clean up temp files
+        os.unlink(tmp_path)
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
+        
+        if not text:
+            await processing_msg.edit_text(
+                "❌ *Could not transcribe voice note!*\n\n"
+                "Please speak clearly or send text message instead.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # FIX: Clean the transcribed text - remove any prompt instructions if present
+        # Some speech recognition might add extra text
+        text = text.strip()
+        
+        # Remove common prompt patterns if accidentally transcribed
+        prompt_patterns = [
+            r'jo bola gaya hai woh word-for-word likho',
+            r'sirf transcription do',
+            r'koi explanation nahi',
+            r'koi prefix nahi',
+            r'hinglish ya hindi ya english jo bhi bola ho woh likho',
+            r'isk[oO] exactly transcribe karo',
+            r'is voice message ko exactly transcribe karo',
+        ]
+        for pattern in prompt_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        text = text.strip()
+        
+        # Remove "Hello" if it's alone at start (common noise)
+        if text.lower().startswith('hello') and len(text) < 10:
+            # Try to get the actual message if Hello was just noise
+            # In this case, we'll keep as is but user can respeak
+            pass
+        
+        if not text or len(text) < 2:
+            await processing_msg.edit_text(
+                "🎤 *I couldn't hear clearly!*\n\n"
+                "Please speak again more clearly or send text message.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Send transcribed text
+        await processing_msg.edit_text(
+            f"🎤 *You said:*\n\n\"{text}\"\n\n📝 *Processing...*",
+            parse_mode="Markdown"
+        )
+        
+        # FIX: Process the transcribed text through the NLP parser
+        # Instead of directly calling handle_message with text,
+        # we need to ensure it goes to the right module (expense, task, reminder, etc.)
+        await _process_voice_command(update, context, text)
+        
     except Exception as e:
-        log.warning(f"Memory log failed: {e}")
+        log.error(f"Voice handling error: {e}")
+        await processing_msg.edit_text(
+            "❌ *Error processing voice note!*\n\nPlease send text message.",
+            parse_mode="Markdown"
+        )
 
-def register_memory_handlers(app):
-    """Register memory command handlers"""
-    app.add_handler(CommandHandler("memory", cmd_memory))
-    app.add_handler(CallbackQueryHandler(handle_memory_callback, pattern=r"^memory_clear_"))
-    log.info("Smart memory handlers registered")
+async def _process_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Process voice transcribed text through the appropriate handlers"""
+    
+    # Import here to avoid circular import
+    from main import parse_user_message, _log_action, tasks, reminders, expenses, diary, habits, bills, calendar, water, memory, chat_hist, today_str
+    
+    user_name = update.effective_user.first_name or "User"
+    
+    # Parse the message to determine intent
+    action_type, params = parse_user_message(text)
+    log.info(f"[Voice] '{text[:60]}' → {action_type}")
+    
+    # Log to chat history
+    chat_hist.add("user", f"[Voice] {text}", user_name)
+    
+    # Handle based on action type - SAME AS TEXT MESSAGES
+    if action_type == "expense":
+        amount = params.get("amount", 0)
+        desc = params.get("desc", "")
+        expenses.add(amount, desc)
+        _log_action(user_name, "expense_add", f"Rs.{amount} on {desc}")
+        await update.message.reply_text(
+            f"💸 *Kharcha Add Ho Gaya!*\n\nRs.{amount} — {desc}\n💰 Aaj total: Rs.{expenses.today_total()}",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "add_task":
+        title = params.get("title", "")
+        t = tasks.add(title)
+        _log_action(user_name, "task_add", f"#{t['id']}: {title}")
+        await update.message.reply_text(
+            f"✅ *Task Add Ho Gaya!*\n\n📌 #{t['id']} {title}\n\nInshAllah ho jayega! 💪",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "remind":
+        r = reminders.add(update.effective_chat.id, params.get("text", "Reminder"), params.get("time", ""))
+        when_str = "Kal" if params.get("tomorrow") else "Aaj"
+        _log_action(user_name, "reminder_set", f"#{r['id']} at {params.get('time')}: {params.get('text')}")
+        await update.message.reply_text(
+            f"⏰ *Reminder Set!*\n\n🕐 {when_str} {params.get('time')} baje: {params.get('text')}\n📌 ID #{r['id']}",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "diary":
+        diary_text = params.get("text", "")
+        diary.add(diary_text)
+        _log_action(user_name, "diary_write", f"Entry: {diary_text[:80]}")
+        await update.message.reply_text(
+            f"📖 *Diary Save Ho Gayi!* ✅\n\n_{diary_text[:200]}_",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "add_habit":
+        h = habits.add(params.get("name", ""))
+        _log_action(user_name, "habit_add", f"#{h['id']}: {h['name']}")
+        await update.message.reply_text(
+            f"🏃 *Habit Add Ho Gaya!*\n\n#{h['id']} {h['name']}\n\nInshAllah roz karoge! 💪",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "habit_done":
+        keyword = params.get("keyword", "")
+        if keyword.isdigit():
+            ok, streak = habits.log(int(keyword))
+            name = f"#{keyword}"
+        else:
+            ok, streak, h = habits.log_by_name(keyword)
+            name = h["name"] if h else keyword
+        if ok:
+            _log_action(user_name, "habit_done", f"'{name}' done | streak: {streak}")
+            await update.message.reply_text(
+                f"🔥 *{name} done! MashAllah!* 🎉\n\n{streak} din ka streak! 💪",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("❓ Kaunsa habit? Text mein batao", parse_mode="Markdown")
+    
+    elif action_type == "add_calendar":
+        title = params.get("title", "Event")
+        ev_date = params.get("date", today_str())
+        ev_type = params.get("type", "event")
+        e = calendar.add(title, ev_date, "", "", "", ev_type)
+        _log_action(user_name, "calendar_add", f"{'Birthday' if ev_type=='birthday' else 'Event'} #{e['id']}: {title}")
+        emoji = "🎂" if ev_type == "birthday" else "📅"
+        msg = f"{emoji} *Event Add Ho Gaya!* ✅\n\n📅 *{ev_date}*\n📌 {title}"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    
+    elif action_type == "add_bill":
+        name = params.get("name", "Bill")
+        amount = params.get("amount", 0)
+        due_day = params.get("due_day", 0)
+        b = bills.add(name, amount, due_day)
+        _log_action(user_name, "bill_add", f"#{b['id']}: {name} Rs.{amount}")
+        await update.message.reply_text(
+            f"💳 *Bill Add Ho Gaya!* ✅\n\n#{b['id']} *{name}*\n💰 Rs.{amount}",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "water":
+        ml = params.get("ml", 250)
+        total = water.add(ml)
+        goal_ml = water.goal()
+        pct = int(total / goal_ml * 100) if goal_ml else 0
+        _log_action(user_name, "water_log", f"Added {ml}ml")
+        await update.message.reply_text(
+            f"💧 *{ml}ml Paani Log Ho Gaya!*\n\nTotal: {total}/{goal_ml}ml ({pct}%)\n\n"
+            f"{'Alhamdulillah! Goal complete! 🎉' if total >= goal_ml else 'InshAllah goal poora hoga! 💪'}",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type == "memory_save":
+        mem_text = params.get("text", "")
+        memory.add(mem_text)
+        _log_action(user_name, "memory_save", f"Saved: {mem_text[:80]}")
+        await update.message.reply_text(
+            f"🧠 *Memory Save Ho Gaya!* ✅\n\n_{mem_text[:150]}_",
+            parse_mode="Markdown"
+        )
+    
+    elif action_type in ["show_reminders", "show_tasks", "show_habits", "show_diary", "show_memory", "show_calendar"]:
+        # For show commands, call the appropriate helper
+        from main import _send_reminder_list, _send_task_list, _send_habit_list, _send_diary_today, _send_memory_list, _send_calendar_list
+        
+        if action_type == "show_reminders":
+            await _send_reminder_list(update)
+        elif action_type == "show_tasks":
+            await _send_task_list(update)
+        elif action_type == "show_habits":
+            await _send_habit_list(update)
+        elif action_type == "show_diary":
+            await _send_diary_today(update)
+        elif action_type == "show_memory":
+            await _send_memory_list(update)
+        elif action_type == "show_calendar":
+            await _send_calendar_list(update)
+        
+        _log_action(user_name, action_type, text[:60])
+    
+    elif action_type == "complete_task":
+        hint = params.get("hint", "")
+        pending = tasks.pending()
+        matched = next((t for t in pending if str(t["id"]) == hint or (hint and hint in t["title"].lower())), None)
+        if matched:
+            tasks.complete(matched["id"])
+            _log_action(user_name, "task_done", f"#{matched['id']}: {matched['title']}")
+            await update.message.reply_text(
+                f"✅ *Task Complete!* 🎉\n\n#{matched['id']} {matched['title']}",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("❓ Kaunsa task? Text mein batao", parse_mode="Markdown")
+    
+    else:
+        # Fallback to AI chat
+        from main import build_system_prompt, call_gemini
+        prompt = build_system_prompt() + f"\n\nUser (voice): {text}\n\nShort Hinglish reply (2-3 lines), Muslim phrases zaroor use karo:"
+        reply = call_gemini(prompt)
+        if not reply:
+            reply = "☪️ Assalamualaikum! Kya help chahiye? Tasks, reminders, kharcha, diary, calendar, bills?"
+        _log_action(user_name, "voice_chat", f"Q: {text[:60]} | A: {reply[:60]}")
+        await update.message.reply_text(reply, parse_mode="Markdown")
+    
+    chat_hist.add("assistant", "Voice command processed", "Rk")
+
+def register_voice_handlers(app):
+    """Register voice message handlers"""
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    log.info("Voice note handlers registered - FIXED: Proper routing to sheets")
