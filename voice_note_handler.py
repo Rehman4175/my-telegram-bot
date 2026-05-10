@@ -1,345 +1,311 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Voice Note Handler for RK Bot
-Transcribes voice messages and processes them as text commands
-- FIXED: Better error handling for ffmpeg missing
-- FIXED: Voice notes now go to proper sheets (not diary)
-- FIXED: Removed transcription prompt instructions
+VOICE NOTE HANDLER — Rk Bot Addon
+====================================
+Gemini API based transcription — NO ffmpeg, NO speech_recognition needed!
+Works on GitHub Actions out of the box.
 """
 
-import logging
-import tempfile
 import os
+import json
+import logging
+import time
+import urllib.request
+import urllib.error
+import tempfile
 import re
-import subprocess
+import base64
+
 from telegram import Update
-from telegram.ext import ContextTypes, MessageHandler, filters
+from telegram.ext import ContextTypes, MessageHandler, CommandHandler, filters
 
 log = logging.getLogger(__name__)
 
-# Try to import speech recognition
+# ── Imports from existing secure_data_manager ──────────────────
 try:
-    import speech_recognition as sr
-    HAS_SPEECH_RECOGNITION = True
+    from secure_data_manager import (
+        diary, tasks, memory, expenses, sheets_backup, repo_manager,
+        now_ist, today_str, now_str, PrivateStore
+    )
+    _SDM_AVAILABLE = True
 except ImportError:
-    HAS_SPEECH_RECOGNITION = False
-    log.warning("speech_recognition not installed! Voice notes won't work.")
+    log.error("secure_data_manager import failed! Voice handler disabled.")
+    _SDM_AVAILABLE = False
 
-# Check if ffmpeg is available
-def check_ffmpeg():
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_VISION_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+
+_last_call = 0
+
+def _rate_limit():
+    global _last_call
+    elapsed = time.time() - _last_call
+    if elapsed < 2:
+        time.sleep(2 - elapsed)
+    _last_call = time.time()
+
+
+# ================================================================
+# VOICE NOTE STORE  →  "Voice Notes" sheet tab
+# ================================================================
+
+class VoiceNoteStore:
+    TAB_KEY     = "VoiceNotes"
+    TAB_NAME    = "Voice Notes"
+    HEADERS     = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status"]
+
+    def __init__(self):
+        if not _SDM_AVAILABLE:
+            return
+        self.store = PrivateStore("voice_notes", {"list": [], "counter": 0})
+        self._ensure_sheet_tab()
+
+    def _ensure_sheet_tab(self):
+        try:
+            if not sheets_backup._book:
+                return
+            existing = [ws.title for ws in sheets_backup._book.worksheets()]
+            if self.TAB_NAME not in existing:
+                ws = sheets_backup._book.add_worksheet(
+                    title=self.TAB_NAME, rows=2000, cols=len(self.HEADERS)
+                )
+                ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
+                sheets_backup._ws_cache[self.TAB_NAME] = ws
+                log.info(f"Created sheet tab: '{self.TAB_NAME}'")
+            else:
+                if self.TAB_NAME not in sheets_backup._ws_cache:
+                    ws = sheets_backup._book.worksheet(self.TAB_NAME)
+                    sheets_backup._ws_cache[self.TAB_NAME] = ws
+        except Exception as e:
+            log.warning(f"VoiceNotes tab ensure error: {e}")
+
+    def _append_to_sheet(self, row):
+        try:
+            if not sheets_backup._book:
+                return
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.warning(f"VoiceNotes sheet append error: {e}")
+
+    def add(self, transcript: str, saved_to: str = "diary", duration: int = 0, status: str = "Success"):
+        if not _SDM_AVAILABLE:
+            return None
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        vid = self.store.data["counter"]
+        entry = {
+            "id":         vid,
+            "date":       today_str(),
+            "time":       now_str(),
+            "transcript": transcript,
+            "saved_to":   saved_to,
+            "duration":   duration,
+            "status":     status,
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        self._append_to_sheet([vid, today_str(), now_str(), transcript[:500], saved_to, duration, status])
+        return entry
+
+    def get_recent(self, n=10):
+        return self.store.data.get("list", [])[-n:]
+
+    def get_all(self):
+        return self.store.data.get("list", [])
+
+
+if _SDM_AVAILABLE:
+    voice_store = VoiceNoteStore()
+else:
+    voice_store = None
+
+
+# ================================================================
+# TRANSCRIPTION via Gemini (audio → text) — NO ffmpeg needed!
+# ================================================================
+
+async def _transcribe_with_gemini(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str | None:
+    if not GEMINI_API_KEY:
+        log.error("GEMINI_API_KEY not set — cannot transcribe")
+        return None
+
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+    # Clean instruction — no extra words
+    instruction = "Transcribe this voice message exactly as spoken. Write only what was said, no explanation, no prefix, no extra text."
+
+    payload = json.dumps({
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+                {"text": instruction}
+            ]
+        }],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500}
+    }).encode("utf-8")
+
+    _rate_limit()
+    url = GEMINI_VISION_URL.format(key=GEMINI_API_KEY)
     try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            log.info(f"Transcription done: {text[:80]}")
+            return text
+    except Exception as e:
+        log.error(f"Gemini transcribe error: {e}")
+        return None
 
-HAS_FFMPEG = check_ffmpeg()
-if not HAS_FFMPEG:
-    log.warning("ffmpeg not installed! Voice notes won't work. Install with: sudo apt install ffmpeg")
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages - transcribe and process"""
-    if not HAS_SPEECH_RECOGNITION:
-        await update.message.reply_text(
-            "🎤 Voice note feature is not available. Please send text messages.\n\n"
-            "_(SpeechRecognition library not installed)_",
-            parse_mode="Markdown"
-        )
+# ================================================================
+# CLASSIFICATION
+# ================================================================
+
+def _classify_transcript(text: str) -> str:
+    lower = text.lower()
+
+    task_words = ["karna hai", "krna hai", "karna he", "todo", "task", "kaam",
+                  "yaad dilana", "remind", "meeting", "call karna", "buy"]
+    expense_words = ["kharcha", "karcha", "kharch", "rupees", "rs", "spent", "paisa"]
+    memory_words = ["yaad rakhna", "remember", "note karo", "save karo", "important"]
+
+    task_score = sum(1 for w in task_words if w in lower)
+    expense_score = sum(1 for w in expense_words if w in lower)
+    memory_score = sum(1 for w in memory_words if w in lower)
+
+    if re.search(r'\d+', lower) and expense_score >= 1:
+        return "expense"
+
+    best = max([("task", task_score), ("memory", memory_score), ("expense", expense_score), ("diary", 1)], key=lambda x: x[1])
+    return best[0] if best[1] > 0 else "diary"
+
+
+# ================================================================
+# MAIN HANDLER
+# ================================================================
+
+async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _SDM_AVAILABLE:
+        await update.message.reply_text("❌ Voice feature unavailable")
         return
-    
-    if not HAS_FFMPEG:
-        await update.message.reply_text(
-            "🎤 Voice note feature is not available. Please send text messages.\n\n"
-            "_(ffmpeg not installed on server)_",
-            parse_mode="Markdown"
-        )
+
+    voice = update.message.voice or update.message.audio
+    if not voice:
         return
-    
-    if not update.message.voice:
-        return
-    
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
-    # Send initial response
-    processing_msg = await update.message.reply_text(
-        "🎤 *Voice note received!* Transcribing... ⏳",
+
+    user_name = update.effective_user.first_name or "User"
+    duration = getattr(voice, "duration", 0)
+
+    status_msg = await update.message.reply_text(
+        f"🎙️ *Voice note mila! ({duration}s)*\n\n⏳ Transcribe ho raha hai...",
         parse_mode="Markdown"
     )
-    
+
     try:
-        # Download voice file
-        file = await context.bot.get_file(update.message.voice.file_id)
-        
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_file:
-            await file.download_to_drive(tmp_file.name)
-            tmp_path = tmp_file.name
-        
-        # Convert and transcribe
-        recognizer = sr.Recognizer()
-        
-        # Convert ogg to wav for processing
-        wav_path = tmp_path.replace('.ogg', '.wav')
-        try:
-            result = subprocess.run(
-                ['ffmpeg', '-i', tmp_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', wav_path, '-y'], 
-                capture_output=True, check=True
-            )
-        except subprocess.CalledProcessError as e:
-            log.error(f"FFmpeg conversion failed: {e.stderr}")
-            await processing_msg.edit_text(
-                "❌ *Voice note conversion failed!*\n\n"
-                "Please send text message instead.",
-                parse_mode="Markdown"
-            )
-            os.unlink(tmp_path)
-            return
-        except FileNotFoundError:
-            log.error("FFmpeg not found in PATH")
-            await processing_msg.edit_text(
-                "❌ *ffmpeg not installed!*\n\n"
-                "Please send text message instead.",
-                parse_mode="Markdown"
-            )
-            os.unlink(tmp_path)
-            return
-        
-        # Transcribe
-        with sr.AudioFile(wav_path) as source:
-            audio = recognizer.record(source)
-            try:
-                # Try using Google Speech Recognition (free, no API key required)
-                text = recognizer.recognize_google(audio, language="hi-IN")
-            except sr.UnknownValueError:
-                text = None
-            except sr.RequestError as e:
-                log.error(f"Speech recognition request error: {e}")
-                text = None
-        
-        # Clean up temp files
-        os.unlink(tmp_path)
-        if os.path.exists(wav_path):
-            os.unlink(wav_path)
-        
-        if not text:
-            await processing_msg.edit_text(
-                "❌ *Could not transcribe voice note!*\n\n"
-                "Please speak clearly or send text message instead.",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # Clean the transcribed text - remove any prompt instructions if present
-        text = text.strip()
-        
-        # Remove common prompt patterns if accidentally transcribed
-        prompt_patterns = [
-            r'jo bola gaya hai woh word-for-word likho',
-            r'sirf transcription do',
-            r'koi explanation nahi',
-            r'koi prefix nahi',
-            r'hinglish ya hindi ya english jo bhi bola ho woh likho',
-            r'isk[oO] exactly transcribe karo',
-            r'is voice message ko exactly transcribe karo',
-        ]
-        for pattern in prompt_patterns:
-            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
-        text = text.strip()
-        
-        if not text or len(text) < 2:
-            await processing_msg.edit_text(
-                "🎤 *I couldn't hear clearly!*\n\n"
-                "Please speak again more clearly or send text message.",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # Send transcribed text
-        await processing_msg.edit_text(
-            f"🎤 *You said:*\n\n\"{text}\"\n\n📝 *Processing...*",
-            parse_mode="Markdown"
-        )
-        
-        # Process the transcribed text through the NLP parser
-        await _process_voice_command(update, context, text)
-        
+        file_obj = await ctx.bot.get_file(voice.file_id)
+        audio_bytes = await file_obj.download_as_bytearray()
+        audio_bytes = bytes(audio_bytes)
     except Exception as e:
-        log.error(f"Voice handling error: {e}")
-        await processing_msg.edit_text(
-            "❌ *Error processing voice note!*\n\nPlease send text message.",
-            parse_mode="Markdown"
+        log.error(f"Voice download error: {e}")
+        await status_msg.edit_text("❌ Voice download fail ho gaya!")
+        return
+
+    mime_type = getattr(voice, "mime_type", "audio/ogg") or "audio/ogg"
+    if "mp4" in mime_type or "m4a" in mime_type:
+        mime_type = "audio/mp4"
+    elif "webm" in mime_type:
+        mime_type = "audio/webm"
+    else:
+        mime_type = "audio/ogg"
+
+    transcript = await _transcribe_with_gemini(audio_bytes, mime_type)
+
+    if not transcript:
+        await status_msg.edit_text("❌ *Transcription fail ho gaya!* Dobara try karo.", parse_mode="Markdown")
+        if voice_store:
+            voice_store.add("[Transcription Failed]", "none", duration, "Failed")
+        return
+
+    category = _classify_transcript(transcript)
+    saved_to = "diary"
+    extra_info = ""
+
+    if category == "task":
+        t = tasks.add(transcript[:100])
+        saved_to = f"task #{t['id']}"
+        extra_info = f"✅ Task #{t['id']} bana diya!"
+
+    elif category == "expense":
+        m = re.search(r'(\d+(?:\.\d+)?)', transcript)
+        if m:
+            amount = float(m.group(1))
+            desc = re.sub(r'\d+(?:\.\d+)?', "", transcript).strip() or "Voice expense"
+            expenses.add(amount, desc[:60])
+            saved_to = "expenses"
+            extra_info = f"💸 Rs.{amount} expense add ho gaya!"
+        else:
+            diary.add(f"[Voice] {transcript}")
+            saved_to = "diary"
+            extra_info = "📖 Diary mein save kiya (amount nahi mila)"
+
+    elif category == "memory":
+        memory.add(transcript)
+        saved_to = "memory"
+        extra_info = "🧠 Memory mein save ho gaya!"
+
+    else:
+        diary.add(f"[Voice] {transcript}")
+        saved_to = "diary"
+        extra_info = "📖 Diary mein save ho gaya!"
+
+    if voice_store:
+        voice_store.add(transcript, saved_to, duration, "Success")
+
+    await status_msg.edit_text(
+        f"🎙️ *Voice Note Transcribed!* ✅\n\n"
+        f"📝 *Transcript:*\n_{transcript[:300]}_\n\n"
+        f"{'─' * 20}\n"
+        f"💾 {extra_info}\n\n"
+        f"/voicenotes — Purani notes dekho",
+        parse_mode="Markdown"
+    )
+
+    try:
+        sheets_backup.log_event("voice_note", user_name, f"[{saved_to}] {transcript[:80]}")
+    except Exception:
+        pass
+
+
+async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not voice_store:
+        await update.message.reply_text("❌ Voice store unavailable")
+        return
+
+    recent = voice_store.get_recent(10)
+    if not recent:
+        await update.message.reply_text("🎙️ Koi voice note nahi hai abhi.\n\nVoice message bhejo — main transcribe kar dunga!")
+        return
+
+    lines = []
+    for v in reversed(recent):
+        lines.append(
+            f"🎙️ #{v['id']} *{v['date']}* {v['time']}\n"
+            f"   💾 {v['saved_to']} | ⏱ {v.get('duration', 0)}s\n"
+            f"   _{v['transcript'][:100]}_"
         )
 
-async def _process_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    """Process voice transcribed text through the appropriate handlers"""
-    
-    # Import here to avoid circular import
-    from main import parse_user_message, _log_action, tasks, reminders, expenses, diary, habits, bills, calendar, water, memory, chat_hist, today_str
-    
-    user_name = update.effective_user.first_name or "User"
-    
-    # Parse the message to determine intent
-    action_type, params = parse_user_message(text)
-    log.info(f"[Voice] '{text[:60]}' → {action_type}")
-    
-    # Log to chat history
-    chat_hist.add("user", f"[Voice] {text}", user_name)
-    
-    # Handle based on action type - SAME AS TEXT MESSAGES
-    if action_type == "expense":
-        amount = params.get("amount", 0)
-        desc = params.get("desc", "")
-        expenses.add(amount, desc)
-        _log_action(user_name, "expense_add", f"Rs.{amount} on {desc}")
-        await update.message.reply_text(
-            f"💸 *Kharcha Add Ho Gaya!*\n\nRs.{amount} — {desc}\n💰 Aaj total: Rs.{expenses.today_total()}",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "add_task":
-        title = params.get("title", "")
-        t = tasks.add(title)
-        _log_action(user_name, "task_add", f"#{t['id']}: {title}")
-        await update.message.reply_text(
-            f"✅ *Task Add Ho Gaya!*\n\n📌 #{t['id']} {title}\n\nInshAllah ho jayega! 💪",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "remind":
-        r = reminders.add(update.effective_chat.id, params.get("text", "Reminder"), params.get("time", ""))
-        when_str = "Kal" if params.get("tomorrow") else "Aaj"
-        _log_action(user_name, "reminder_set", f"#{r['id']} at {params.get('time')}: {params.get('text')}")
-        await update.message.reply_text(
-            f"⏰ *Reminder Set!*\n\n🕐 {when_str} {params.get('time')} baje: {params.get('text')}\n📌 ID #{r['id']}",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "diary":
-        diary_text = params.get("text", "")
-        diary.add(diary_text)
-        _log_action(user_name, "diary_write", f"Entry: {diary_text[:80]}")
-        await update.message.reply_text(
-            f"📖 *Diary Save Ho Gayi!* ✅\n\n_{diary_text[:200]}_",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "add_habit":
-        h = habits.add(params.get("name", ""))
-        _log_action(user_name, "habit_add", f"#{h['id']}: {h['name']}")
-        await update.message.reply_text(
-            f"🏃 *Habit Add Ho Gaya!*\n\n#{h['id']} {h['name']}\n\nInshAllah roz karoge! 💪",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "habit_done":
-        keyword = params.get("keyword", "")
-        if keyword.isdigit():
-            ok, streak = habits.log(int(keyword))
-            name = f"#{keyword}"
-        else:
-            ok, streak, h = habits.log_by_name(keyword)
-            name = h["name"] if h else keyword
-        if ok:
-            _log_action(user_name, "habit_done", f"'{name}' done | streak: {streak}")
-            await update.message.reply_text(
-                f"🔥 *{name} done! MashAllah!* 🎉\n\n{streak} din ka streak! 💪",
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text("❓ Kaunsa habit? Text mein batao", parse_mode="Markdown")
-    
-    elif action_type == "add_calendar":
-        title = params.get("title", "Event")
-        ev_date = params.get("date", today_str())
-        ev_type = params.get("type", "event")
-        e = calendar.add(title, ev_date, "", "", "", ev_type)
-        _log_action(user_name, "calendar_add", f"{'Birthday' if ev_type=='birthday' else 'Event'} #{e['id']}: {title}")
-        emoji = "🎂" if ev_type == "birthday" else "📅"
-        msg = f"{emoji} *Event Add Ho Gaya!* ✅\n\n📅 *{ev_date}*\n📌 {title}"
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    
-    elif action_type == "add_bill":
-        name = params.get("name", "Bill")
-        amount = params.get("amount", 0)
-        due_day = params.get("due_day", 0)
-        b = bills.add(name, amount, due_day)
-        _log_action(user_name, "bill_add", f"#{b['id']}: {name} Rs.{amount}")
-        await update.message.reply_text(
-            f"💳 *Bill Add Ho Gaya!* ✅\n\n#{b['id']} *{name}*\n💰 Rs.{amount}",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "water":
-        ml = params.get("ml", 250)
-        total = water.add(ml)
-        goal_ml = water.goal()
-        pct = int(total / goal_ml * 100) if goal_ml else 0
-        _log_action(user_name, "water_log", f"Added {ml}ml")
-        await update.message.reply_text(
-            f"💧 *{ml}ml Paani Log Ho Gaya!*\n\nTotal: {total}/{goal_ml}ml ({pct}%)\n\n"
-            f"{'Alhamdulillah! Goal complete! 🎉' if total >= goal_ml else 'InshAllah goal poora hoga! 💪'}",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type == "memory_save":
-        mem_text = params.get("text", "")
-        memory.add(mem_text)
-        _log_action(user_name, "memory_save", f"Saved: {mem_text[:80]}")
-        await update.message.reply_text(
-            f"🧠 *Memory Save Ho Gaya!* ✅\n\n_{mem_text[:150]}_",
-            parse_mode="Markdown"
-        )
-    
-    elif action_type in ["show_reminders", "show_tasks", "show_habits", "show_diary", "show_memory", "show_calendar"]:
-        # For show commands, call the appropriate helper
-        from main import _send_reminder_list, _send_task_list, _send_habit_list, _send_diary_today, _send_memory_list, _send_calendar_list
-        
-        if action_type == "show_reminders":
-            await _send_reminder_list(update)
-        elif action_type == "show_tasks":
-            await _send_task_list(update)
-        elif action_type == "show_habits":
-            await _send_habit_list(update)
-        elif action_type == "show_diary":
-            await _send_diary_today(update)
-        elif action_type == "show_memory":
-            await _send_memory_list(update)
-        elif action_type == "show_calendar":
-            await _send_calendar_list(update)
-        
-        _log_action(user_name, action_type, text[:60])
-    
-    elif action_type == "complete_task":
-        hint = params.get("hint", "")
-        pending = tasks.pending()
-        matched = next((t for t in pending if str(t["id"]) == hint or (hint and hint in t["title"].lower())), None)
-        if matched:
-            tasks.complete(matched["id"])
-            _log_action(user_name, "task_done", f"#{matched['id']}: {matched['title']}")
-            await update.message.reply_text(
-                f"✅ *Task Complete!* 🎉\n\n#{matched['id']} {matched['title']}",
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text("❓ Kaunsa task? Text mein batao", parse_mode="Markdown")
-    
-    else:
-        # Fallback to AI chat
-        from main import build_system_prompt, call_gemini
-        prompt = build_system_prompt() + f"\n\nUser (voice): {text}\n\nShort Hinglish reply (2-3 lines), Muslim phrases zaroor use karo:"
-        reply = call_gemini(prompt)
-        if not reply:
-            reply = "☪️ Assalamualaikum! Kya help chahiye? Tasks, reminders, kharcha, diary, calendar, bills?"
-        _log_action(user_name, "voice_chat", f"Q: {text[:60]} | A: {reply[:60]}")
-        await update.message.reply_text(reply, parse_mode="Markdown")
-    
-    chat_hist.add("assistant", "Voice command processed", "Rk")
+    await update.message.reply_text(f"🎙️ *Recent Voice Notes:*\n\n" + "\n\n".join(lines), parse_mode="Markdown")
+
 
 def register_voice_handlers(app):
-    """Register voice message handlers"""
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    if HAS_SPEECH_RECOGNITION and HAS_FFMPEG:
-        log.info("✅ Voice note handlers registered (with ffmpeg support)")
-    else:
-        log.warning("⚠️ Voice note handlers registered but missing dependencies")
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
+    app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
+    log.info("✅ Voice Note handlers registered (Gemini-based, no ffmpeg needed!)")
