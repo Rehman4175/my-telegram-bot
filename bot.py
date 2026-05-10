@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v5:
+FIXES v6:
+  - Calendar date parse fix: "28-Dec-1996" format now works
   - "dairy" → diary trigger fix (dairy = diary spelling)
   - "karcha / karch / kharch" → expense trigger fix
   - "bills add / bill add / naya bill" → more trigger words added
   - Water log → _log_action error fix (sheets mein #ERROR! aa raha tha)
   - Diary NL add trigger improved (dairy/diary dono)
-  - Baaki sab v4 jaisa hi
+  - Baaki sab v5 jaisa hi
 """
 
 import os, json, logging, time
@@ -115,6 +116,123 @@ def _log_action(user_name: str, action_type: str, detail: str):
         log.info(f"[MiscLog] {action_type} | {user_name} | {clean_detail[:60]}")
     except Exception as e:
         log.warning(f"_log_action failed: {e}")
+
+
+# ================================================================
+# DATE PARSER — FIXED: Now handles "28-Dec-1996" format
+# ================================================================
+
+MONTH_MAP = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2,
+    "mar": 3, "march": 3, "apr": 4, "april": 4,
+    "may": 5, "mei": 5, "jun": 6, "june": 6,
+    "jul": 7, "july": 7, "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
+    "nov": 11, "november": 11, "dec": 12, "december": 12,
+    "januari": 1, "februari": 2, "maret": 3,
+    "juni": 6, "juli": 7, "agustus": 8, "oktober": 10, "desember": 12
+}
+
+def _parse_date_from_text(text):
+    lower = text.lower()
+    today_d = now_ist().date()
+
+    # ── YYYY-MM-DD ─────────────────────────────────────────────
+    m = _re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', lower)
+    if m:
+        try:
+            yr, mo, dy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            d = date(yr, mo, dy)
+            remaining = _re.sub(r'\d{4}-\d{1,2}-\d{1,2}', '', text).strip()
+            return d.strftime("%Y-%m-%d"), remaining
+        except Exception:
+            pass
+
+    # ── DD/MM/YYYY or DD-MM-YYYY ───────────────────────────────
+    m = _re.search(r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})', lower)
+    if m:
+        try:
+            a, b, c = m.group(1), m.group(2), m.group(3)
+            if len(c) == 4:
+                dy, mo, yr = int(a), int(b), int(c)
+            elif len(a) == 4:
+                yr, mo, dy = int(a), int(b), int(c)
+            else:
+                dy, mo, yr = int(a), int(b), int(c) + 2000
+            d = date(yr, mo, dy)
+            remaining = _re.sub(r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', '', text).strip()
+            return d.strftime("%Y-%m-%d"), remaining
+        except Exception:
+            pass
+
+    # ── NEW: DD-Mon-YYYY (e.g., 28-Dec-1996) ───────────────────
+    month_names = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    m = _re.search(r'(\d{1,2})[- ](' + month_names + r')[- ](\d{4})', lower, _re.IGNORECASE)
+    if m:
+        try:
+            dy = int(m.group(1))
+            mon_str = m.group(2).lower()
+            yr = int(m.group(3))
+            mon_map = {
+                "jan":1, "feb":2, "mar":3, "apr":4, "may":5, "jun":6,
+                "jul":7, "aug":8, "sep":9, "oct":10, "nov":11, "dec":12
+            }
+            mo = mon_map.get(mon_str, 0)
+            if mo and 1 <= mo <= 12:
+                d = date(yr, mo, dy)
+                remaining = _re.sub(r'\d{1,2}[- ](?:' + month_names + r')[- ]\d{4}', '', text, flags=_re.IGNORECASE).strip()
+                return d.strftime("%Y-%m-%d"), remaining
+        except Exception:
+            pass
+
+    # ── DD Mon YYYY (e.g., 28 Dec 1996) ────────────────────────
+    m = _re.search(r'(\d{1,2})\s+(' + month_names + r')\s+(\d{4})', lower, _re.IGNORECASE)
+    if m:
+        try:
+            dy = int(m.group(1))
+            mon_str = m.group(2).lower()
+            yr = int(m.group(3))
+            mon_map = {
+                "jan":1, "feb":2, "mar":3, "apr":4, "may":5, "jun":6,
+                "jul":7, "aug":8, "sep":9, "oct":10, "nov":11, "dec":12
+            }
+            mo = mon_map.get(mon_str, 0)
+            if mo and 1 <= mo <= 12:
+                d = date(yr, mo, dy)
+                remaining = _re.sub(r'\d{1,2}\s+(?:' + month_names + r')\s+\d{4}', '', text, flags=_re.IGNORECASE).strip()
+                return d.strftime("%Y-%m-%d"), remaining
+        except Exception:
+            pass
+
+    # ── DD Month (no year) ─────────────────────────────────────
+    month_pattern = "|".join(sorted(MONTH_MAP.keys(), key=len, reverse=True))
+    m = _re.search(r'(\d{1,2})\s+(' + month_pattern + r')(?:\s+(\d{2,4}))?', lower)
+    if m:
+        day = int(m.group(1))
+        mon = MONTH_MAP.get(m.group(2), 0)
+        yr_raw = m.group(3)
+        if yr_raw:
+            yr = int(yr_raw) if len(yr_raw) == 4 else int(yr_raw) + 2000
+        else:
+            yr = today_d.year
+            if mon and date(yr, mon, day) < today_d:
+                yr += 1
+        try:
+            d = date(yr, mon, day)
+            remaining = _re.sub(r'\d{1,2}\s+(?:' + month_pattern + r')(?:\s+\d{2,4})?', '', text, flags=_re.IGNORECASE).strip()
+            return d.strftime("%Y-%m-%d"), remaining
+        except Exception:
+            pass
+
+    # ── Special words: parso, kal, aaj ─────────────────────────
+    if "parso" in lower:
+        return (today_d + timedelta(days=2)).strftime("%Y-%m-%d"), _re.sub(r'\bparso\b', '', text, flags=_re.IGNORECASE).strip()
+    if _re.search(r'\bkal\b|\bkl\b', lower):
+        return (today_d + timedelta(days=1)).strftime("%Y-%m-%d"), _re.sub(r'\bkal\b|\bkl\b', '', text, flags=_re.IGNORECASE).strip()
+    if "aaj" in lower:
+        return today_d.strftime("%Y-%m-%d"), _re.sub(r'\baaj\b', '', text, flags=_re.IGNORECASE).strip()
+
+    return None, text
 
 
 # ================================================================
@@ -1006,73 +1124,14 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error stopping alarm!")
 
 # ================================================================
-# NATURAL LANGUAGE PARSER — v5 FIXES
+# NATURAL LANGUAGE PARSER — v6 FIXES
 # Fixes:
 #   - "dairy" → diary (spelling variation) — show & add dono
 #   - "karcha/karch" → expense trigger
 #   - "bill X 500" → bill add (amount hone pe)
 #   - Water log string clean (no +/- prefix)
+#   - Calendar: "Calendar birthday 28-Dec-1996 RK" now parses correctly
 # ================================================================
-
-MONTH_MAP = {
-    "jan": 1, "january": 1, "feb": 2, "february": 2,
-    "mar": 3, "march": 3, "apr": 4, "april": 4,
-    "may": 5, "mei": 5, "jun": 6, "june": 6,
-    "jul": 7, "july": 7, "aug": 8, "august": 8,
-    "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
-    "nov": 11, "november": 11, "dec": 12, "december": 12,
-    "januari": 1, "februari": 2, "maret": 3,
-    "juni": 6, "juli": 7, "agustus": 8, "oktober": 10, "desember": 12
-}
-
-def _parse_date_from_text(text):
-    lower = text.lower()
-    today_d = now_ist().date()
-
-    m = _re.search(r'(\d{1,4})[-/](\d{1,2})[-/](\d{2,4})', lower)
-    if m:
-        a, b, c = m.group(1), m.group(2), m.group(3)
-        try:
-            if len(a) == 4:
-                yr, mo, dy = int(a), int(b), int(c)
-            elif len(c) == 4:
-                dy, mo, yr = int(a), int(b), int(c)
-            else:
-                dy, mo, yr = int(a), int(b), int(c) + 2000
-            d = date(yr, mo, dy)
-            remaining = _re.sub(r'\d{1,4}[-/]\d{1,2}[-/]\d{2,4}', '', text).strip()
-            return d.strftime("%Y-%m-%d"), remaining
-        except Exception:
-            pass
-
-    month_pattern = "|".join(sorted(MONTH_MAP.keys(), key=len, reverse=True))
-    m = _re.search(r'(\d{1,2})\s+(' + month_pattern + r')(?:\s+(\d{2,4}))?', lower)
-    if m:
-        day = int(m.group(1))
-        mon = MONTH_MAP.get(m.group(2), 0)
-        yr_raw = m.group(3)
-        if yr_raw:
-            yr = int(yr_raw) if len(yr_raw) == 4 else int(yr_raw) + 2000
-        else:
-            yr = today_d.year
-            if mon and date(yr, mon, day) < today_d:
-                yr += 1
-        try:
-            d = date(yr, mon, day)
-            remaining = _re.sub(r'\d{1,2}\s+(?:' + month_pattern + r')(?:\s+\d{2,4})?', '', text, flags=_re.IGNORECASE).strip()
-            return d.strftime("%Y-%m-%d"), remaining
-        except Exception:
-            pass
-
-    if "parso" in lower:
-        return (today_d + timedelta(days=2)).strftime("%Y-%m-%d"), _re.sub(r'\bparso\b', '', text, flags=_re.IGNORECASE).strip()
-    if _re.search(r'\bkal\b|\bkl\b', lower):
-        return (today_d + timedelta(days=1)).strftime("%Y-%m-%d"), _re.sub(r'\bkal\b|\bkl\b', '', text, flags=_re.IGNORECASE).strip()
-    if "aaj" in lower:
-        return today_d.strftime("%Y-%m-%d"), _re.sub(r'\baaj\b', '', text, flags=_re.IGNORECASE).strip()
-
-    return None, text
-
 
 def parse_user_message(user_msg: str):
     lower = user_msg.lower().strip()
@@ -1106,7 +1165,6 @@ def parse_user_message(user_msg: str):
     if any(p in lower for p in [
         "diary dikhao", "diary dekho", "diary padho", "show diary",
         "diary show", "aaj ki diary", "meri diary", "diary batao",
-        # FIX: dairy spelling
         "dairy dikhao", "dairy dekho", "dairy padho", "show dairy",
         "dairy show", "aaj ki dairy", "meri dairy",
     ]):
@@ -1195,11 +1253,12 @@ def parse_user_message(user_msg: str):
             name = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", name, flags=_re.IGNORECASE)
         return ("add_habit", {"name": " ".join(name.split()).strip()[:50] or "Habit"})
 
-    # ── 9. CALENDAR ADD ────────────────────────────────────────
+    # ── 9. CALENDAR ADD (FIXED: handles "Calendar birthday 28-Dec-1996 RK") ──
     if any(t in lower for t in [
         "birthday", "bday", "b'day", "janamdin", "janmdin",
         "calendar add", "cal add", "event add", "add event",
         "calendar mein", "cal mein", "ka birthday", "ki birthday",
+        "calendar"
     ]):
         date_str, remaining = _parse_date_from_text(user_msg)
         if date_str:
@@ -1223,7 +1282,6 @@ def parse_user_message(user_msg: str):
         return ("chat", {"text": user_msg})
 
     # ── 10. BILL ADD — FIX: broad trigger + amount required ────
-    # "bill netflix 500", "bills add netflix 500", "naya bill jio 299" sab
     is_bill_msg = ("bill" in lower or "bills" in lower)
     show_bill_words = ["dikhao", "dekho", "show", "list", "batao", "paid", "kya", "kitne", "sab"]
     is_bill_show = any(w in lower for w in show_bill_words)
@@ -1252,7 +1310,6 @@ def parse_user_message(user_msg: str):
         "diary add", "diary mein add", "diary me add",
         "diary mein daalo", "diary me daalo", "diary save",
         "diary mein note", "diary me note", "add diary",
-        # FIX: dairy variants
         "dairy mein likho", "dairy me likho", "dairy mein likh", "dairy me likh",
         "dairy add", "dairy mein add", "dairy me add", "dairy save", "add dairy",
     ]
@@ -1278,13 +1335,12 @@ def parse_user_message(user_msg: str):
 
     # ── 13. EXPENSE — FIX: karcha/karch/kharch/kharach sab ────
     expense_triggers = [
-        "kharcha", "kharch", "karcha", "karch", "kharach",  # FIX
+        "kharcha", "kharch", "karcha", "karch", "kharach",
         "spent", "rupees", "rs",
         "kharch kiya", "laga diye", "lagaya",
         "pe lagaya", "mein lagaya", "ka kharcha", "pe laga",
         "expense",
     ]
-    # Exclude agar bill/task/habit/reminder/diary/calendar/water word ho
     non_expense = ["reminder", "task", "habit", "diary", "dairy", "calendar", "bill", "water", "memory", "paani"]
     if any(w in lower for w in expense_triggers) and not any(n in lower for n in non_expense):
         m = _re.search(r'(\d+(?:\.\d+)?)', lower)
@@ -1586,7 +1642,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     log.info("=" * 60)
-    log.info("Rk Bot v5 | dairy/karcha/bills NLP Fix | Water #ERROR Fix")
+    log.info("Rk Bot v6 | Calendar date parse fix for 28-Dec-1996")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
