@@ -85,7 +85,7 @@ class GoogleSheetsBackup:
         "Calendar":  ["ID", "Title", "Date", "Time", "Location", "Notes", "Type", "Created"],
         "Bills":     ["ID", "Name", "Amount", "Due Day", "Status", "Auto Pay", "Payment Method", "Notes", "Created"],
         "Expenses":  ["Date", "Time", "Amount", "Description", "Category"],
-        "Habits":    ["Date", "Time", "Habit Name", "Streak"],
+        "Habits":    ["ID", "Habit Name", "Emoji", "Streak", "Best Streak", "Created Date", "Target (per day)"],
         "Water":     ["Date", "Time", "ML Added", "Day Total"],
         "Logs":      ["Timestamp", "Date", "Role", "User", "Message"],
         "Diary":     ["Date", "Time", "Text", "Mood"],
@@ -327,9 +327,35 @@ class GoogleSheetsBackup:
     def expense(self, amount, desc, category="general"):
         return self._append("Expenses", [today_str(), now_str(), amount, desc, category])
 
+    def habit_add(self, h):
+        """Habit ADD — matches sheet headers: ID, Habit Name, Emoji, Streak, Best Streak, Created Date, Target (per day)"""
+        return self._append("Habits", [
+            h.get("id", ""),
+            h.get("name", ""),
+            h.get("emoji", "✅"),
+            h.get("streak", 0),
+            h.get("best_streak", 0),
+            h.get("created", today_str()),
+            h.get("target", ""),
+        ])
+
+    def habit_update(self, h):
+        """Update existing habit row after streak changes"""
+        row = [
+            h.get("id", ""),
+            h.get("name", ""),
+            h.get("emoji", "✅"),
+            h.get("streak", 0),
+            h.get("best_streak", 0),
+            h.get("created", today_str()),
+            h.get("target", ""),
+        ]
+        ok = self.update_row_by_value("Habits", 1, str(h.get("id", "")), row)
+        return ok if ok else self._append("Habits", row)
+
     def habit(self, name, streak):
-        # FIX 4: Habits — correct tab is "Habits", headers: Date, Time, Habit Name, Streak
-        return self._append("Habits", [today_str(), now_str(), name, streak])
+        """Legacy alias — backward compat"""
+        return self._append("Habits", ["", name, "✅", streak, streak, today_str(), ""])
 
     def water(self, ml_added, day_total):
         return self._append("Water", [today_str(), now_str(), ml_added, day_total])
@@ -585,6 +611,11 @@ class HabitStore:
         }
         self.store.data["list"].append(h)
         self.store.save()
+        # Sync to Google Sheets Habits tab
+        try:
+            sheets_backup.habit_add(h)
+        except Exception as e:
+            log.error(f"Habit add sheet sync error: {e}")
         return h
 
     def log(self, hid):
@@ -604,11 +635,15 @@ class HabitStore:
                 habit_name       = h["name"]
         self.store.data["logs"] = logs
         self.store.save()
-        # FIX 4: Habits sheet sync — use habit_name directly from loop above
+        # Update habit row in sheet with new streak values
         try:
-            sheets_backup.habit(habit_name, streak)
+            updated_h = next((h for h in self.store.data.get("list", []) if h["id"] == hid), None)
+            if updated_h:
+                sheets_backup.habit_update(updated_h)
+            else:
+                sheets_backup.habit(habit_name, streak)
         except Exception as e:
-            log.error(f"Habit sheet sync error: {e}")
+            log.error(f"Habit log sheet sync error: {e}")
         return True, streak
 
     def log_by_name(self, keyword):
