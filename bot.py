@@ -1796,7 +1796,10 @@ def main():
 
     app.add_handler(CallbackQueryHandler(handle_ok_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    
+    from delete_manager import register_delete_handlers
+    register_delete_handlers(app)
+  
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("Reminder job scheduled (every 60s)")
