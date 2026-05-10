@@ -2,14 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v6:
+FIXES v7:
   - Calendar date parse fix: "28-Dec-1996" format now works
   - "dairy" → diary trigger fix (dairy = diary spelling)
   - "karcha / karch / kharch" → expense trigger fix
   - "bills add / bill add / naya bill" → more trigger words added
   - Water log → _log_action error fix (sheets mein #ERROR! aa raha tha)
   - Diary NL add trigger improved (dairy/diary dono)
-  - Baaki sab v5 jaisa hi
+  - NEW: Voice notes support (voice_note_handler)
+  - NEW: Smart memory context (smart_memory_handler)
+  - Baaki sab v6 jaisa hi
 """
 
 import os, json, logging, time
@@ -30,6 +32,11 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes, ConversationHandler
 )
+
+# ── NEW ADDON IMPORTS ──────────────────────────────
+from voice_note_handler import register_voice_handlers
+from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
+# ──────────────────────────────────────────────────
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -298,6 +305,13 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/delete — Full delete menu\n"
         "/nuke — Chat history delete\n"
         "/nukeall — Sab kuch delete\n\n"
+        "🧠 *Smart Memory:*\n"
+        "/memory — Show saved memories\n"
+        "/memory add text — Save a memory\n"
+        "/memory search word — Search memories\n"
+        "/memory clear — Delete all memories\n\n"
+        "🎤 *Voice Notes:*\n"
+        "Voice message bhejo — Main transcribe karunga aur action lunga!\n\n"
         "📊 *Other:*\n"
         "/briefing — Daily summary\n"
         "/status — System status\n"
@@ -1124,17 +1138,34 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error stopping alarm!")
 
 # ================================================================
-# NATURAL LANGUAGE PARSER — v6 FIXES
+# NATURAL LANGUAGE PARSER — v7 FIXES
 # Fixes:
 #   - "dairy" → diary (spelling variation) — show & add dono
 #   - "karcha/karch" → expense trigger
 #   - "bill X 500" → bill add (amount hone pe)
 #   - Water log string clean (no +/- prefix)
 #   - Calendar: "Calendar birthday 28-Dec-1996 RK" now parses correctly
+#   - Memory: "yaad rakhna X", "memory mein save X" triggers
 # ================================================================
 
 def parse_user_message(user_msg: str):
     lower = user_msg.lower().strip()
+
+    # ── 0. SMART MEMORY CHECK (HIGHEST PRIORITY) ─────────────────
+    # "yaad rakhna", "memory mein save", "remember this" etc.
+    memory_triggers = [
+        "yaad rakhna", "yaad rakh", "memory mein save", "memory me save",
+        "note karlo", "yaad karo", "remember", "dimaag mein rakh",
+        "save memory", "add memory", "yaad rakhoge"
+    ]
+    if any(t in lower for t in memory_triggers):
+        text = user_msg
+        for kw in memory_triggers + ["please", "plz", "zara", "kr", "karo"]:
+            text = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", text, flags=_re.IGNORECASE)
+        text = " ".join(text.split()).strip()
+        if text:
+            return ("memory_save", {"text": text})
+        return ("memory_save", {"text": user_msg})
 
     # ── 1. SHOW REMINDERS ──────────────────────────────────────
     if any(p in lower for p in [
@@ -1161,7 +1192,7 @@ def parse_user_message(user_msg: str):
     ]):
         return ("show_habits", {})
 
-    # ── 4. SHOW DIARY — FIX: dairy/diary dono ─────────────────
+    # ── 4. SHOW DIARY ─────────────────────────────────────────
     if any(p in lower for p in [
         "diary dikhao", "diary dekho", "diary padho", "show diary",
         "diary show", "aaj ki diary", "meri diary", "diary batao",
@@ -1170,14 +1201,22 @@ def parse_user_message(user_msg: str):
     ]):
         return ("show_diary", {})
 
-    # ── 5. SHOW CALENDAR ───────────────────────────────────────
+    # ── 5. SHOW MEMORY ─────────────────────────────────────────
+    if any(p in lower for p in [
+        "memory dikhao", "memory dekho", "memory show", "show memory",
+        "meri memory", "memory list", "saari memory", "sari memory",
+        "kya yaad hai", "kya memory hai", "yaad hai kya"
+    ]):
+        return ("show_memory", {})
+
+    # ── 6. SHOW CALENDAR ───────────────────────────────────────
     if any(p in lower for p in [
         "calendar dikhao", "events dikhao", "events dekho", "upcoming events",
         "aaj ka event", "cal dikhao", "schedule dikhao",
     ]):
         return ("show_calendar", {})
 
-    # ── 6. REMINDER SET ────────────────────────────────────────
+    # ── 7. REMINDER SET ────────────────────────────────────────
     remind_words = [
         "remind", "reminder", "alarm", "yaad dilana", "bata dena",
         "yaad dila", "yaad dila do", "yaad kara", "add reminder",
@@ -1233,7 +1272,7 @@ def parse_user_message(user_msg: str):
             return ("remind", {"time": time_str, "text": f"{prefix}{text_clean}", "tomorrow": is_tomorrow})
         return ("chat", {"text": user_msg})
 
-    # ── 7. HABIT DONE ──────────────────────────────────────────
+    # ── 8. HABIT DONE ──────────────────────────────────────────
     if any(p in lower for p in [
         "habit ho gayi", "habit ho gaya", "habit complete", "habit kar li",
         "habit kar liya", "habit done", "gym ho gaya", "gym kar liya",
@@ -1243,7 +1282,7 @@ def parse_user_message(user_msg: str):
         m = _re.search(r'#?(\d+)', lower)
         return ("habit_done", {"keyword": m.group(1) if m else lower[:40]})
 
-    # ── 8. HABIT ADD ───────────────────────────────────────────
+    # ── 9. HABIT ADD ───────────────────────────────────────────
     if any(p in lower for p in [
         "habit add", "add habit", "naya habit", "habit lagao", "habit bana",
         "habit start", "new habit", "habit banana",
@@ -1253,7 +1292,7 @@ def parse_user_message(user_msg: str):
             name = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", name, flags=_re.IGNORECASE)
         return ("add_habit", {"name": " ".join(name.split()).strip()[:50] or "Habit"})
 
-    # ── 9. CALENDAR ADD (FIXED: handles "Calendar birthday 28-Dec-1996 RK") ──
+    # ── 10. CALENDAR ADD (FIXED: handles "Calendar birthday 28-Dec-1996 RK") ──
     if any(t in lower for t in [
         "birthday", "bday", "b'day", "janamdin", "janmdin",
         "calendar add", "cal add", "event add", "add event",
@@ -1281,7 +1320,7 @@ def parse_user_message(user_msg: str):
             return ("add_calendar", {"title": title or "Event", "date": date_str, "type": event_type})
         return ("chat", {"text": user_msg})
 
-    # ── 10. BILL ADD — FIX: broad trigger + amount required ────
+    # ── 11. BILL ADD — FIX: broad trigger + amount required ────
     is_bill_msg = ("bill" in lower or "bills" in lower)
     show_bill_words = ["dikhao", "dekho", "show", "list", "batao", "paid", "kya", "kitne", "sab"]
     is_bill_show = any(w in lower for w in show_bill_words)
@@ -1304,7 +1343,7 @@ def parse_user_message(user_msg: str):
             name = " ".join(title.split()).strip() or "Bill"
             return ("add_bill", {"name": name, "amount": amount, "due_day": due_day})
 
-    # ── 11. DIARY ADD — FIX: dairy/diary dono ─────────────────
+    # ── 12. DIARY ADD — FIX: dairy/diary dono ─────────────────
     diary_add_triggers = [
         "diary mein likho", "diary me likho", "diary mein likh", "diary me likh",
         "diary add", "diary mein add", "diary me add",
@@ -1321,7 +1360,7 @@ def parse_user_message(user_msg: str):
         text = " ".join(text.split()).strip()
         return ("diary", {"text": text or user_msg})
 
-    # ── 12. WATER ──────────────────────────────────────────────
+    # ── 13. WATER ──────────────────────────────────────────────
     if any(w in lower for w in [
         "paani piya", "water piya", "water log", "paani liya",
         "water pi", "paani pi", "pani piya", "pani pi", "pani liya",
@@ -1333,7 +1372,7 @@ def parse_user_message(user_msg: str):
             ml = val * 250 if "glass" in unit else val * 500 if "bottle" in unit else val
         return ("water", {"ml": ml})
 
-    # ── 13. EXPENSE — FIX: karcha/karch/kharch/kharach sab ────
+    # ── 14. EXPENSE — FIX: karcha/karch/kharch/kharach sab ────
     expense_triggers = [
         "kharcha", "kharch", "karcha", "karch", "kharach",
         "spent", "rupees", "rs",
@@ -1350,7 +1389,7 @@ def parse_user_message(user_msg: str):
             desc = " ".join(w for w in desc.split() if w.lower() not in expense_triggers).strip()
             return ("expense", {"amount": amount, "desc": desc or "Expense"})
 
-    # ── 14. TASK COMPLETE ──────────────────────────────────────
+    # ── 15. TASK COMPLETE ──────────────────────────────────────
     if any(p in lower for p in [
         "task done", "kaam ho gaya", "kaam kar liya", "complete kar liya",
         "task complete", "ho gaya task", "kar liya task",
@@ -1358,7 +1397,7 @@ def parse_user_message(user_msg: str):
         m = _re.search(r'#?(\d+)', lower)
         return ("complete_task", {"hint": m.group(1) if m else lower[:30]})
 
-    # ── 15. TASK ADD ───────────────────────────────────────────
+    # ── 16. TASK ADD ───────────────────────────────────────────
     task_add_words = [
         "task add", "add task", "naya task", "task lagao", "task likh",
         "task banana", "task karo", "new task",
@@ -1382,7 +1421,7 @@ def parse_user_message(user_msg: str):
         if title and len(title) > 1:
             return ("add_task", {"title": title[:80]})
 
-    # ── 16. MEMORY SAVE ────────────────────────────────────────
+    # ── 17. MEMORY SAVE (fallback if not caught above) ─────────
     if any(t in lower for t in [
         "memory mein", "memory me", "yaad rakhna", "note karo", "note kr",
         "save karo", "save kr", "remember karo",
@@ -1392,7 +1431,7 @@ def parse_user_message(user_msg: str):
             text = _re.sub(r'\b' + _re.escape(kw) + r'\b', " ", text, flags=_re.IGNORECASE)
         return ("memory_save", {"text": " ".join(text.split()).strip() or user_msg})
 
-    # ── 17. AI CHAT FALLBACK ───────────────────────────────────
+    # ── 18. AI CHAT FALLBACK ───────────────────────────────────
     return ("chat", {"text": user_msg})
 
 
@@ -1462,6 +1501,28 @@ async def _send_calendar_list(update: Update):
     else:
         await update.message.reply_text("📅 Koi upcoming event nahi.\n\n/caladd — Add karo", parse_mode="Markdown")
 
+async def _send_memory_list(update: Update):
+    facts = memory.get_all_facts()
+    if not facts:
+        await update.message.reply_text(
+            "🧠 Koi memory saved nahi hai.\n\n/memory add text — Naya memory save karo\n/memory search word — Search karo",
+            parse_mode="Markdown"
+        )
+        return
+    
+    lines = []
+    for i, fact in enumerate(facts[-15:], 1):
+        date_str = fact.get("d", "unknown date")
+        text = fact.get("f", str(fact))
+        lines.append(f"📌 *{i}.* _{date_str}_\n   {text[:100]}")
+    
+    await update.message.reply_text(
+        f"🧠 *Saved Memories ({len(facts)} total):*\n\n" + "\n\n".join(lines) +
+        "\n\n/memory add text — Naya add karo\n/memory search word — Search karo\n/memory clear — Sab delete karo",
+        parse_mode="Markdown"
+    )
+
+
 # ================================================================
 # MESSAGE HANDLER
 # ================================================================
@@ -1473,6 +1534,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name or "User"
     if user_msg.startswith("/"):
         return
+
+    # ── NEW: Smart Memory NL check ──────────────────
+    if await check_smart_memory_intent(update, ctx):
+        chat_hist.add("user", user_msg, user_name)
+        return   # smart memory ne handle kar liya
+    # ────────────────────────────────────────────────
 
     await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     action_type, params = parse_user_message(user_msg)
@@ -1495,6 +1562,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action_type == "show_diary":
         await _send_diary_today(update)
         _log_action(user_name, "show_diary", user_msg[:60])
+
+    elif action_type == "show_memory":
+        await _send_memory_list(update)
+        _log_action(user_name, "show_memory", user_msg[:60])
 
     elif action_type == "show_calendar":
         await _send_calendar_list(update)
@@ -1642,7 +1713,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     log.info("=" * 60)
-    log.info("Rk Bot v6 | Calendar date parse fix for 28-Dec-1996")
+    log.info("Rk Bot v7 | Calendar fix + Voice Notes + Smart Memory")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1653,6 +1724,11 @@ def main():
     # ✅ Delete Manager SABSE PEHLE
     from delete_manager import register_delete_handlers
     register_delete_handlers(app)
+
+    # ── NEW ADDON HANDLERS ─────────────────────────
+    register_memory_handlers(app)   # /memory command
+    register_voice_handlers(app)    # voice messages
+    # ──────────────────────────────────────────────
 
     # Diary ConversationHandler
     app.add_handler(ConversationHandler(
