@@ -1033,22 +1033,23 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ================================================================
 # NATURAL LANGUAGE PARSER — FIXED VERSION
 # Priority order:
-#   1. show_tasks       (list dikhao)
-#   2. show_habits      (habits dikhao)
-#   3. show_diary       (diary dikhao) ← FIX 2: NEW — before diary_add
-#   4. show_calendar    (events dikhao)
-#   5. reminder
-#   6. habit_done
-#   7. habit_add
-#   8. calendar_add     (BEFORE task — has specific date patterns)
-#   9. bill_add
-#   10. diary_add       (only if explicit "diary mein likho / add" phrases)
-#   11. water
-#   12. expense
-#   13. task_complete
-#   14. task_add
-#   15. memory_save
-#   16. chat            (AI fallback)
+#   1. show_reminders   (reminders list dikhao)
+#   2. show_tasks       (list dikhao)
+#   3. show_habits      (habits dikhao)
+#   4. show_diary       (diary dikhao) ← before diary_add
+#   5. show_calendar    (events dikhao)
+#   6. reminder         (set new reminder)
+#   7. habit_done
+#   8. habit_add
+#   9. calendar_add     (BEFORE task — has specific date patterns)
+#   10. bill_add
+#   11. diary_add       (only if explicit "diary mein likho / add" phrases)
+#   12. water
+#   13. expense
+#   14. task_complete
+#   15. task_add
+#   16. memory_save
+#   17. chat            (AI fallback)
 # ================================================================
 
 MONTH_MAP = {
@@ -1130,7 +1131,20 @@ def parse_user_message(user_msg: str):
     now = now_ist()
 
     # ════════════════════════════════════════════════════════════
-    # 1. SHOW TASKS
+    # 1. SHOW REMINDERS — active reminders list dikhao
+    # ════════════════════════════════════════════════════════════
+    show_reminder_phrases = [
+        "reminder dikhao", "reminder dekho", "reminder list", "reminders dikhao",
+        "active reminder", "reminder show", "show reminder", "mera reminder",
+        "reminder batao", "reminder kya hai", "alarm dikhao", "alarm list",
+        "alarm show", "show alarm", "kitne reminder", "saare reminder",
+        "sare reminder", "reminder check",
+    ]
+    if any(p in lower for p in show_reminder_phrases):
+        return ("show_reminders", {})
+
+    # ════════════════════════════════════════════════════════════
+    # 2. SHOW TASKS
     # ════════════════════════════════════════════════════════════
     show_task_phrases = [
         "saare task", "sare task", "task list", "task dikhao", "task dekho",
@@ -1176,23 +1190,100 @@ def parse_user_message(user_msg: str):
 
     # ════════════════════════════════════════════════════════════
     # 5. REMINDER
+    # Handles:
+    #   - "30 min mein yaad dilana"
+    #   - "15:30 baje reminder"
+    #   - "10 baje yaad dilana"        ← sirf number + baje
+    #   - "kl subha 10 baje yaad dilana" ← kal + time
+    #   - "aaj raat 9 baje remind"
+    #   - "add reminder kal 10 baje"
     # ════════════════════════════════════════════════════════════
-    remind_words = ["remind", "reminder", "alarm", "yaad dilana", "bata dena",
-                    "yaad dila", "yaad dila do", "yaad kara"]
+    remind_words = [
+        "remind", "reminder", "alarm", "yaad dilana", "bata dena",
+        "yaad dila", "yaad dila do", "yaad kara", "add reminder",
+        "set reminder", "set alarm", "reminder set", "alarm set",
+        "yaad dilao", "yaad krao", "yaad kara do",
+    ]
     if any(w in lower for w in remind_words):
-        m = _re.search(r'(\d+)\s*(?:min|minute|m)\b', lower)
-        if m:
-            mins = int(m.group(1))
-            time_str = (now + timedelta(minutes=mins)).strftime("%H:%M")
-            text_clean = _re.sub(r'\d+\s*(?:min|minute|m)\b', '', user_msg)
-            text_clean = " ".join(w for w in text_clean.split() if w.lower() not in remind_words).strip()
-            return ("remind", {"time": time_str, "text": text_clean or "Reminder!"})
-        m = _re.search(r'(\d{1,2}):(\d{2})', lower)
-        if m:
-            time_str = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
-            text_clean = _re.sub(r'\d{1,2}:\d{2}', '', user_msg)
-            text_clean = " ".join(w for w in text_clean.split() if w.lower() not in remind_words).strip()
-            return ("remind", {"time": time_str, "text": text_clean or "Reminder!"})
+
+        # ── helper: parse time from text ──────────────────────────
+        def _parse_reminder_time(lwr):
+            """
+            Returns (time_str "HH:MM", is_tomorrow) or (None, False)
+            """
+            now_t = now_ist()
+
+            # 1. "30 min" / "15 minute"
+            mm = _re.search(r'(\d+)\s*(?:min(?:ute)?s?)\b', lwr)
+            if mm:
+                mins = int(mm.group(1))
+                t = now_t + timedelta(minutes=mins)
+                return t.strftime("%H:%M"), False
+
+            # 2. "15:30" explicit HH:MM
+            mm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
+            if mm:
+                h, mi = int(mm.group(1)), int(mm.group(2))
+                is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
+                return f"{h:02d}:{mi:02d}", is_tom
+
+            # 3. "10 baje" / "10 bajay" / "10 baj" — number alone with baje
+            mm = _re.search(r'(\d{1,2})\s*(?:baj[ae]?(?:y)?|am\b|pm\b|a\.m|p\.m)', lwr)
+            if mm:
+                h = int(mm.group(1))
+                # AM/PM detection
+                if _re.search(r'\b(?:pm|sham|shaam|raat|evening|night)\b', lwr):
+                    if h != 12:
+                        h += 12
+                    if h >= 24:
+                        h = h - 12
+                elif _re.search(r'\b(?:am|subha|subah|morning|dopahar)\b', lwr) and h == 12:
+                    h = 0
+                # default: 10 baje → if <6 assume PM (evening)
+                elif h < 6:
+                    h += 12
+                is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
+                return f"{h:02d}:00", is_tom
+
+            # 4. Time words without number
+            time_word_map = {
+                "subha": "08:00", "subah": "08:00", "morning": "08:00",
+                "dopahar": "13:00", "lunch": "13:00",
+                "shaam": "18:00", "sham": "18:00", "evening": "18:00",
+                "raat": "21:00", "night": "21:00",
+                "midnight": "00:00", "aadhi raat": "00:00",
+            }
+            for word, tstr in time_word_map.items():
+                if word in lwr:
+                    is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
+                    return tstr, is_tom
+
+            return None, False
+
+        time_str, is_tomorrow = _parse_reminder_time(lower)
+
+        if time_str:
+            # Clean text — remove time words, remind words, day words
+            stop_words = remind_words + [
+                "kal", "kl", "aaj", "tomorrow", "subha", "subah", "morning",
+                "shaam", "sham", "raat", "night", "evening", "dopahar",
+                "baje", "bajay", "baj", "pe", "par", "ko", "mein", "me",
+                "mujhe", "mujhko", "please", "plz", "zara", "jara",
+            ]
+            text_clean = lower
+            # Remove time patterns
+            text_clean = _re.sub(r'\d+\s*(?:min(?:ute)?s?)\b', '', text_clean)
+            text_clean = _re.sub(r'\d{1,2}:\d{2}', '', text_clean)
+            text_clean = _re.sub(r'\d{1,2}\s*(?:baj[ae]?(?:y)?|am\b|pm\b)', '', text_clean)
+            for sw in stop_words:
+                text_clean = _re.sub(r'\b' + _re.escape(sw) + r'\b', ' ', text_clean)
+            text_clean = " ".join(text_clean.split()).strip().title() or "Kaam"
+
+            # If tomorrow, note it in text
+            prefix = "🗓️ Kal: " if is_tomorrow else ""
+            return ("remind", {"time": time_str, "text": f"{prefix}{text_clean}", "tomorrow": is_tomorrow})
+
+        # Reminder word mila but time samajh nahi aaya → Gemini pe do
         return ("chat", {"text": user_msg})
 
     # ════════════════════════════════════════════════════════════
@@ -1389,6 +1480,22 @@ def parse_user_message(user_msg: str):
 # SHOW TASKS / HABITS / DIARY / CALENDAR helper responses
 # ================================================================
 
+async def _send_reminder_list(update: Update):
+    active = reminders.all_active()
+    if active:
+        lines = "\n".join(f"  ⏰ #{r['id']} {r['time']} — {r['text']}" for r in active)
+        await update.message.reply_text(
+            f"⏰ *Active Reminders ({len(active)}):*\n\n{lines}\n\n"
+            f"/delremind id — Delete karo\n/snooze5 id — Snooze 5 min\n/remind 30m Chai — Naya set karo",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "⏰ Koi active reminder nahi hai.\n\nInshAllah sab kaam ho gaye! 🌟\n\n"
+            "/remind 30m Chai — Naya set karo",
+            parse_mode="Markdown"
+        )
+
 async def _send_task_list(update: Update):
     pending = tasks.pending()
     if pending:
@@ -1473,7 +1580,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log.info(f"MSG: '{user_msg[:60]}' → {action_type} | {params}")
 
     # ── show lists ──────────────────────────────────────────────
-    if action_type == "show_tasks":
+    if action_type == "show_reminders":
+        await _send_reminder_list(update)
+
+    elif action_type == "show_tasks":
         await _send_task_list(update)
 
     elif action_type == "show_habits":
@@ -1489,8 +1599,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── reminder ────────────────────────────────────────────────
     elif action_type == "remind":
         r = reminders.add(update.effective_chat.id, params.get("text", "Reminder"), params.get("time", ""))
+        is_tom = params.get("tomorrow", False)
+        when_str = "Kal" if is_tom else "Aaj"
         await update.message.reply_text(
-            f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n🕐 {params.get('time')} baje: {params.get('text')}\n📌 ID #{r['id']}",
+            f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n"
+            f"🕐 {when_str} {params.get('time')} baje: {params.get('text')}\n"
+            f"📌 ID #{r['id']}",
             parse_mode="Markdown"
         )
 
