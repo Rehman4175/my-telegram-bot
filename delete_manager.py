@@ -697,6 +697,7 @@ def register_delete_handlers(app: Application):
             CallbackQueryHandler(del_callback_handler, pattern=r"^dm_cancel$"),
         ],
         allow_reentry=True,
+        per_message=False,   # Warning fix — explicitly set kiya
     )
 
     app.add_handler(conv)
