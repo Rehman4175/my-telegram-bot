@@ -3,6 +3,7 @@
 """
 Voice Note Handler for RK Bot
 Transcribes voice messages and processes them as text commands
+- FIXED: Better error handling for ffmpeg missing
 - FIXED: Voice notes now go to proper sheets (not diary)
 - FIXED: Removed transcription prompt instructions
 """
@@ -11,6 +12,7 @@ import logging
 import tempfile
 import os
 import re
+import subprocess
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
@@ -24,11 +26,32 @@ except ImportError:
     HAS_SPEECH_RECOGNITION = False
     log.warning("speech_recognition not installed! Voice notes won't work.")
 
+# Check if ffmpeg is available
+def check_ffmpeg():
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+HAS_FFMPEG = check_ffmpeg()
+if not HAS_FFMPEG:
+    log.warning("ffmpeg not installed! Voice notes won't work. Install with: sudo apt install ffmpeg")
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages - transcribe and process"""
     if not HAS_SPEECH_RECOGNITION:
         await update.message.reply_text(
-            "🎤 Voice note feature is not available right now. Please send text messages.",
+            "🎤 Voice note feature is not available. Please send text messages.\n\n"
+            "_(SpeechRecognition library not installed)_",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if not HAS_FFMPEG:
+        await update.message.reply_text(
+            "🎤 Voice note feature is not available. Please send text messages.\n\n"
+            "_(ffmpeg not installed on server)_",
             parse_mode="Markdown"
         )
         return
@@ -59,13 +82,24 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Convert ogg to wav for processing
         wav_path = tmp_path.replace('.ogg', '.wav')
         try:
-            import subprocess
-            subprocess.run(['ffmpeg', '-i', tmp_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', wav_path, '-y'], 
-                          capture_output=True, check=True)
-        except Exception as e:
-            log.error(f"FFmpeg conversion failed: {e}")
+            result = subprocess.run(
+                ['ffmpeg', '-i', tmp_path, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', wav_path, '-y'], 
+                capture_output=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            log.error(f"FFmpeg conversion failed: {e.stderr}")
             await processing_msg.edit_text(
-                "❌ *Voice note conversion failed!*\n\nPlease send text message instead.",
+                "❌ *Voice note conversion failed!*\n\n"
+                "Please send text message instead.",
+                parse_mode="Markdown"
+            )
+            os.unlink(tmp_path)
+            return
+        except FileNotFoundError:
+            log.error("FFmpeg not found in PATH")
+            await processing_msg.edit_text(
+                "❌ *ffmpeg not installed!*\n\n"
+                "Please send text message instead.",
                 parse_mode="Markdown"
             )
             os.unlink(tmp_path)
@@ -96,8 +130,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # FIX: Clean the transcribed text - remove any prompt instructions if present
-        # Some speech recognition might add extra text
+        # Clean the transcribed text - remove any prompt instructions if present
         text = text.strip()
         
         # Remove common prompt patterns if accidentally transcribed
@@ -114,12 +147,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = re.sub(pattern, '', text, flags=re.IGNORECASE)
         text = text.strip()
         
-        # Remove "Hello" if it's alone at start (common noise)
-        if text.lower().startswith('hello') and len(text) < 10:
-            # Try to get the actual message if Hello was just noise
-            # In this case, we'll keep as is but user can respeak
-            pass
-        
         if not text or len(text) < 2:
             await processing_msg.edit_text(
                 "🎤 *I couldn't hear clearly!*\n\n"
@@ -134,9 +161,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        # FIX: Process the transcribed text through the NLP parser
-        # Instead of directly calling handle_message with text,
-        # we need to ensure it goes to the right module (expense, task, reminder, etc.)
+        # Process the transcribed text through the NLP parser
         await _process_voice_command(update, context, text)
         
     except Exception as e:
@@ -314,4 +339,7 @@ async def _process_voice_command(update: Update, context: ContextTypes.DEFAULT_T
 def register_voice_handlers(app):
     """Register voice message handlers"""
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    log.info("Voice note handlers registered - FIXED: Proper routing to sheets")
+    if HAS_SPEECH_RECOGNITION and HAS_FFMPEG:
+        log.info("✅ Voice note handlers registered (with ffmpeg support)")
+    else:
+        log.warning("⚠️ Voice note handlers registered but missing dependencies")
