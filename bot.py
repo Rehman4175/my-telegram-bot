@@ -14,6 +14,11 @@ FIXES v2:
   - Diary SHOW commands fixed: "diary dikhao / show diary / diary dekho" → shows, does NOT add
   - Goals add working
   - Habits sheet sync fixed
+
+FIXES v3 (DELETE PASSWORD FIX):
+  - register_delete_handlers() ko sabse PEHLE register kiya
+  - ConversationHandler order fix — delete password ab properly capture hoga
+  - handle_message SABSE AAKHIR mein register hoga
 """
 
 import os, json, logging, time, asyncio, random
@@ -165,6 +170,12 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "💸 *Kharcha & Paani:*\n"
         "/kharcha 100 Chai — Expense add karo\n"
         "/water 250 — Water log karo\n\n"
+        "🗑️ *Delete Manager:*\n"
+        "/delete — Full delete menu\n"
+        "/nuke — Chat history delete\n"
+        "/delsheet — Sheet se ek row delete\n"
+        "/nukesheet — Ek poori sheet wipe\n"
+        "/nukeall — Sab kuch delete (nuclear option)\n\n"
         "📊 *Other:*\n"
         "/briefing — Daily summary\n"
         "/status — System status\n"
@@ -1031,25 +1042,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error stopping alarm!")
 
 # ================================================================
-# NATURAL LANGUAGE PARSER — FIXED VERSION
-# Priority order:
-#   1. show_reminders   (reminders list dikhao)
-#   2. show_tasks       (list dikhao)
-#   3. show_habits      (habits dikhao)
-#   4. show_diary       (diary dikhao) ← before diary_add
-#   5. show_calendar    (events dikhao)
-#   6. reminder         (set new reminder)
-#   7. habit_done
-#   8. habit_add
-#   9. calendar_add     (BEFORE task — has specific date patterns)
-#   10. bill_add
-#   11. diary_add       (only if explicit "diary mein likho / add" phrases)
-#   12. water
-#   13. expense
-#   14. task_complete
-#   15. task_add
-#   16. memory_save
-#   17. chat            (AI fallback)
+# NATURAL LANGUAGE PARSER
 # ================================================================
 
 MONTH_MAP = {
@@ -1124,15 +1117,10 @@ def _parse_date_from_text(text):
 
 
 def parse_user_message(user_msg: str):
-    """
-    Returns (action_type, params_dict)
-    """
     lower = user_msg.lower().strip()
     now = now_ist()
 
-    # ════════════════════════════════════════════════════════════
-    # 1. SHOW REMINDERS — active reminders list dikhao
-    # ════════════════════════════════════════════════════════════
+    # 1. SHOW REMINDERS
     show_reminder_phrases = [
         "reminder dikhao", "reminder dekho", "reminder list", "reminders dikhao",
         "active reminder", "reminder show", "show reminder", "mera reminder",
@@ -1143,9 +1131,7 @@ def parse_user_message(user_msg: str):
     if any(p in lower for p in show_reminder_phrases):
         return ("show_reminders", {})
 
-    # ════════════════════════════════════════════════════════════
     # 2. SHOW TASKS
-    # ════════════════════════════════════════════════════════════
     show_task_phrases = [
         "saare task", "sare task", "task list", "task dikhao", "task dekho",
         "task show", "show task", "pending task", "meri task", "tasks dikhao",
@@ -1154,9 +1140,7 @@ def parse_user_message(user_msg: str):
     if any(p in lower for p in show_task_phrases):
         return ("show_tasks", {})
 
-    # ════════════════════════════════════════════════════════════
-    # 2. SHOW HABITS
-    # ════════════════════════════════════════════════════════════
+    # 3. SHOW HABITS
     show_habit_phrases = [
         "saari habit", "sari habit", "habit list", "habit dikhao", "habit dekho",
         "habit show", "show habit", "meri habit", "habits dikhao", "habits dekho",
@@ -1165,10 +1149,7 @@ def parse_user_message(user_msg: str):
     if any(p in lower for p in show_habit_phrases):
         return ("show_habits", {})
 
-    # ════════════════════════════════════════════════════════════
-    # 3. SHOW DIARY  ← FIX 2: Must come BEFORE diary_add check
-    #    "diary dikhao", "show diary", "diary dekho", "diary padho" etc.
-    # ════════════════════════════════════════════════════════════
+    # 4. SHOW DIARY
     show_diary_phrases = [
         "diary dikhao", "diary dekho", "diary padho", "show diary",
         "diary show", "diary dekhao", "aaj ki diary", "meri diary",
@@ -1178,9 +1159,7 @@ def parse_user_message(user_msg: str):
     if any(p in lower for p in show_diary_phrases):
         return ("show_diary", {})
 
-    # ════════════════════════════════════════════════════════════
-    # 4. SHOW CALENDAR
-    # ════════════════════════════════════════════════════════════
+    # 5. SHOW CALENDAR
     show_cal_phrases = [
         "calendar dikhao", "events dikhao", "events dekho", "upcoming events",
         "aaj ka event", "cal dikhao", "schedule dikhao", "kya event",
@@ -1188,16 +1167,7 @@ def parse_user_message(user_msg: str):
     if any(p in lower for p in show_cal_phrases):
         return ("show_calendar", {})
 
-    # ════════════════════════════════════════════════════════════
-    # 5. REMINDER
-    # Handles:
-    #   - "30 min mein yaad dilana"
-    #   - "15:30 baje reminder"
-    #   - "10 baje yaad dilana"        ← sirf number + baje
-    #   - "kl subha 10 baje yaad dilana" ← kal + time
-    #   - "aaj raat 9 baje remind"
-    #   - "add reminder kal 10 baje"
-    # ════════════════════════════════════════════════════════════
+    # 6. REMINDER
     remind_words = [
         "remind", "reminder", "alarm", "yaad dilana", "bata dena",
         "yaad dila", "yaad dila do", "yaad kara", "add reminder",
@@ -1206,32 +1176,23 @@ def parse_user_message(user_msg: str):
     ]
     if any(w in lower for w in remind_words):
 
-        # ── helper: parse time from text ──────────────────────────
         def _parse_reminder_time(lwr):
-            """
-            Returns (time_str "HH:MM", is_tomorrow) or (None, False)
-            """
             now_t = now_ist()
-
-            # 1. "30 min" / "15 minute"
             mm = _re.search(r'(\d+)\s*(?:min(?:ute)?s?)\b', lwr)
             if mm:
                 mins = int(mm.group(1))
                 t = now_t + timedelta(minutes=mins)
                 return t.strftime("%H:%M"), False
 
-            # 2. "15:30" explicit HH:MM
             mm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
             if mm:
                 h, mi = int(mm.group(1)), int(mm.group(2))
                 is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
                 return f"{h:02d}:{mi:02d}", is_tom
 
-            # 3. "10 baje" / "10 bajay" / "10 baj" — number alone with baje
             mm = _re.search(r'(\d{1,2})\s*(?:baj[ae]?(?:y)?|am\b|pm\b|a\.m|p\.m)', lwr)
             if mm:
                 h = int(mm.group(1))
-                # AM/PM detection
                 if _re.search(r'\b(?:pm|sham|shaam|raat|evening|night)\b', lwr):
                     if h != 12:
                         h += 12
@@ -1239,13 +1200,11 @@ def parse_user_message(user_msg: str):
                         h = h - 12
                 elif _re.search(r'\b(?:am|subha|subah|morning|dopahar)\b', lwr) and h == 12:
                     h = 0
-                # default: 10 baje → if <6 assume PM (evening)
                 elif h < 6:
                     h += 12
                 is_tom = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
                 return f"{h:02d}:00", is_tom
 
-            # 4. Time words without number
             time_word_map = {
                 "subha": "08:00", "subah": "08:00", "morning": "08:00",
                 "dopahar": "13:00", "lunch": "13:00",
@@ -1263,7 +1222,6 @@ def parse_user_message(user_msg: str):
         time_str, is_tomorrow = _parse_reminder_time(lower)
 
         if time_str:
-            # Clean text — remove time words, remind words, day words
             stop_words = remind_words + [
                 "kal", "kl", "aaj", "tomorrow", "subha", "subah", "morning",
                 "shaam", "sham", "raat", "night", "evening", "dopahar",
@@ -1271,24 +1229,18 @@ def parse_user_message(user_msg: str):
                 "mujhe", "mujhko", "please", "plz", "zara", "jara",
             ]
             text_clean = lower
-            # Remove time patterns
             text_clean = _re.sub(r'\d+\s*(?:min(?:ute)?s?)\b', '', text_clean)
             text_clean = _re.sub(r'\d{1,2}:\d{2}', '', text_clean)
             text_clean = _re.sub(r'\d{1,2}\s*(?:baj[ae]?(?:y)?|am\b|pm\b)', '', text_clean)
             for sw in stop_words:
                 text_clean = _re.sub(r'\b' + _re.escape(sw) + r'\b', ' ', text_clean)
             text_clean = " ".join(text_clean.split()).strip().title() or "Kaam"
-
-            # If tomorrow, note it in text
             prefix = "🗓️ Kal: " if is_tomorrow else ""
             return ("remind", {"time": time_str, "text": f"{prefix}{text_clean}", "tomorrow": is_tomorrow})
 
-        # Reminder word mila but time samajh nahi aaya → Gemini pe do
         return ("chat", {"text": user_msg})
 
-    # ════════════════════════════════════════════════════════════
-    # 6. HABIT DONE
-    # ════════════════════════════════════════════════════════════
+    # 7. HABIT DONE
     habit_done_phrases = [
         "habit ho gayi", "habit ho gaya", "habit complete", "habit kar li",
         "habit kar liya", "habit done", "gym ho gaya", "gym kar liya",
@@ -1300,9 +1252,7 @@ def parse_user_message(user_msg: str):
         keyword = m.group(1) if m else lower[:40]
         return ("habit_done", {"keyword": keyword})
 
-    # ════════════════════════════════════════════════════════════
-    # 7. HABIT ADD
-    # ════════════════════════════════════════════════════════════
+    # 8. HABIT ADD
     habit_add_phrases = [
         "habit add", "add habit", "naya habit", "habit lagao", "habit bana",
         "habit start", "new habit", "habit banana",
@@ -1314,9 +1264,7 @@ def parse_user_message(user_msg: str):
         name = " ".join(name.split()).strip()
         return ("add_habit", {"name": name[:50] or "Habit"})
 
-    # ════════════════════════════════════════════════════════════
-    # 8. CALENDAR ADD (BEFORE generic task detection)
-    # ════════════════════════════════════════════════════════════
+    # 9. CALENDAR ADD
     cal_add_triggers = [
         "birthday", "bday", "b'day", "janamdin", "janmdin",
         "calendar add", "cal add", "event add", "add event",
@@ -1345,9 +1293,7 @@ def parse_user_message(user_msg: str):
             return ("add_calendar", {"title": title or "Event", "date": date_str, "type": event_type})
         return ("chat", {"text": user_msg})
 
-    # ════════════════════════════════════════════════════════════
-    # 9. BILL ADD
-    # ════════════════════════════════════════════════════════════
+    # 10. BILL ADD
     bill_add_triggers = [
         "bill add", "bill kro", "bill daal", "subscription add",
         "bill lagao", "bill likh", "add bill", "naya bill",
@@ -1371,11 +1317,7 @@ def parse_user_message(user_msg: str):
         name = " ".join(name.split()).strip() or "Bill"
         return ("add_bill", {"name": name, "amount": amount, "due_day": due_day})
 
-    # ════════════════════════════════════════════════════════════
-    # 10. DIARY ADD  ← FIX 2: Only EXPLICIT add phrases trigger add
-    #     "diary mein likho", "diary add", "diary save", "diary mein daalo"
-    #     Plain "diary" alone goes to AI/show, NOT add
-    # ════════════════════════════════════════════════════════════
+    # 11. DIARY ADD
     diary_add_phrases = [
         "diary mein likho", "diary me likho", "diary mein likh",
         "diary me likh", "diary add", "diary mein add", "diary me add",
@@ -1391,9 +1333,7 @@ def parse_user_message(user_msg: str):
         text = " ".join(text.split()).strip()
         return ("diary", {"text": text or user_msg})
 
-    # ════════════════════════════════════════════════════════════
-    # 11. WATER
-    # ════════════════════════════════════════════════════════════
+    # 12. WATER
     water_triggers = ["paani piya", "water piya", "water log", "paani liya", "water pi", "paani pi"]
     if any(w in lower for w in water_triggers):
         m = _re.search(r'(\d+)\s*(ml|glass|bottle)', lower)
@@ -1403,9 +1343,7 @@ def parse_user_message(user_msg: str):
             ml = val * 250 if "glass" in unit else val * 500 if "bottle" in unit else val
         return ("water", {"ml": ml})
 
-    # ════════════════════════════════════════════════════════════
-    # 12. EXPENSE
-    # ════════════════════════════════════════════════════════════
+    # 13. EXPENSE
     expense_words = [
         "kharcha", "kharch", "spent", "rupees", "rs", "kharch kiya",
         "laga diye", "lagaya", "laga", "khaya", "piya", "liya", "diye",
@@ -1419,9 +1357,7 @@ def parse_user_message(user_msg: str):
             desc = " ".join(w for w in desc.split() if w.lower() not in expense_words).strip()
             return ("expense", {"amount": amount, "desc": desc or "Expense"})
 
-    # ════════════════════════════════════════════════════════════
-    # 13. TASK COMPLETE
-    # ════════════════════════════════════════════════════════════
+    # 14. TASK COMPLETE
     task_done_phrases = [
         "task done", "kaam ho gaya", "kaam kar liya", "complete kar liya",
         "task complete", "ho gaya task", "kar liya task",
@@ -1431,9 +1367,7 @@ def parse_user_message(user_msg: str):
         hint = m.group(1) if m else lower[:30]
         return ("complete_task", {"hint": hint})
 
-    # ════════════════════════════════════════════════════════════
-    # 14. TASK ADD
-    # ════════════════════════════════════════════════════════════
+    # 15. TASK ADD
     task_add_words = [
         "task add", "add task", "naya task", "task lagao", "task likh",
         "task banana", "task karo", "new task",
@@ -1458,9 +1392,7 @@ def parse_user_message(user_msg: str):
         if title and len(title) > 1:
             return ("add_task", {"title": title[:80]})
 
-    # ════════════════════════════════════════════════════════════
-    # 15. MEMORY SAVE
-    # ════════════════════════════════════════════════════════════
+    # 16. MEMORY SAVE
     memory_triggers = ["memory mein", "memory me", "yaad rakhna", "note karo", "note kr",
                        "save karo", "save kr", "remember karo"]
     if any(t in lower for t in memory_triggers):
@@ -1470,14 +1402,12 @@ def parse_user_message(user_msg: str):
         text = " ".join(text.split()).strip()
         return ("memory_save", {"text": text or user_msg})
 
-    # ════════════════════════════════════════════════════════════
-    # 16. CHAT — AI fallback
-    # ════════════════════════════════════════════════════════════
+    # 17. AI CHAT FALLBACK
     return ("chat", {"text": user_msg})
 
 
 # ================================================================
-# SHOW TASKS / HABITS / DIARY / CALENDAR helper responses
+# SHOW HELPERS
 # ================================================================
 
 async def _send_reminder_list(update: Update):
@@ -1531,7 +1461,6 @@ async def _send_habit_list(update: Update):
         )
 
 async def _send_diary_today(update: Update):
-    """FIX 2: Show today's diary entries without password for NL commands"""
     entries = diary.get(today_str())
     if not entries:
         await update.message.reply_text(
@@ -1565,7 +1494,7 @@ async def _send_calendar_list(update: Update):
         )
 
 # ================================================================
-# MESSAGE HANDLER — main router
+# MESSAGE HANDLER
 # ================================================================
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1579,7 +1508,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action_type, params = parse_user_message(user_msg)
     log.info(f"MSG: '{user_msg[:60]}' → {action_type} | {params}")
 
-    # ── show lists ──────────────────────────────────────────────
     if action_type == "show_reminders":
         await _send_reminder_list(update)
 
@@ -1590,13 +1518,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send_habit_list(update)
 
     elif action_type == "show_diary":
-        # FIX 2: show diary directly (no password for NL show command)
         await _send_diary_today(update)
 
     elif action_type == "show_calendar":
         await _send_calendar_list(update)
 
-    # ── reminder ────────────────────────────────────────────────
     elif action_type == "remind":
         r = reminders.add(update.effective_chat.id, params.get("text", "Reminder"), params.get("time", ""))
         is_tom = params.get("tomorrow", False)
@@ -1608,7 +1534,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # ── task ────────────────────────────────────────────────────
     elif action_type == "add_task":
         t = tasks.add(params.get("title", ""))
         await update.message.reply_text(
@@ -1629,7 +1554,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❓ Kaunsa task? ID ya naam batao")
 
-    # ── expense ─────────────────────────────────────────────────
     elif action_type == "expense":
         expenses.add(params.get("amount", 0), params.get("desc", ""))
         await update.message.reply_text(
@@ -1637,7 +1561,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # ── diary add ───────────────────────────────────────────────
     elif action_type == "diary":
         diary.add(params.get("text", ""))
         await update.message.reply_text(
@@ -1645,7 +1568,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # ── habit ───────────────────────────────────────────────────
     elif action_type == "add_habit":
         h = habits.add(params.get("name", ""))
         await update.message.reply_text(
@@ -1671,7 +1593,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "❓ Kaunsa habit? /habit se list dekho aur /hdone id se log karo"
             )
 
-    # ── calendar ────────────────────────────────────────────────
     elif action_type == "add_calendar":
         title   = params.get("title", "Event")
         ev_date = params.get("date", today_str())
@@ -1688,7 +1609,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                    f"✅ Ek din pehle remind karunga InshAllah!\n📊 Sheets mein save!")
         await update.message.reply_text(msg, parse_mode="Markdown")
 
-    # ── bill ────────────────────────────────────────────────────
     elif action_type == "add_bill":
         name    = params.get("name", "Bill")
         amount  = params.get("amount", 0)
@@ -1701,7 +1621,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # ── water ───────────────────────────────────────────────────
     elif action_type == "water":
         total = water.add(params.get("ml", 250))
         goal = water.goal()
@@ -1711,7 +1630,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # ── memory save ─────────────────────────────────────────────
     elif action_type == "memory_save":
         text = params.get("text", "")
         try:
@@ -1727,7 +1645,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
-    # ── AI chat fallback ─────────────────────────────────────────
     else:
         prompt = build_system_prompt() + f"\n\nUser: {user_msg}\n\nShort Hinglish reply (2-3 lines), Muslim phrases zaroor use karo:"
         reply = call_gemini(prompt)
@@ -1739,12 +1656,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_hist.add("assistant", "Reply sent", "Rk")
 
 # ================================================================
-# MAIN
+# MAIN — FIXED HANDLER REGISTRATION ORDER
 # ================================================================
 
 def main():
     log.info("=" * 60)
-    log.info("Personal AI Bot — Rk | FIXED NLP v2 | Diary Show Fix | Goals+Habits Sync | Miscellaneous Tab")
+    log.info("Personal AI Bot — Rk | FIXED v3 | Delete Password Fix")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1752,6 +1669,13 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # ✅ FIX: Delete Manager SABSE PEHLE register karo
+    # Yeh ConversationHandler hai — iska state machine pehle active hona chahiye
+    # taaki password message capture ho sake, handle_message() mein na jaye
+    from delete_manager import register_delete_handlers
+    register_delete_handlers(app)
+
+    # Diary ConversationHandler — delete ke baad
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("diary", cmd_diary_entry)],
         states={
@@ -1759,8 +1683,12 @@ def main():
             DIARY_AWAIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, diary_text_input)],
         },
         fallbacks=[CommandHandler("cancel", diary_cancel)],
+        per_user=True,
+        per_chat=True,
+        per_message=False,
     ))
 
+    # Regular commands
     commands = [
         ("start",      cmd_start),
         ("help",       cmd_help),
@@ -1794,12 +1722,14 @@ def main():
     for cmd, handler in commands:
         app.add_handler(CommandHandler(cmd, handler))
 
-    app.add_handler(CallbackQueryHandler(handle_ok_button))
+    # Callback query handler (OK button for alarms)
+    app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
+
+    # ✅ FIX: General message handler SABSE AAKHIR MEIN
+    # Agar pehle register hoga toh ConversationHandler ka password
+    # message intercept kar lega
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    from delete_manager import register_delete_handlers
-    register_delete_handlers(app)
-  
+
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("Reminder job scheduled (every 60s)")
