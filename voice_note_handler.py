@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-VOICE NOTE HANDLER — HINGLISH OUTPUT FIXED
+VOICE NOTE HANDLER — Only Gemini (Best for Hinglish)
 """
 
 import os
@@ -30,19 +30,15 @@ except ImportError:
     _SDM_AVAILABLE = False
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-HF_API_KEY = os.environ.get("HUGGINGFACE_API_KEY", "")
-
-GEMINI_AUDIO_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={key}"
-GROQ_WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={key}"
 
 _last_call = 0
 
 def _rate_limit():
     global _last_call
     elapsed = time.time() - _last_call
-    if elapsed < 1:
-        time.sleep(1 - elapsed)
+    if elapsed < 2:
+        time.sleep(2 - elapsed)
     _last_call = time.time()
 
 # ================================================================
@@ -52,7 +48,7 @@ def _rate_limit():
 class VoiceNoteStore:
     TAB_KEY = "VoiceNotes"
     TAB_NAME = "Voice Notes"
-    HEADERS = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status", "Method"]
+    HEADERS = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status"]
 
     def __init__(self):
         if not _SDM_AVAILABLE:
@@ -92,7 +88,7 @@ class VoiceNoteStore:
         except Exception as e:
             log.warning(f"Sheet append error: {e}")
 
-    def add(self, transcript: str, saved_to: str = "diary", duration: int = 0, status: str = "Success", method: str = "unknown"):
+    def add(self, transcript: str, saved_to: str = "diary", duration: int = 0, status: str = "Success"):
         if not _SDM_AVAILABLE:
             return None
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
@@ -105,12 +101,11 @@ class VoiceNoteStore:
             "saved_to": saved_to,
             "duration": duration,
             "status": status,
-            "method": method,
         }
         self.store.data["list"].append(entry)
         self.store.data["list"] = self.store.data["list"][-500:]
         self.store.save()
-        self._append_to_sheet([vid, today_str(), now_str(), transcript[:500], saved_to, duration, status, method])
+        self._append_to_sheet([vid, today_str(), now_str(), transcript[:500], saved_to, duration, status])
         return entry
 
     def get_recent(self, n: int = 10):
@@ -122,78 +117,37 @@ else:
     voice_store = None
 
 # ================================================================
-# HINGLISH TRANSCRIPTION - FIXED PROMPTS
+# GEMINI TRANSCRIPTION - BEST FOR HINGLISH
 # ================================================================
 
-async def transcribe_with_groq(audio_bytes: bytes) -> Optional[str]:
-    """Groq Whisper API - Hinglish output"""
-    if not GROQ_API_KEY:
-        return None
-    
-    try:
-        import aiohttp
-        
-        data = aiohttp.FormData()
-        data.add_field('file', audio_bytes, filename='audio.ogg', content_type='audio/ogg')
-        data.add_field('model', 'whisper-large-v3')
-        data.add_field('response_format', 'json')
-        data.add_field('language', 'hi')
-        # FIXED: Hinglish prompt
-        data.add_field('prompt', 'Hinglish only: Hindi words written in English alphabet. Example: "mujhe aaj office jaana hai" not Devanagari. Numbers as digits.')
-        
-        headers = {'Authorization': f'Bearer {GROQ_API_KEY}'}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_WHISPER_URL, headers=headers, data=data, timeout=30) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    text = result.get('text', '')
-                    if text:
-                        # Convert any Devanagari to Hinglish approximation
-                        text = _devanagari_to_hinglish(text)
-                        log.info(f"Groq: {len(text)} chars")
-                        return text.strip()
-                else:
-                    error_text = await resp.text()
-                    log.error(f"Groq error {resp.status}: {error_text[:200]}")
-    except ImportError:
-        log.error("aiohttp not installed")
-    except Exception as e:
-        log.error(f"Groq error: {e}")
-    return None
-
-async def transcribe_with_gemini(audio_bytes: bytes) -> Optional[str]:
-    """Gemini - Hinglish output"""
+async def transcribe_audio(audio_bytes: bytes) -> Optional[str]:
+    """Transcribe audio using Gemini 1.5 Pro - Best for Hinglish"""
     if not GEMINI_API_KEY:
+        log.error("GEMINI_API_KEY not set")
         return None
-    
+
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
     
-    # FIXED: Force Hinglish output
-    instruction = """CRITICAL INSTRUCTION: You MUST write the transcript in HINGLISH only.
+    # Detailed Hinglish instruction
+    instruction = """Tu ek Hinglish transcription expert hai. Jo bole maine woh Hinglish mein likh.
 
-HINGLISH = Hindi words written using English/Roman alphabet (A-Z).
-DO NOT use Devanagari script (देवनागरी).
-DO NOT translate to English.
+Hinglish kya hai? Hindi words ko English alphabet mein likhna. Jaise main abhi type kar raha hoon.
 
-Examples of CORRECT Hinglish:
-- "mujhe kal meeting mein jaana hai 10 baje"
+Examples of Hinglish (EXACTLY aise likhna):
+- "mujhe kal subah 10 baje office jaana hai"
 - "aaj mausam bahut accha hai"
-- "500 rupees kharcha kiya movie pe"
+- "500 rupees kharcha kiya movie dekhne mein"
 - "yaad rakhna milk lena hai"
-
-Examples of WRONG (DO NOT DO THIS):
-- "मुझे कल मीटिंग में जाना है" (This is Devanagari - WRONG)
-- "I have to go to meeting tomorrow" (This is English - WRONG)
+- "kal meeting hai 3 baje"
 
 Rules:
-- Use only English alphabet letters
-- Hindi words as they sound in English
-- Numbers as digits
-- No punctuation unless necessary
-- Just write exactly what was said in Hinglish
+1. JO BOLA WOHI LIKH - translate mat karo English mein
+2. Devanagari script (हिन्दी) mat likhna - sirf English alphabet use karo
+3. Numbers digits mein likho: 10, 100, 500
+4. Hinglish mein likho jaisa main bol raha hoon
+5. Koi extra word mat likhna - sirf transcript
 
-Now transcribe this voice message in HINGLISH only:"""
+Ab jo voice message bola hai woh Hinglish mein likh:"""
 
     payload = {
         "contents": [{
@@ -203,13 +157,13 @@ Now transcribe this voice message in HINGLISH only:"""
             ]
         }],
         "generationConfig": {
-            "temperature": 0.1,
+            "temperature": 0.2,
             "maxOutputTokens": 500
         }
     }
     
     _rate_limit()
-    url = GEMINI_AUDIO_URL.format(key=GEMINI_API_KEY)
+    url = GEMINI_URL.format(key=GEMINI_API_KEY)
     
     try:
         req = urllib.request.Request(
@@ -217,102 +171,87 @@ Now transcribe this voice message in HINGLISH only:"""
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=45) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             result = json.loads(resp.read().decode())
+            
             candidates = result.get("candidates", [])
             if not candidates:
+                log.error(f"No candidates: {result}")
                 return None
+            
             parts = candidates[0].get("content", {}).get("parts", [])
             if not parts:
+                log.error(f"No parts in response")
                 return None
+            
             text = parts[0].get("text", "").strip()
-            if text:
-                text = re.sub(r'\*+', '', text)
-                text = re.sub(r'\n+', ' ', text)
-                # Convert any Devanagari to Hinglish
-                text = _devanagari_to_hinglish(text)
-                log.info(f"Gemini: {len(text)} chars")
-                return text
+            if not text:
+                log.error("Empty text from Gemini")
+                return None
+            
+            # Cleanup
+            text = re.sub(r'\*+', '', text)
+            text = re.sub(r'\n+', ' ', text)
+            text = re.sub(r'\[.*?\]', '', text)
+            text = re.sub(r'\(.*?\)', '', text)
+            
+            # Remove any "Transcription:" prefix
+            text = re.sub(r'^(transcription|hinglish|text|output)[:\s]*', '', text, flags=re.IGNORECASE)
+            
+            log.info(f"Transcription: {text[:100]}...")
+            return text.strip()
+            
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if hasattr(e, 'read') else ''
+        log.error(f"Gemini HTTP {e.code}: {error_body[:300]}")
+        return None
     except Exception as e:
         log.error(f"Gemini error: {e}")
-    return None
-
-def _devanagari_to_hinglish(text: str) -> str:
-    """Convert Devanagari script to Hinglish approximation"""
-    # Common Devanagari to Roman mapping
-    mapping = {
-        'अ': 'a', 'आ': 'aa', 'इ': 'i', 'ई': 'ee', 'उ': 'u', 'ऊ': 'oo',
-        'ए': 'e', 'ऐ': 'ai', 'ओ': 'o', 'औ': 'au', 'अं': 'am', 'अः': 'ah',
-        'क': 'k', 'ख': 'kh', 'ग': 'g', 'घ': 'gh', 'ङ': 'ng',
-        'च': 'ch', 'छ': 'chh', 'ज': 'j', 'झ': 'jh', 'ञ': 'ny',
-        'ट': 't', 'ठ': 'th', 'ड': 'd', 'ढ': 'dh', 'ण': 'n',
-        'त': 't', 'थ': 'th', 'द': 'd', 'ध': 'dh', 'न': 'n',
-        'प': 'p', 'फ': 'ph', 'ब': 'b', 'भ': 'bh', 'म': 'm',
-        'य': 'y', 'र': 'r', 'ल': 'l', 'व': 'v', 'श': 'sh', 'ष': 'sh', 'स': 's', 'ह': 'h',
-        'क्ष': 'ksh', 'त्र': 'tr', 'ज्ञ': 'gy',
-        'ा': 'aa', 'ि': 'i', 'ी': 'ee', 'ु': 'u', 'ू': 'oo',
-        'े': 'e', 'ै': 'ai', 'ो': 'o', 'ौ': 'au', '्': '',
-        'ं': 'm', 'ः': 'h', '़': '', 'ॉ': 'o', 'ॅ': 'e',
-        '०': '0', '१': '1', '२': '2', '३': '3', '४': '4',
-        '५': '5', '६': '6', '७': '7', '८': '8', '९': '9',
-    }
-    
-    result = []
-    i = 0
-    while i < len(text):
-        # Check for multi-character sequences first
-        if i+1 < len(text) and text[i:i+2] in mapping:
-            result.append(mapping[text[i:i+2]])
-            i += 2
-        elif text[i] in mapping:
-            result.append(mapping[text[i]])
-            i += 1
-        else:
-            result.append(text[i])
-            i += 1
-    
-    return ''.join(result)
+        return None
 
 # ================================================================
-# CLASSIFICATION
+# BETTER CLASSIFICATION
 # ================================================================
 
 def _classify_transcript(text: str) -> str:
-    """Classify transcript into task/expense/memory/diary"""
+    """Classify transcript into task/expense/memory/diary with Hinglish support"""
     lower = text.lower()
     
-    # Expense keywords
-    expense_keywords = [
-        'kharcha', 'karcha', 'kharch', 'expense', 'laga', 'lagaya', 
-        'diye', 'paisa', 'paise', 'rupees', 'rs', 'spent', 'uda diye',
-        'movie', 'film', 'shopping', 'petrol', 'diesel', 'bill', 'chai', 'coffee', 'khana'
+    # Expense indicators
+    expense_indicators = [
+        'kharcha', 'karcha', 'kharch', 'laga', 'lagaya', 'diye', 'paisa', 'paise',
+        'rupees', 'rs', 'spent', 'khareeda', 'kharida', 'movie', 'film', 'shopping',
+        'petrol', 'diesel', 'bill', 'chai', 'coffee', 'khana', 'food', 'lunch', 'dinner'
     ]
     
-    # Task keywords
-    task_keywords = [
-        'karna hai', 'krna hai', 'karna he', 'todo', 'task', 'kaam',
-        'meeting', 'call', 'phone', 'remind', 'yaad dilana', 'bata dena',
-        'jana hai', 'jaana hai', 'aana hai', 'lana hai', 'dena hai'
+    # Task indicators  
+    task_indicators = [
+        'karna hai', 'krna hai', 'karna he', 'kaam', 'task', 'meeting', 'call',
+        'phone', 'remind', 'yaad dilana', 'bata dena', 'jana hai', 'jaana hai',
+        'aana hai', 'lana hai', 'dena hai', 'submit', 'send', 'buy', 'order'
     ]
     
-    # Memory keywords
-    memory_keywords = [
+    # Memory indicators
+    memory_indicators = [
         'yaad rakhna', 'remember', 'memory', 'note karo', 'yaad karo',
-        'bhoolna mat', 'important', 'zaroori'
+        'bhoolna mat', 'important', 'zaroori', 'yaad rakh'
     ]
     
     has_number = bool(re.search(r'\d+', text))
     
-    expense_score = sum(1 for kw in expense_keywords if kw in lower)
-    task_score = sum(1 for kw in task_keywords if kw in lower)
-    memory_score = sum(1 for kw in memory_keywords if kw in lower)
+    expense_score = sum(1 for w in expense_indicators if w in lower)
+    task_score = sum(1 for w in task_indicators if w in lower)
+    memory_score = sum(1 for w in memory_indicators if w in lower)
     
-    if has_number:
+    # Boost expense if number present
+    if has_number and expense_score > 0:
         expense_score += 2
     
-    if expense_score >= 2 and has_number:
+    log.info(f"Scores - E:{expense_score} T:{task_score} M:{memory_score} | Text: {text[:50]}")
+    
+    if expense_score >= 1 and has_number:
         return "expense"
-    elif expense_score >= 1 and has_number:
+    elif expense_score >= 2:
         return "expense"
     elif task_score >= 1:
         return "task"
@@ -337,7 +276,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     duration = getattr(voice, "duration", 0) or 0
     
     status_msg = await update.message.reply_text(
-        f"🎙️ Voice note ({duration}s)\n\n🔄 Processing...",
+        f"🎙️ *Voice note sun raha hoon...* ({duration}s)\n\n⏳ Processing...",
         parse_mode="Markdown"
     )
 
@@ -352,35 +291,27 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Download failed: {str(e)[:100]}")
         return
 
-    if len(audio_bytes) < 1000:
-        await status_msg.edit_text("❌ Audio too short!")
+    if len(audio_bytes) < 5000:
+        await status_msg.edit_text("❌ Audio bahut chhota hai! Thoda der bolo.")
         return
 
-    # Transcribe
-    transcript = None
-    method_used = "none"
+    # Transcribe with Gemini
+    await status_msg.edit_text(f"🎙️ *Voice note ({duration}s)*\n\n🤖 Hinglish mein likh raha hoon...", parse_mode="Markdown")
     
-    if GROQ_API_KEY:
-        await status_msg.edit_text(f"🎙️ Transcribing with Groq...", parse_mode="Markdown")
-        transcript = await transcribe_with_groq(audio_bytes)
-        if transcript:
-            method_used = "Groq"
-    
-    if not transcript and GEMINI_API_KEY:
-        await status_msg.edit_text(f"🎙️ Trying Gemini...", parse_mode="Markdown")
-        transcript = await transcribe_with_gemini(audio_bytes)
-        if transcript:
-            method_used = "Gemini"
+    transcript = await transcribe_audio(audio_bytes)
 
     if not transcript:
         await status_msg.edit_text(
-            "❌ Transcription failed!\n\n"
-            "Add GROQ_API_KEY to secrets for best results.\n"
-            "Get free key: https://console.groq.com",
+            "❌ *Smajh nahi aaya!* 😅\n\n"
+            "Possible reasons:\n"
+            "• Thoda clear bolo\n"
+            "• Background noise hai\n"
+            "• Bahut short hai\n\n"
+            "Dobara try karo! 🎙️",
             parse_mode="Markdown"
         )
         if voice_store:
-            voice_store.add("[Failed]", "none", duration, "Failed", "none")
+            voice_store.add("[Failed]", "none", duration, "Failed")
         return
 
     # Classify and save
@@ -389,51 +320,83 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     extra_info = ""
     user_name = update.effective_user.first_name or "User"
 
+    log.info(f"Category: {category} | Transcript: {transcript[:100]}")
+
     if category == "task":
-        task_text = transcript[:100]
+        # Clean task text
+        task_text = transcript
+        remove = ['karna hai', 'krna hai', 'task', 'kaam', 'karo', 'add']
+        for r in remove:
+            task_text = re.sub(r'\b' + re.escape(r) + r'\b', '', task_text, flags=re.IGNORECASE)
+        task_text = re.sub(r'\s+', ' ', task_text).strip()
+        if not task_text or len(task_text) < 3:
+            task_text = transcript[:80]
+        
         t = tasks.add(task_text)
         saved_to = f"task #{t['id']}"
-        extra_info = f"✅ Task #{t['id']} added: {task_text[:50]}"
-        
+        extra_info = f"✅ Task #{t['id']} add kar diya!\n📌 *{task_text[:60]}*"
+
     elif category == "expense":
         amount_match = re.search(r'(\d+(?:\.\d+)?)', transcript)
         if amount_match:
             amount = float(amount_match.group(1))
-            desc = re.sub(r'\d+(?:\.\d+)?', '', transcript).strip()[:80] or "Expense"
-            expenses.add(amount, desc)
+            desc = transcript
+            desc = re.sub(r'\d+(?:\.\d+)?', '', desc)
+            remove = ['kharcha', 'karcha', 'laga', 'lagaya', 'diye', 'paisa', 'rupees', 'rs']
+            for r in remove:
+                desc = re.sub(r'\b' + re.escape(r) + r'\b', '', desc, flags=re.IGNORECASE)
+            desc = re.sub(r'\s+', ' ', desc).strip()
+            if not desc:
+                desc = "Expense"
+            
+            expenses.add(amount, desc[:100])
             saved_to = "expenses"
-            extra_info = f"💸 Rs.{amount} expense added: {desc[:40]}"
+            extra_info = f"💸 Rs.{amount} kharcha add kar diya!\n📝 *{desc[:50]}*"
         else:
             diary.add(f"[Voice] {transcript}")
             saved_to = "diary"
-            extra_info = f"📖 Saved to diary (no amount found)"
-            
+            extra_info = f"📖 Diary mein save kiya (amount nahi mila)"
+
     elif category == "memory":
-        memory.add(transcript[:200])
-        saved_to = "memory"
-        extra_info = f"🧠 Saved to memory: {transcript[:50]}"
+        memory_text = transcript
+        remove = ['yaad rakhna', 'remember', 'memory', 'note karo', 'yaad karo']
+        for r in remove:
+            memory_text = re.sub(r'\b' + re.escape(r) + r'\b', '', memory_text, flags=re.IGNORECASE)
+        memory_text = re.sub(r'\s+', ' ', memory_text).strip()
+        if not memory_text:
+            memory_text = transcript[:100]
         
-    else:
+        memory.add(memory_text)
+        saved_to = "memory"
+        extra_info = f"🧠 Memory mein save kar liya!\n📝 *{memory_text[:60]}*"
+
+    else:  # diary
         diary.add(f"[Voice] {transcript}")
         saved_to = "diary"
-        extra_info = f"📖 Saved to diary: {transcript[:60]}"
+        extra_info = f"📖 Diary mein save kar diya!\n📝 *{transcript[:70]}*"
 
     if voice_store:
-        voice_store.add(transcript, saved_to, duration, "Success", method_used)
+        voice_store.add(transcript, saved_to, duration, "Success")
 
-    response = f"""🎙️ *Voice Done!*
+    # Send response
+    response = f"""🎙️ *Ho gaya!* ✅
 
-🤖 {method_used}
-⏱ {duration}s
-
-📝 *Heard:*
+⏱ *Duration:* {duration}s
+📝 *Tumne kaha:*
 _{transcript[:400]}_ 
 
 💾 {extra_info}
 
-📋 /voicenotes - All voice notes"""
-
+📋 /voicenotes - Purane voice notes"""
+    
+    if len(transcript) > 400:
+        response += f"\n\n*(... {len(transcript)-400} aur words)*"
+    
     await status_msg.edit_text(response, parse_mode="Markdown")
+
+# ================================================================
+# COMMAND: /voicenotes
+# ================================================================
 
 async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not voice_store:
@@ -442,15 +405,24 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     recent = voice_store.get_recent(10)
     if not recent:
-        await update.message.reply_text("🎙️ No voice notes yet!\n\nSend me a voice message!")
+        await update.message.reply_text(
+            "🎙️ *Abhi tak koi voice note nahi hai!*\n\n"
+            "Mujhe voice message bhejo - main sununga aur Hinglish mein likhunga!\n\n"
+            "Example:\n"
+            "• \"500 rupees kharcha kiya movie pe\" → Expenses mein jayega\n"
+            "• \"Kal meeting hai 10 baje\" → Tasks mein jayega\n"
+            "• \"Yaad rakhna milk lena hai\" → Memory mein jayega",
+            parse_mode="Markdown"
+        )
         return
 
     lines = []
-    for v in reversed(recent):
+    for v in reversed(recent[-10:]):
+        emoji = "✅" if v.get('status') == "Success" else "❌"
         lines.append(
-            f"#{v['id']} {v['date']} {v['time']}\n"
-            f"   💾 {v['saved_to']} | {v.get('method', 'unknown')}\n"
-            f"   _{v['transcript'][:80]}_"
+            f"{emoji} *#{v['id']}* {v['date']} {v['time']}\n"
+            f"   💾 *{v['saved_to']}* | ⏱ {v.get('duration', 0)}s\n"
+            f"   📝 _{v['transcript'][:100]}_"
         )
 
     await update.message.reply_text(
@@ -458,7 +430,11 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# ================================================================
+# REGISTER
+# ================================================================
+
 def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
-    log.info("✅ Voice handlers registered (Hinglish output)")
+    log.info("✅ Voice Note handlers registered (Gemini 1.5 Pro - Hinglish mode)")
