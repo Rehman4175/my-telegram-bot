@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIX: gemini-1.5-pro → gemini-1.5-flash (Pro audio support nahi karta!)
-     Exact Gemini error Telegram mein dikhega
+FIX: gemini-2.5-flash, retry on 503, correct debug labels
 """
 
 import os
@@ -33,7 +32,6 @@ except ImportError:
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# ✅ FLASH use karo — PRO audio transcription support NAHI karta!
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
 
 _last_call = 0
@@ -134,7 +132,7 @@ async def transcribe_audio(audio_bytes: bytes) -> tuple:
     if not audio_bytes or len(audio_bytes) < 1000:
         return None, f"Audio too small: {len(audio_bytes) if audio_bytes else 0} bytes"
 
-    log.info(f"Sending to Gemini Flash: {len(audio_bytes)} bytes")
+    log.info(f"Sending to Gemini 2.5 Flash: {len(audio_bytes)} bytes")
 
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
@@ -156,36 +154,51 @@ Numbers in digits: 10, 100, 500."""
 
     _rate_limit()
 
-    try:
-        req = urllib.request.Request(
-            GEMINI_URL.format(key=GEMINI_API_KEY),
-            data=payload,
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+    # ── Retry loop (503 handle karne ke liye) ────────────────────
+    last_error = None
+    result = None
 
-    except urllib.error.HTTPError as e:
-        # ── Exact Gemini error nikalo ────────────────────────────
+    for attempt in range(3):
         try:
-            body = e.read().decode("utf-8", errors="ignore")
-            err_json = json.loads(body)
-            gemini_msg = err_json.get("error", {}).get("message", body[:200])
-        except Exception:
-            gemini_msg = f"HTTP {e.code}"
-        return None, f"Gemini HTTP {e.code}: {gemini_msg}"
+            req = urllib.request.Request(
+                GEMINI_URL.format(key=GEMINI_API_KEY),
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            break  # success — loop se niklo
 
-    except urllib.error.URLError as e:
-        return None, f"Network error: {e.reason}"
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", errors="ignore")
+                err_json = json.loads(body)
+                gemini_msg = err_json.get("error", {}).get("message", body[:200])
+            except Exception:
+                gemini_msg = f"HTTP {e.code}"
+            last_error = f"Gemini HTTP {e.code}: {gemini_msg}"
 
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+            if e.code == 503 and attempt < 2:
+                wait = 4 * (attempt + 1)  # 4s, 8s
+                log.warning(f"503 overloaded, retry {attempt+1}/3 after {wait}s...")
+                time.sleep(wait)
+                continue
+            return None, last_error
+
+        except urllib.error.URLError as e:
+            return None, f"Network error: {e.reason}"
+
+        except Exception as e:
+            return None, f"{type(e).__name__}: {e}"
+
+    if result is None:
+        return None, last_error
 
     # ── Parse response ───────────────────────────────────────────
     candidates = result.get("candidates", [])
     if not candidates:
-        feedback   = result.get("promptFeedback", {})
-        block      = feedback.get("blockReason", "")
+        feedback = result.get("promptFeedback", {})
+        block    = feedback.get("blockReason", "")
         return None, f"No candidates. Block reason: '{block}'. Response: {str(result)[:200]}"
 
     finish = candidates[0].get("finishReason", "")
@@ -230,7 +243,7 @@ def _classify_transcript(text: str) -> str:
         'bhoolna mat', 'important', 'zaroori', 'yaad rakh'
     ]
 
-    has_number  = bool(re.search(r'\d+', text))
+    has_number = bool(re.search(r'\d+', text))
     e_score = sum(1 for w in expense_kw if w in lower)
     t_score = sum(1 for w in task_kw    if w in lower)
     m_score = sum(1 for w in memory_kw  if w in lower)
@@ -277,20 +290,20 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Transcribe
     await status_msg.edit_text(
-        f"🎙️ *Voice note* ({duration}s, {len(audio_bytes)//1024}KB)\n\n🤖 Gemini Flash transcribe kar raha hai...",
+        f"🎙️ *Voice note* ({duration}s, {len(audio_bytes)//1024}KB)\n\n🤖 Gemini 2.5 Flash transcribe kar raha hai...",
         parse_mode="Markdown"
     )
 
     transcript, error = await transcribe_audio(audio_bytes)
 
-    # ── FAILURE: exact error dikhao ──────────────────────────────
+    # ── FAILURE ──────────────────────────────────────────────────
     if not transcript:
         await status_msg.edit_text(
             f"❌ *Transcription fail!*\n\n"
             f"*Error:*\n`{error}`\n\n"
             f"*Debug:*\n"
             f"• API key: `{'SET ✅' if GEMINI_API_KEY else 'MISSING ❌'}`\n"
-            f"• Model: `gemini-1.5-flash`\n"
+            f"• Model: `gemini-2.5-flash`\n"
             f"• Audio: `{len(audio_bytes)} bytes`\n"
             f"• Duration: `{duration}s`",
             parse_mode="Markdown"
@@ -394,4 +407,4 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
-    log.info("✅ Voice handlers registered — model: gemini-1.5-flash")
+    log.info("✅ Voice handlers registered — model: gemini-2.5-flash")
