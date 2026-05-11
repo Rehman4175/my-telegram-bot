@@ -3,6 +3,7 @@
 """
 VOICE NOTE HANDLER — Rk Bot
 FIX: gemini-2.5-flash, retry on 503, correct debug labels
+ENHANCED: Multi-category support (expense, reminder, habit, water, task, memory, bill, calendar)
 """
 
 import os
@@ -13,7 +14,8 @@ import urllib.request
 import urllib.error
 import re
 import base64
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
+from datetime import datetime, timedelta
 
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, CommandHandler, filters
@@ -44,12 +46,324 @@ def _rate_limit():
     _last_call = time.time()
 
 # ================================================================
+# ENHANCED STORES (Reminders, Habits, Water, Bills, Calendar)
+# ================================================================
+
+class ReminderStore:
+    TAB_NAME = "Reminders"
+    HEADERS = ["ID", "Created Date", "Created Time", "Text", "Due Time", "Status", "Completed At"]
+    
+    def __init__(self):
+        if not _SDM_AVAILABLE:
+            return
+        self.store = PrivateStore("reminders", {"list": [], "counter": 0})
+        self._ensure_sheet_tab()
+    
+    def _ensure_sheet_tab(self):
+        try:
+            if not sheets_backup._book:
+                return
+            existing = [ws.title for ws in sheets_backup._book.worksheets()]
+            if self.TAB_NAME not in existing:
+                ws = sheets_backup._book.add_worksheet(title=self.TAB_NAME, rows=2000, cols=len(self.HEADERS))
+                ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
+                sheets_backup._ws_cache[self.TAB_NAME] = ws
+            else:
+                if self.TAB_NAME not in sheets_backup._ws_cache:
+                    ws = sheets_backup._book.worksheet(self.TAB_NAME)
+                    sheets_backup._ws_cache[self.TAB_NAME] = ws
+        except Exception as e:
+            log.warning(f"Reminders tab error: {e}")
+    
+    def _append_to_sheet(self, row):
+        try:
+            if not sheets_backup._book:
+                return
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.warning(f"Sheet append error: {e}")
+    
+    def add(self, text: str, due_time: str = "") -> Dict[str, Any]:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        rid = self.store.data["counter"]
+        entry = {
+            "id": rid,
+            "created_date": today_str(),
+            "created_time": now_str(),
+            "text": text,
+            "due_time": due_time,
+            "status": "pending",
+            "completed_at": ""
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        self._append_to_sheet([rid, today_str(), now_str(), text, due_time, "pending", ""])
+        return entry
+    
+    def get_recent(self, n: int = 20):
+        return self.store.data.get("list", [])[-n:]
+
+class HabitStore:
+    TAB_NAME = "Habits"
+    HEADERS = ["ID", "Created Date", "Habit Name", "Streak", "Last Done", "Status"]
+    
+    def __init__(self):
+        if not _SDM_AVAILABLE:
+            return
+        self.store = PrivateStore("habits", {"list": [], "counter": 0})
+        self._ensure_sheet_tab()
+    
+    def _ensure_sheet_tab(self):
+        try:
+            if not sheets_backup._book:
+                return
+            existing = [ws.title for ws in sheets_backup._book.worksheets()]
+            if self.TAB_NAME not in existing:
+                ws = sheets_backup._book.add_worksheet(title=self.TAB_NAME, rows=2000, cols=len(self.HEADERS))
+                ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
+                sheets_backup._ws_cache[self.TAB_NAME] = ws
+            else:
+                if self.TAB_NAME not in sheets_backup._ws_cache:
+                    ws = sheets_backup._book.worksheet(self.TAB_NAME)
+                    sheets_backup._ws_cache[self.TAB_NAME] = ws
+        except Exception as e:
+            log.warning(f"Habits tab error: {e}")
+    
+    def _append_to_sheet(self, row):
+        try:
+            if not sheets_backup._book:
+                return
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.warning(f"Sheet append error: {e}")
+    
+    def add(self, name: str) -> Dict[str, Any]:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        hid = self.store.data["counter"]
+        entry = {
+            "id": hid,
+            "created_date": today_str(),
+            "name": name,
+            "streak": 0,
+            "last_done": "",
+            "status": "active"
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        self._append_to_sheet([hid, today_str(), name, 0, "", "active"])
+        return entry
+    
+    def get_recent(self, n: int = 20):
+        return self.store.data.get("list", [])[-n:]
+
+class WaterStore:
+    TAB_NAME = "Water Intake"
+    HEADERS = ["ID", "Date", "Time", "Amount", "Unit", "Cumulative Today"]
+    
+    def __init__(self):
+        if not _SDM_AVAILABLE:
+            return
+        self.store = PrivateStore("water", {"logs": [], "counter": 0})
+        self._ensure_sheet_tab()
+    
+    def _ensure_sheet_tab(self):
+        try:
+            if not sheets_backup._book:
+                return
+            existing = [ws.title for ws in sheets_backup._book.worksheets()]
+            if self.TAB_NAME not in existing:
+                ws = sheets_backup._book.add_worksheet(title=self.TAB_NAME, rows=2000, cols=len(self.HEADERS))
+                ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
+                sheets_backup._ws_cache[self.TAB_NAME] = ws
+            else:
+                if self.TAB_NAME not in sheets_backup._ws_cache:
+                    ws = sheets_backup._book.worksheet(self.TAB_NAME)
+                    sheets_backup._ws_cache[self.TAB_NAME] = ws
+        except Exception as e:
+            log.warning(f"Water tab error: {e}")
+    
+    def _append_to_sheet(self, row):
+        try:
+            if not sheets_backup._book:
+                return
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.warning(f"Sheet append error: {e}")
+    
+    def add(self, amount: float, unit: str = "glass") -> Dict[str, Any]:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        wid = self.store.data["counter"]
+        today_total = self.today_total()
+        new_total = today_total + amount
+        
+        entry = {
+            "id": wid,
+            "date": today_str(),
+            "time": now_str(),
+            "amount": amount,
+            "unit": unit,
+            "cumulative": new_total
+        }
+        self.store.data["logs"].append(entry)
+        self.store.data["logs"] = self.store.data["logs"][-1000:]
+        self.store.save()
+        self._append_to_sheet([wid, today_str(), now_str(), amount, unit, new_total])
+        return entry
+    
+    def today_total(self) -> float:
+        today = today_str()
+        total = 0.0
+        for log in self.store.data.get("logs", []):
+            if log.get("date") == today:
+                total += log.get("amount", 0)
+        return total
+
+class BillStore:
+    TAB_NAME = "Bills"
+    HEADERS = ["ID", "Created Date", "Amount", "Description", "Due Date", "Paid Status"]
+    
+    def __init__(self):
+        if not _SDM_AVAILABLE:
+            return
+        self.store = PrivateStore("bills", {"list": [], "counter": 0})
+        self._ensure_sheet_tab()
+    
+    def _ensure_sheet_tab(self):
+        try:
+            if not sheets_backup._book:
+                return
+            existing = [ws.title for ws in sheets_backup._book.worksheets()]
+            if self.TAB_NAME not in existing:
+                ws = sheets_backup._book.add_worksheet(title=self.TAB_NAME, rows=2000, cols=len(self.HEADERS))
+                ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
+                sheets_backup._ws_cache[self.TAB_NAME] = ws
+            else:
+                if self.TAB_NAME not in sheets_backup._ws_cache:
+                    ws = sheets_backup._book.worksheet(self.TAB_NAME)
+                    sheets_backup._ws_cache[self.TAB_NAME] = ws
+        except Exception as e:
+            log.warning(f"Bills tab error: {e}")
+    
+    def _append_to_sheet(self, row):
+        try:
+            if not sheets_backup._book:
+                return
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.warning(f"Sheet append error: {e}")
+    
+    def add(self, amount: float, description: str = "", due_date: str = "") -> Dict[str, Any]:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        bid = self.store.data["counter"]
+        entry = {
+            "id": bid,
+            "created_date": today_str(),
+            "amount": amount,
+            "description": description,
+            "due_date": due_date or today_str(),
+            "paid": False
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        self._append_to_sheet([bid, today_str(), amount, description, due_date or today_str(), "Pending"])
+        return entry
+
+class CalendarStore:
+    TAB_NAME = "Calendar Events"
+    HEADERS = ["ID", "Created Date", "Event", "Event Date", "Event Time", "Reminder Sent"]
+    
+    def __init__(self):
+        if not _SDM_AVAILABLE:
+            return
+        self.store = PrivateStore("calendar", {"list": [], "counter": 0})
+        self._ensure_sheet_tab()
+    
+    def _ensure_sheet_tab(self):
+        try:
+            if not sheets_backup._book:
+                return
+            existing = [ws.title for ws in sheets_backup._book.worksheets()]
+            if self.TAB_NAME not in existing:
+                ws = sheets_backup._book.add_worksheet(title=self.TAB_NAME, rows=2000, cols=len(self.HEADERS))
+                ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
+                sheets_backup._ws_cache[self.TAB_NAME] = ws
+            else:
+                if self.TAB_NAME not in sheets_backup._ws_cache:
+                    ws = sheets_backup._book.worksheet(self.TAB_NAME)
+                    sheets_backup._ws_cache[self.TAB_NAME] = ws
+        except Exception as e:
+            log.warning(f"Calendar tab error: {e}")
+    
+    def _append_to_sheet(self, row):
+        try:
+            if not sheets_backup._book:
+                return
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.warning(f"Sheet append error: {e}")
+    
+    def add(self, event: str, event_date: str = "", event_time: str = "") -> Dict[str, Any]:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        cid = self.store.data["counter"]
+        entry = {
+            "id": cid,
+            "created_date": today_str(),
+            "event": event,
+            "event_date": event_date or today_str(),
+            "event_time": event_time,
+            "reminder_sent": False
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        self._append_to_sheet([cid, today_str(), event, event_date or today_str(), event_time, "No"])
+        return entry
+
+# Initialize stores if available
+if _SDM_AVAILABLE:
+    reminders = ReminderStore()
+    habits = HabitStore()
+    water_intake = WaterStore()
+    bills = BillStore()
+    calendar_events = CalendarStore()
+else:
+    reminders = habits = water_intake = bills = calendar_events = None
+
+# ================================================================
 # VOICE NOTE STORE
 # ================================================================
 
 class VoiceNoteStore:
     TAB_NAME = "Voice Notes"
-    HEADERS  = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status"]
+    HEADERS  = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status", "Category"]
 
     def __init__(self):
         if not _SDM_AVAILABLE:
@@ -88,7 +402,7 @@ class VoiceNoteStore:
         except Exception as e:
             log.warning(f"Sheet append error: {e}")
 
-    def add(self, transcript: str, saved_to: str = "diary",
+    def add(self, transcript: str, saved_to: str = "diary", category: str = "diary",
             duration: int = 0, status: str = "Success"):
         if not _SDM_AVAILABLE:
             return None
@@ -96,14 +410,14 @@ class VoiceNoteStore:
         vid = self.store.data["counter"]
         entry = {
             "id": vid, "date": today_str(), "time": now_str(),
-            "transcript": transcript, "saved_to": saved_to,
+            "transcript": transcript, "saved_to": saved_to, "category": category,
             "duration": duration, "status": status,
         }
         self.store.data["list"].append(entry)
         self.store.data["list"] = self.store.data["list"][-500:]
         self.store.save()
         self._append_to_sheet([vid, today_str(), now_str(),
-                                transcript[:500], saved_to, duration, status])
+                                transcript[:500], saved_to, duration, status, category])
         return entry
 
     def get_recent(self, n: int = 10):
@@ -118,17 +432,15 @@ else:
 # GEMINI TRANSCRIPTION
 # ================================================================
 
-async def transcribe_audio(audio_bytes: bytes) -> tuple:
+async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
     """
     Returns: (transcript_text, error_message)
     Success: ("text...", None)
     Failure: (None, "exact error detail")
     """
-    # ── Check 1: API Key ─────────────────────────────────────────
     if not GEMINI_API_KEY:
         return None, "GEMINI_API_KEY GitHub Secret mein set nahi hai!"
 
-    # ── Check 2: Audio size ──────────────────────────────────────
     if not audio_bytes or len(audio_bytes) < 1000:
         return None, f"Audio too small: {len(audio_bytes) if audio_bytes else 0} bytes"
 
@@ -154,7 +466,6 @@ Numbers in digits: 10, 100, 500."""
 
     _rate_limit()
 
-    # ── Retry loop (503 handle karne ke liye) ────────────────────
     last_error = None
     result = None
 
@@ -167,7 +478,7 @@ Numbers in digits: 10, 100, 500."""
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-            break  # success — loop se niklo
+            break
 
         except urllib.error.HTTPError as e:
             try:
@@ -179,7 +490,7 @@ Numbers in digits: 10, 100, 500."""
             last_error = f"Gemini HTTP {e.code}: {gemini_msg}"
 
             if e.code == 503 and attempt < 2:
-                wait = 4 * (attempt + 1)  # 4s, 8s
+                wait = 4 * (attempt + 1)
                 log.warning(f"503 overloaded, retry {attempt+1}/3 after {wait}s...")
                 time.sleep(wait)
                 continue
@@ -194,7 +505,6 @@ Numbers in digits: 10, 100, 500."""
     if result is None:
         return None, last_error
 
-    # ── Parse response ───────────────────────────────────────────
     candidates = result.get("candidates", [])
     if not candidates:
         feedback = result.get("promptFeedback", {})
@@ -213,7 +523,6 @@ Numbers in digits: 10, 100, 500."""
     if not text:
         return None, "Gemini returned empty text (silent/unclear audio?)"
 
-    # Cleanup
     text = re.sub(r'\*+', '', text)
     text = re.sub(r'\n+', ' ', text).strip()
     text = re.sub(r'^(transcription|hinglish|text|output)[:\s]*', '', text, flags=re.IGNORECASE)
@@ -222,41 +531,160 @@ Numbers in digits: 10, 100, 500."""
     return text.strip(), None
 
 # ================================================================
-# CLASSIFICATION
+# ENHANCED CLASSIFICATION WITH KEYWORD ROUTING
 # ================================================================
 
-def _classify_transcript(text: str) -> str:
-    lower = text.lower()
-
-    expense_kw = [
-        'kharcha', 'karcha', 'kharch', 'laga', 'lagaya', 'diye', 'paisa', 'paise',
-        'rupees', 'rs', 'spent', 'khareeda', 'kharida', 'shopping',
-        'petrol', 'diesel', 'bill', 'chai', 'coffee', 'khana', 'food', 'lunch', 'dinner'
+def parse_reminder_time(text: str) -> Tuple[str, str, int, str]:
+    """
+    Extract time from reminder text
+    Returns: (clean_text, time_str, time_value, time_unit)
+    """
+    time_value = 0
+    time_unit = ""
+    time_str = ""
+    
+    # Pattern: "2 minute", "5 min", "1 hour", "30 seconds", "2 din", "1 day"
+    patterns = [
+        (r'(\d+)\s*(minute|min|m)', 'minute'),
+        (r'(\d+)\s*(second|sec|s)', 'second'),
+        (r'(\d+)\s*(hour|hr|ghanta)', 'hour'),
+        (r'(\d+)\s*(day|din)', 'day'),
     ]
-    task_kw = [
-        'karna hai', 'krna hai', 'karna he', 'kaam', 'task', 'meeting', 'call',
-        'remind', 'yaad dilana', 'jana hai', 'jaana hai', 'lana hai', 'dena hai',
-        'submit', 'send', 'buy', 'order', 'phone karna'
-    ]
-    memory_kw = [
-        'yaad rakhna', 'remember', 'memory', 'note karo', 'yaad karo',
-        'bhoolna mat', 'important', 'zaroori', 'yaad rakh'
-    ]
+    
+    for pattern, unit in patterns:
+        match = re.search(pattern, text.lower())
+        if match:
+            time_value = int(match.group(1))
+            time_unit = unit
+            # Calculate due time
+            now = datetime.now()
+            if unit == 'minute':
+                due = now + timedelta(minutes=time_value)
+            elif unit == 'second':
+                due = now + timedelta(seconds=time_value)
+            elif unit == 'hour':
+                due = now + timedelta(hours=time_value)
+            elif unit == 'day':
+                due = now + timedelta(days=time_value)
+            else:
+                due = now
+            time_str = due.strftime("%Y-%m-%d %H:%M:%S")
+            # Remove time part from text
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+            break
+    
+    return text, time_str, time_value, time_unit
 
-    has_number = bool(re.search(r'\d+', text))
-    e_score = sum(1 for w in expense_kw if w in lower)
-    t_score = sum(1 for w in task_kw    if w in lower)
-    m_score = sum(1 for w in memory_kw  if w in lower)
-
-    if has_number and e_score > 0:
-        return "expense"
-    if e_score >= 2:
-        return "expense"
-    if t_score >= 1:
-        return "task"
-    if m_score >= 1:
-        return "memory"
-    return "diary"
+def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Returns: (category, data)
+    Categories: expense, reminder, habit, water, task, memory, bill, calendar, diary
+    """
+    original = text
+    lower = text.lower().strip()
+    
+    # ── 1. EXPENSE ─────────────────────────────────────────────────
+    # Pattern: "expense 500 movie ticket" or "kharcha 100 chai"
+    expense_patterns = [
+        r'^(expense|kharcha|karcha|exp)\s+(\d+(?:\.\d+)?)(?:\s+(.+))?$',
+        r'^(\d+(?:\.\d+)?)\s+(?:rs|rupees|rupaye)?\s+(?:kharch|expense|kharcha).+$'
+    ]
+    
+    for pattern in expense_patterns:
+        match = re.match(pattern, lower, re.IGNORECASE)
+        if match:
+            if 'expense' in pattern or 'kharcha' in pattern:
+                amount = float(match.group(2))
+                description = match.group(3) or ""
+            else:
+                amount = float(match.group(1))
+                description = re.sub(r'^\d+(?:\.\d+)?\s*(?:rs|rupees|rupaye)?\s*(?:kharch|expense|kharcha)?\s*', '', text, flags=re.IGNORECASE)
+            
+            if not description:
+                description = "Expense"
+            return "expense", {"amount": amount, "description": description[:100]}
+    
+    # ── 2. REMINDER ────────────────────────────────────────────────
+    reminder_match = re.match(r'^(reminder|remind|yaad dilana|rem)\s+(.+)$', lower, re.IGNORECASE)
+    if reminder_match:
+        reminder_text = reminder_match.group(2)
+        clean_text, due_time, time_value, time_unit = parse_reminder_time(reminder_text)
+        return "reminder", {
+            "text": clean_text[:200],
+            "due_time": due_time,
+            "time_value": time_value,
+            "time_unit": time_unit
+        }
+    
+    # ── 3. HABIT ───────────────────────────────────────────────────
+    habit_match = re.match(r'^(habit|aadat|hab)\s+(.+)$', lower, re.IGNORECASE)
+    if habit_match:
+        habit_text = habit_match.group(2)
+        return "habit", {"text": habit_text[:150]}
+    
+    # ── 4. WATER INTAKE ────────────────────────────────────────────
+    water_patterns = [
+        r'^(water|pani|paani|water intake)\s+(\d+(?:\.\d+)?)\s*(glass|bottle|liter|ltr|ml)?',
+        r'^(\d+(?:\.\d+)?)\s*(glass|bottle|liter|ltr|ml)?\s+(water|pani|paani)',
+    ]
+    
+    for pattern in water_patterns:
+        match = re.match(pattern, lower, re.IGNORECASE)
+        if match:
+            if 'water' in pattern and match.group(1):
+                amount = float(match.group(2))
+                unit = match.group(3) or "glass"
+            elif match.group(1):
+                amount = float(match.group(1))
+                unit = match.group(2) or "glass"
+            else:
+                amount = 1.0
+                unit = "glass"
+            return "water", {"amount": amount, "unit": unit}
+    
+    # ── 5. TASK ────────────────────────────────────────────────────
+    task_match = re.match(r'^(task|kaam|tk)\s+(.+)$', lower, re.IGNORECASE)
+    if task_match:
+        task_text = task_match.group(2)
+        return "task", {"text": task_text[:200]}
+    
+    # ── 6. MEMORY ──────────────────────────────────────────────────
+    memory_match = re.match(r'^(memory|yaad rakhna|remember|mem)\s+(.+)$', lower, re.IGNORECASE)
+    if memory_match:
+        memory_text = memory_match.group(2)
+        return "memory", {"text": memory_text[:200]}
+    
+    # ── 7. BILL ────────────────────────────────────────────────────
+    bill_match = re.match(r'^(bill|payment|bil)\s+(\d+(?:\.\d+)?)(?:\s+(.+))?$', lower, re.IGNORECASE)
+    if bill_match:
+        amount = float(bill_match.group(2))
+        description = bill_match.group(3) or ""
+        return "bill", {"amount": amount, "description": description[:100]}
+    
+    # ── 8. CALENDAR (Meeting/Appointment) ──────────────────────────
+    calendar_match = re.match(r'^(calendar|meeting|appointment|cal|mtg)\s+(.+)$', lower, re.IGNORECASE)
+    if calendar_match:
+        event_text = calendar_match.group(2)
+        # Extract date if present
+        date_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)', event_text, re.IGNORECASE)
+        # Extract time if present
+        time_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm))', event_text, re.IGNORECASE)
+        event_date = date_match.group(1) if date_match else ""
+        event_time = time_match.group(1) if time_match else ""
+        # Clean event text
+        if date_match:
+            event_text = event_text.replace(date_match.group(1), "").strip()
+        if time_match:
+            event_text = event_text.replace(time_match.group(1), "").strip()
+        
+        return "calendar", {
+            "text": event_text[:200],
+            "event_date": event_date,
+            "event_time": event_time
+        }
+    
+    # ── 9. DEFAULT: DIARY ──────────────────────────────────────────
+    return "diary", {"text": text[:500]}
 
 # ================================================================
 # MAIN HANDLER
@@ -309,67 +737,96 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         if voice_store:
-            voice_store.add(f"[FAIL: {str(error)[:60]}]", "none", duration, "Failed")
+            voice_store.add(f"[FAIL: {str(error)[:60]}]", "none", "failed", duration, "Failed")
         return
 
     # ── Classify & Save ──────────────────────────────────────────
-    category   = _classify_transcript(transcript)
-    saved_to   = "diary"
+    category, data = _classify_transcript(transcript)
+    saved_to = "diary"
     extra_info = ""
+    emoji_map = {
+        "expense": "💸", "reminder": "⏰", "habit": "🔥", "water": "💧",
+        "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"
+    }
+    emoji = emoji_map.get(category, "📝")
 
-    if category == "task":
-        task_text = transcript
-        for w in ['karna hai', 'krna hai', 'task', 'kaam', 'karo', 'add']:
-            task_text = re.sub(r'\b' + re.escape(w) + r'\b', '', task_text, flags=re.IGNORECASE)
-        task_text = re.sub(r'\s+', ' ', task_text).strip() or transcript[:80]
-        t          = tasks.add(task_text)
-        saved_to   = f"task #{t['id']}"
-        extra_info = f"✅ Task #{t['id']} add kar diya!\n📌 *{task_text[:60]}*"
+    # ── EXPENSE ────────────────────────────────────────────────────
+    if category == "expense":
+        expenses.add(data["amount"], data["description"])
+        saved_to = "expenses"
+        extra_info = f"Rs.{data['amount']} add kar diya!\n📝 *{data['description'][:50]}*"
 
-    elif category == "expense":
-        m = re.search(r'(\d+(?:\.\d+)?)', transcript)
-        if m:
-            amount = float(m.group(1))
-            desc   = re.sub(r'\d+(?:\.\d+)?', '', transcript)
-            for w in ['kharcha', 'karcha', 'laga', 'lagaya', 'diye', 'paisa', 'rupees', 'rs']:
-                desc = re.sub(r'\b' + re.escape(w) + r'\b', '', desc, flags=re.IGNORECASE)
-            desc = re.sub(r'\s+', ' ', desc).strip() or "Expense"
-            expenses.add(amount, desc[:100])
-            saved_to   = "expenses"
-            extra_info = f"💸 Rs.{amount} add kar diya!\n📝 *{desc[:50]}*"
-        else:
-            diary.add(f"[Voice] {transcript}")
-            saved_to   = "diary"
-            extra_info = "📖 Diary mein save kiya (amount nahi mila)"
+    # ── REMINDER ───────────────────────────────────────────────────
+    elif category == "reminder" and reminders:
+        r = reminders.add(data["text"], data["due_time"])
+        saved_to = f"reminder #{r['id']}"
+        time_info = f" ⏰ {data['time_value']}{data['time_unit']}" if data['time_value'] else ""
+        extra_info = f"Reminder #{r['id']} set!{time_info}\n📌 *{data['text'][:50]}*"
 
+    # ── HABIT ─────────────────────────────────────────────────────
+    elif category == "habit" and habits:
+        h = habits.add(data["text"])
+        saved_to = f"habit #{h['id']}"
+        extra_info = f"Habit #{h['id']} add kar diya!\n📌 *{data['text'][:50]}*"
+
+    # ── WATER INTAKE ──────────────────────────────────────────────
+    elif category == "water" and water_intake:
+        w = water_intake.add(data["amount"], data["unit"])
+        saved_to = "water"
+        total = water_intake.today_total()
+        extra_info = f"{data['amount']} {data['unit']} water logged!\n🚰 Total today: {total} {data['unit']}"
+
+    # ── TASK ──────────────────────────────────────────────────────
+    elif category == "task":
+        t = tasks.add(data["text"])
+        saved_to = f"task #{t['id']}"
+        extra_info = f"Task #{t['id']} add kar diya!\n📌 *{data['text'][:60]}*"
+
+    # ── MEMORY ────────────────────────────────────────────────────
     elif category == "memory":
-        mem_text = transcript
-        for w in ['yaad rakhna', 'remember', 'memory', 'note karo', 'yaad karo']:
-            mem_text = re.sub(r'\b' + re.escape(w) + r'\b', '', mem_text, flags=re.IGNORECASE)
-        mem_text = re.sub(r'\s+', ' ', mem_text).strip() or transcript[:100]
-        memory.add(mem_text)
-        saved_to   = "memory"
-        extra_info = f"🧠 Memory mein save kar liya!\n📝 *{mem_text[:60]}*"
+        memory.add(data["text"])
+        saved_to = "memory"
+        extra_info = f"Smart memory mein save kar liya!\n📝 *{data['text'][:60]}*"
 
-    else:
-        diary.add(f"[Voice] {transcript}")
-        saved_to   = "diary"
-        extra_info = f"📖 Diary mein save kar diya!"
+    # ── BILL ──────────────────────────────────────────────────────
+    elif category == "bill" and bills:
+        b = bills.add(data["amount"], data["description"])
+        saved_to = f"bill #{b['id']}"
+        extra_info = f"Bill Rs.{data['amount']} add!\n📝 *{data['description'][:50]}*"
 
+    # ── CALENDAR ──────────────────────────────────────────────────
+    elif category == "calendar" and calendar_events:
+        e = calendar_events.add(data["text"], data["event_date"], data["event_time"])
+        saved_to = f"calendar #{e['id']}"
+        extra_info = f"Event #{e['id']} added!\n📌 *{data['text'][:50]}*"
+        if data['event_date']:
+            extra_info += f"\n📅 Date: {data['event_date']}"
+        if data['event_time']:
+            extra_info += f" ⏰ {data['event_time']}"
+
+    # ── DEFAULT: DIARY ────────────────────────────────────────────
+    else:  # diary
+        diary.add(f"[Voice] {data['text']}")
+        saved_to = "diary"
+        extra_info = f"Diary mein save kar diya!"
+
+    # Store in voice notes
     if voice_store:
-        voice_store.add(transcript, saved_to, duration, "Success")
+        voice_store.add(transcript, saved_to, category, duration, "Success")
 
-    await status_msg.edit_text(
-        f"🎙️ *Ho gaya!* ✅\n\n"
+    # Send response
+    response_text = (
+        f"{emoji} *Ho gaya!* ✅\n\n"
         f"📝 *Tumne kaha:*\n_{transcript[:400]}_\n\n"
         f"{'─'*20}\n"
         f"💾 {extra_info}\n\n"
-        f"/voicenotes — Purane notes dekho",
-        parse_mode="Markdown"
+        f"🎤 Category: *{category.upper()}*\n"
+        f"/voicenotes — Purane notes dekho"
     )
+    await status_msg.edit_text(response_text, parse_mode="Markdown")
 
     try:
-        sheets_backup.log_event("voice_note", user_name, f"[{saved_to}] {transcript[:80]}")
+        sheets_backup.log_event("voice_note", user_name, f"[{category}] {transcript[:80]}")
     except Exception:
         pass
 
@@ -381,24 +838,90 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not voice_store:
         await update.message.reply_text("❌ Voice store unavailable")
         return
+    
     recent = voice_store.get_recent(10)
     if not recent:
         await update.message.reply_text(
-            "🎙️ Abhi koi voice note nahi hai.\n\nVoice message bhejo — main transcribe kar dunga!"
+            "🎙️ Abhi koi voice note nahi hai.\n\nVoice message bhejo — main transcribe kar dunga!\n\n"
+            "*Available categories:*\n"
+            "💸 expense 500 movie\n"
+            "⏰ reminder 5 minute baad pani peena\n"
+            "🔥 habit subah 5 baje uthna\n"
+            "💧 water 2 glass\n"
+            "✅ task report submit karna\n"
+            "🧠 memory passport number 1234\n"
+            "🧾 bill 1000 bijli ka\n"
+            "📅 calendar monday 3pm meeting"
         )
         return
+    
     lines = []
     for v in reversed(recent):
-        emoji = "✅" if v.get("status") == "Success" else "❌"
+        emoji_map = {
+            "expense": "💸", "reminder": "⏰", "habit": "🔥", "water": "💧",
+            "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"
+        }
+        category = v.get("category", "diary")
+        emoji = emoji_map.get(category, "📝")
+        status_emoji = "✅" if v.get("status") == "Success" else "❌"
+        
         lines.append(
-            f"{emoji} *#{v['id']}* {v['date']} {v['time']}\n"
-            f"   💾 *{v['saved_to']}* | ⏱ {v.get('duration', 0)}s\n"
+            f"{status_emoji} {emoji} *#{v['id']}* {v['date']} {v['time']}\n"
+            f"   💾 *{v['saved_to']}* | ⏱ {v.get('duration', 0)}s | 🏷 {category}\n"
             f"   📝 _{v['transcript'][:100]}_"
         )
+    
     await update.message.reply_text(
         "🎙️ *Recent Voice Notes:*\n\n" + "\n\n".join(lines),
         parse_mode="Markdown"
     )
+
+# ================================================================
+# /voicehelp COMMAND
+# ================================================================
+
+async def cmd_voicehelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    help_text = """🎙️ *Voice Note Commands & Categories*
+
+*How to use:*
+Just send a voice message starting with a keyword!
+
+*Available Categories:*
+
+💸 *EXPENSE* — `expense 500 movie ticket`
+   → Saves to Expenses sheet
+
+⏰ *REMINDER* — `reminder 5 minute baad pani peena`
+   → Saves to Reminders sheet with due time
+
+🔥 *HABIT* — `habit subah 5 baje uthna`
+   → Saves to Habits sheet
+
+💧 *WATER* — `water 2 glass` or `pani 1 liter`
+   → Logs water intake
+
+✅ *TASK* — `task report submit karna hai`
+   → Saves to Tasks sheet
+
+🧠 *MEMORY* — `memory passport number 1234`
+   → Saves to Smart Memory
+
+🧾 *BILL* — `bill 1000 bijli ka`
+   → Saves to Bills sheet
+
+📅 *CALENDAR* — `calendar monday 3pm doctor appointment`
+   → Saves to Calendar Events
+
+📖 *DIARY* — (default) `aaj bahut acha din tha`
+   → Saves to Diary
+
+*Commands:*
+/voicenotes — See recent voice notes
+/voicehelp — Show this help
+
+*Note:* Don't know the keyword? Just speak naturally, I'll try to understand!
+"""
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 # ================================================================
 # REGISTER
@@ -407,4 +930,5 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
-    log.info("✅ Voice handlers registered — model: gemini-2.5-flash")
+    app.add_handler(CommandHandler("voicehelp", cmd_voicehelp))
+    log.info("✅ Voice handlers registered — model: gemini-2.5-flash with multi-category support")
