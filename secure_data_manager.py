@@ -1210,3 +1210,177 @@ log.info("SECURE DATA MANAGER READY — ID columns added to all sheets")
 log.info(f"  GitHub : {'Connected' if repo_manager.is_connected else 'Local only'}")
 log.info(f"  Sheets : {'Connected' if sheets_backup.connected   else 'NOT connected'}")
 log.info("=" * 60)
+# ================================================================
+# VOICE STORES (ADD AT THE VERY BOTTOM OF YOUR FILE)
+# ================================================================
+
+class VoiceReminderStore:
+    def __init__(self):
+        self.store = PrivateStore("voice_reminders", {"list": [], "counter": 0})
+
+    def _get_next_id(self) -> int:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        self.store.save()
+        return self.store.data["counter"]
+
+    def add(self, text: str, due_time: str = "", time_value: int = 0, time_unit: str = "") -> Dict[str, Any]:
+        rid = self._get_next_id()
+        entry = {
+            "id": rid, "created_date": today_str(), "created_time": now_str(),
+            "text": text, "due_time": due_time, "time_value": time_value,
+            "time_unit": time_unit, "status": "pending", "completed_at": "", "acknowledged": False
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        try:
+            sheets_backup.reminder(entry, action="created")
+        except Exception:
+            pass
+        return entry
+
+    def get_recent(self, n: int = 20) -> List[Dict]:
+        return self.store.data.get("list", [])[-n:]
+
+
+class VoiceHabitStore:
+    def __init__(self):
+        self.store = PrivateStore("voice_habits", {"list": [], "logs": {}, "counter": 0})
+
+    def _get_next_id(self) -> int:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        self.store.save()
+        return self.store.data["counter"]
+
+    def add(self, name: str) -> Dict[str, Any]:
+        hid = self._get_next_id()
+        entry = {
+            "id": hid, "created_date": today_str(), "name": name,
+            "streak": 0, "best_streak": 0, "last_done": "", "status": "active"
+        }
+        self.store.data["list"].append(entry)
+        self.store.save()
+        try:
+            sheets_backup.habit_add(entry)
+        except Exception:
+            pass
+        return entry
+
+    def get_recent(self, n: int = 20) -> List[Dict]:
+        return self.store.data.get("list", [])[-n:]
+
+
+class VoiceWaterStore:
+    def __init__(self):
+        self.store = PrivateStore("voice_water", {"logs": [], "counter": 0})
+
+    def _get_next_id(self) -> int:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        self.store.save()
+        return self.store.data["counter"]
+
+    def add(self, amount: float, unit: str = "glass") -> Dict[str, Any]:
+        water_id = self._get_next_id()
+        ml = self._convert_to_ml(amount, unit)
+        entry = {
+            "id": water_id, "date": today_str(), "time": now_str(),
+            "amount": amount, "unit": unit, "ml": ml,
+            "cumulative_ml": self.today_total_ml() + ml
+        }
+        self.store.data["logs"].append(entry)
+        self.store.data["logs"] = self.store.data["logs"][-1000:]
+        self.store.save()
+        try:
+            sheets_backup.water(ml, entry["cumulative_ml"])
+        except Exception:
+            pass
+        return entry
+
+    def _convert_to_ml(self, amount: float, unit: str) -> int:
+        unit_lower = unit.lower()
+        if unit_lower in ['glass', 'glasses']:
+            return int(amount * 250)
+        elif unit_lower in ['bottle', 'bottles']:
+            return int(amount * 500)
+        elif unit_lower in ['liter', 'liters', 'ltr', 'l']:
+            return int(amount * 1000)
+        else:
+            return int(amount * 250)
+
+    def today_total_ml(self) -> int:
+        today = today_str()
+        total = 0
+        for log in self.store.data.get("logs", []):
+            if log.get("date") == today:
+                total += log.get("ml", 0)
+        return total
+
+    def get_recent(self, n: int = 10) -> List[Dict]:
+        return self.store.data.get("logs", [])[-n:]
+
+
+class VoiceBillStore:
+    def __init__(self):
+        self.store = PrivateStore("voice_bills", {"list": [], "counter": 0})
+
+    def _get_next_id(self) -> int:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        self.store.save()
+        return self.store.data["counter"]
+
+    def add(self, amount: float, description: str = "", due_date: str = "") -> Dict[str, Any]:
+        bid = self._get_next_id()
+        entry = {
+            "id": bid, "created_date": today_str(), "amount": amount,
+            "description": description or "Bill", "due_date": due_date or today_str(),
+            "status": "pending", "paid_date": ""
+        }
+        self.store.data["list"].append(entry)
+        self.store.save()
+        try:
+            sheets_backup.bill(entry, action="created")
+        except Exception:
+            pass
+        return entry
+
+    def get_recent(self, n: int = 20) -> List[Dict]:
+        return self.store.data.get("list", [])[-n:]
+
+
+class VoiceCalendarStore:
+    def __init__(self):
+        self.store = PrivateStore("voice_calendar", {"events": [], "counter": 0})
+
+    def _get_next_id(self) -> int:
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        self.store.save()
+        return self.store.data["counter"]
+
+    def add(self, event: str, event_date: str = "", event_time: str = "") -> Dict[str, Any]:
+        cid = self._get_next_id()
+        entry = {
+            "id": cid, "created_date": today_str(), "event": event,
+            "event_date": event_date or today_str(), "event_time": event_time,
+            "reminder_sent": False, "status": "upcoming"
+        }
+        self.store.data["events"].append(entry)
+        self.store.data["events"] = self.store.data["events"][-500:]
+        self.store.save()
+        try:
+            sheets_backup.calendar_event(entry)
+        except Exception:
+            pass
+        return entry
+
+    def get_recent(self, n: int = 20) -> List[Dict]:
+        return self.store.data.get("events", [])[-n:]
+
+
+# Initialize voice stores (ADD THIS AT THE BOTTOM)
+voice_reminders = VoiceReminderStore()
+voice_habits = VoiceHabitStore()
+voice_water = VoiceWaterStore()
+voice_bills = VoiceBillStore()
+voice_calendar = VoiceCalendarStore()
+
+log.info("✅ Voice stores added to secure_data_manager")
