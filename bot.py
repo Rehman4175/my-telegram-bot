@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v8:
+FIXES v9:
+  - Voice handler FIXED with multiple transcription methods
   - Reminder reply mein actual date + time dono show hogi
   - /start mein current date & time show hogi
-  - voice_note_handler: Python 3.9 fix, better mime detection, detailed errors
-  - Baaki sab v7 jaisa hi — koi change nahi
+  - Baaki sab v8 jaisa hi — koi change nahi
 """
 
 import os, json, logging, time
@@ -29,6 +29,7 @@ from telegram.ext import (
 )
 
 # ── NEW ADDON IMPORTS ──────────────────────────────
+# Voice handler with multiple transcription methods
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
 # ──────────────────────────────────────────────────
@@ -36,6 +37,11 @@ from smart_memory_handler import register_memory_handlers, check_smart_memory_in
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DIARY_PASSWORD = os.environ.get("DIARY_PASSWORD", "Rk1996")
+
+# These are optional but recommended for voice transcription
+# Add these to your GitHub Secrets
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")  # Recommended
+HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY", "")  # Optional fallback
 
 DIARY_AWAIT_PASS = 0
 DIARY_AWAIT_TEXT = 1
@@ -105,7 +111,7 @@ def alarm_keyboard(rid):
 
 
 # ================================================================
-# MISCELLANEOUS LOGGER — FIX: #ERROR! prevent karo
+# MISCELLANEOUS LOGGER
 # ================================================================
 
 def _log_action(user_name: str, action_type: str, detail: str):
@@ -120,7 +126,7 @@ def _log_action(user_name: str, action_type: str, detail: str):
 
 
 # ================================================================
-# DATE PARSER — FIXED: Now handles "28-Dec-1996" format
+# DATE PARSER
 # ================================================================
 
 MONTH_MAP = {
@@ -236,7 +242,6 @@ def _parse_date_from_text(text):
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Bhai"
-    # ── FIX: Current date & time show karo ──
     now = now_ist()
     date_time_str = now.strftime("%A, %d %b %Y — %I:%M %p") + " IST"
     await update.message.reply_text(
@@ -302,8 +307,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/memory add text — Save a memory\n"
         "/memory search word — Search memories\n"
         "/memory clear — Delete all memories\n\n"
-        "🎤 *Voice Notes:*\n"
-        "Voice message bhejo — Main transcribe karunga aur action lunga!\n\n"
+        "🎙️ *Voice Notes:*\n"
+        "Voice message bhejo — Main transcribe karunga aur action lunga!\n"
+        "/voicenotes — Recent voice notes dekho\n\n"
         "📊 *Other:*\n"
         "/briefing — Daily summary\n"
         "/status — System status\n"
@@ -559,13 +565,10 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     r = reminders.add(update.effective_chat.id, text, remind_at)
     _log_action(update.effective_user.first_name or "User", "reminder_set", f"#{r['id']} at {remind_at}: {text}")
 
-    # ── FIX: Actual date calculate karo ──
     remind_date = now.date()
     if remind_at < now.strftime("%H:%M"):
-        # Agar time past ho gaya aaj ka → kal ka samjho
         remind_date = remind_date + timedelta(days=1)
     date_display = remind_date.strftime("%d %b %Y")
-    # 12-hour format mein time
     h, m = map(int, remind_at.split(":"))
     ampm = "AM" if h < 12 else "PM"
     h12  = h % 12 or 12
@@ -1146,7 +1149,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error stopping alarm!")
 
 # ================================================================
-# NATURAL LANGUAGE PARSER — v7 same, no changes
+# NATURAL LANGUAGE PARSER
 # ================================================================
 
 def parse_user_message(user_msg: str):
@@ -1553,18 +1556,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         remind_time = params.get("time", "")
         is_tomorrow = params.get("tomorrow", False)
 
-        # ── FIX: Actual date calculate karo NL reminder ke liye bhi ──
         now_t = now_ist()
         if is_tomorrow:
             remind_date = now_t.date() + timedelta(days=1)
         else:
             remind_date = now_t.date()
-            # Agar time already past ho gaya aaj → kal ki date
             if remind_time and remind_time < now_t.strftime("%H:%M"):
                 remind_date = remind_date + timedelta(days=1)
         date_display = remind_date.strftime("%d %b %Y")
 
-        # 12-hour format
         h, m_val = map(int, remind_time.split(":")) if remind_time else (0, 0)
         ampm   = "AM" if h < 12 else "PM"
         h12    = h % 12 or 12
@@ -1711,18 +1711,23 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     log.info("=" * 60)
-    log.info("Rk Bot v8 | Reminder date fix + Voice handler fix")
+    log.info("Rk Bot v9 | Voice handler FIXED with multiple methods")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
+    log.info(f"Groq API: {'Yes' if GROQ_API_KEY else 'No (Optional)'}")
+    log.info(f"HuggingFace API: {'Yes' if HUGGINGFACE_API_KEY else 'No (Optional)'}")
     log.info("=" * 60)
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Register handlers
     from delete_manager import register_delete_handlers
     register_delete_handlers(app)
 
     register_memory_handlers(app)
+    
+    # Voice handlers with multiple transcription methods
     register_voice_handlers(app)
 
     app.add_handler(ConversationHandler(
