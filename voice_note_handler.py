@@ -5,6 +5,12 @@ VOICE NOTE HANDLER — Rk Bot Addon
 ====================================
 Gemini API based transcription — NO ffmpeg, NO speech_recognition needed!
 Works on GitHub Actions out of the box.
+
+FIXES:
+  - Python 3.9 compatible: str | None → Optional[str]
+  - Better mime_type detection for Telegram voice messages
+  - Improved error logging for easier debugging
+  - Rate limit handling improved
 """
 
 import os
@@ -13,9 +19,9 @@ import logging
 import time
 import urllib.request
 import urllib.error
-import tempfile
 import re
 import base64
+from typing import Optional
 
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, CommandHandler, filters
@@ -34,9 +40,12 @@ except ImportError:
     _SDM_AVAILABLE = False
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# Gemini 1.5 Flash — audio transcription ke liye best
 GEMINI_VISION_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
 
 _last_call = 0
+
 
 def _rate_limit():
     global _last_call
@@ -51,9 +60,9 @@ def _rate_limit():
 # ================================================================
 
 class VoiceNoteStore:
-    TAB_KEY     = "VoiceNotes"
-    TAB_NAME    = "Voice Notes"
-    HEADERS     = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status"]
+    TAB_KEY  = "VoiceNotes"
+    TAB_NAME = "Voice Notes"
+    HEADERS  = ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status"]
 
     def __init__(self):
         if not _SDM_AVAILABLE:
@@ -113,7 +122,7 @@ class VoiceNoteStore:
         self._append_to_sheet([vid, today_str(), now_str(), transcript[:500], saved_to, duration, status])
         return entry
 
-    def get_recent(self, n=10):
+    def get_recent(self, n: int = 10):
         return self.store.data.get("list", [])[-n:]
 
     def get_all(self):
@@ -127,18 +136,62 @@ else:
 
 
 # ================================================================
+# MIME TYPE HELPER
+# ================================================================
+
+def _get_mime_type(voice) -> str:
+    """
+    Telegram voice messages → usually audio/ogg (opus codec)
+    Telegram audio files   → can be audio/mp3, audio/mp4, audio/mpeg etc.
+    Gemini supports: audio/wav, audio/mp3, audio/aiff, audio/aac,
+                     audio/ogg, audio/flac, audio/webm
+    """
+    raw = getattr(voice, "mime_type", None) or ""
+    raw = raw.lower()
+
+    log.info(f"Original mime_type from Telegram: '{raw}'")
+
+    if "ogg" in raw:
+        return "audio/ogg"
+    elif "webm" in raw:
+        return "audio/webm"
+    elif "mp4" in raw or "m4a" in raw or "aac" in raw:
+        return "audio/aac"
+    elif "mp3" in raw or "mpeg" in raw:
+        return "audio/mp3"
+    elif "wav" in raw:
+        return "audio/wav"
+    elif "flac" in raw:
+        return "audio/flac"
+    else:
+        # Telegram voice messages are almost always OGG/Opus
+        log.info("mime_type unclear, defaulting to audio/ogg")
+        return "audio/ogg"
+
+
+# ================================================================
 # TRANSCRIPTION via Gemini (audio → text) — NO ffmpeg needed!
 # ================================================================
 
-async def _transcribe_with_gemini(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str | None:
+async def _transcribe_with_gemini(audio_bytes: bytes, mime_type: str = "audio/ogg") -> Optional[str]:
     if not GEMINI_API_KEY:
         log.error("GEMINI_API_KEY not set — cannot transcribe")
         return None
 
+    if not audio_bytes:
+        log.error("Empty audio bytes received!")
+        return None
+
+    log.info(f"Transcribing {len(audio_bytes)} bytes, mime: {mime_type}")
+
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    # Clean instruction — no extra words
-    instruction = "Transcribe this voice message exactly as spoken. Write only what was said, no explanation, no prefix, no extra text."
+    # Clean instruction
+    instruction = (
+        "Transcribe this voice message exactly as spoken. "
+        "The speaker may use Hindi, Urdu, Hinglish (Hindi + English mix), or English. "
+        "Write only what was said. No explanation, no prefix, no extra text."
+    )
 
     payload = json.dumps({
         "contents": [{
@@ -148,20 +201,60 @@ async def _transcribe_with_gemini(audio_bytes: bytes, mime_type: str = "audio/og
                 {"text": instruction}
             ]
         }],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500}
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 500
+        }
     }).encode("utf-8")
 
     _rate_limit()
     url = GEMINI_VISION_URL.format(key=GEMINI_API_KEY)
+
     try:
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"}
+        )
         with urllib.request.urlopen(req, timeout=60) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-            log.info(f"Transcription done: {text[:80]}")
+
+            # Check for safety blocks or empty candidates
+            candidates = result.get("candidates", [])
+            if not candidates:
+                log.error(f"No candidates in Gemini response: {result}")
+                return None
+
+            candidate = candidates[0]
+
+            # Check finish reason
+            finish_reason = candidate.get("finishReason", "")
+            if finish_reason in ("SAFETY", "RECITATION", "OTHER"):
+                log.error(f"Gemini blocked response: finishReason={finish_reason}")
+                return None
+
+            parts = candidate.get("content", {}).get("parts", [])
+            if not parts:
+                log.error(f"Empty parts in Gemini response: {candidate}")
+                return None
+
+            text = parts[0].get("text", "").strip()
+            if not text:
+                log.error("Empty text in Gemini response")
+                return None
+
+            log.info(f"Transcription done ({len(text)} chars): {text[:80]}")
             return text
+
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        log.error(f"Gemini HTTP error {e.code}: {body[:200]}")
+        return None
+    except urllib.error.URLError as e:
+        log.error(f"Gemini URL error: {e}")
+        return None
     except Exception as e:
-        log.error(f"Gemini transcribe error: {e}")
+        log.error(f"Gemini transcribe unexpected error: {e}")
         return None
 
 
@@ -172,20 +265,29 @@ async def _transcribe_with_gemini(audio_bytes: bytes, mime_type: str = "audio/og
 def _classify_transcript(text: str) -> str:
     lower = text.lower()
 
-    task_words = ["karna hai", "krna hai", "karna he", "todo", "task", "kaam",
-                  "yaad dilana", "remind", "meeting", "call karna", "buy"]
-    expense_words = ["kharcha", "karcha", "kharch", "rupees", "rs", "spent", "paisa"]
-    memory_words = ["yaad rakhna", "remember", "note karo", "save karo", "important"]
+    task_words    = ["karna hai", "krna hai", "karna he", "todo", "task", "kaam",
+                     "yaad dilana", "remind", "meeting", "call karna", "buy"]
+    expense_words = ["kharcha", "karcha", "kharch", "rupees", "rs", "spent", "paisa",
+                     "laga", "lagaya", "diye"]
+    memory_words  = ["yaad rakhna", "remember", "note karo", "save karo", "important",
+                     "memory mein", "yaad rakh"]
 
-    task_score = sum(1 for w in task_words if w in lower)
+    task_score    = sum(1 for w in task_words    if w in lower)
     expense_score = sum(1 for w in expense_words if w in lower)
-    memory_score = sum(1 for w in memory_words if w in lower)
+    memory_score  = sum(1 for w in memory_words  if w in lower)
 
+    # Agar number hai aur expense word hai → expense
     if re.search(r'\d+', lower) and expense_score >= 1:
         return "expense"
 
-    best = max([("task", task_score), ("memory", memory_score), ("expense", expense_score), ("diary", 1)], key=lambda x: x[1])
-    return best[0] if best[1] > 0 else "diary"
+    scores = [
+        ("task",    task_score),
+        ("memory",  memory_score),
+        ("expense", expense_score),
+        ("diary",   1),  # default
+    ]
+    best = max(scores, key=lambda x: x[1])
+    return best[0]
 
 
 # ================================================================
@@ -202,68 +304,89 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     user_name = update.effective_user.first_name or "User"
-    duration = getattr(voice, "duration", 0)
+    duration  = getattr(voice, "duration", 0) or 0
 
+    # Step 1: Ack karo
     status_msg = await update.message.reply_text(
         f"🎙️ *Voice note mila! ({duration}s)*\n\n⏳ Transcribe ho raha hai...",
         parse_mode="Markdown"
     )
 
+    # Step 2: Download
     try:
-        file_obj = await ctx.bot.get_file(voice.file_id)
+        file_obj    = await ctx.bot.get_file(voice.file_id)
         audio_bytes = await file_obj.download_as_bytearray()
         audio_bytes = bytes(audio_bytes)
+        log.info(f"Voice downloaded: {len(audio_bytes)} bytes, file_id={voice.file_id}")
     except Exception as e:
         log.error(f"Voice download error: {e}")
-        await status_msg.edit_text("❌ Voice download fail ho gaya!")
+        await status_msg.edit_text(
+            f"❌ *Voice download fail ho gaya!*\n\nError: `{str(e)[:100]}`",
+            parse_mode="Markdown"
+        )
         return
 
-    mime_type = getattr(voice, "mime_type", "audio/ogg") or "audio/ogg"
-    if "mp4" in mime_type or "m4a" in mime_type:
-        mime_type = "audio/mp4"
-    elif "webm" in mime_type:
-        mime_type = "audio/webm"
-    else:
-        mime_type = "audio/ogg"
+    if not audio_bytes or len(audio_bytes) < 100:
+        await status_msg.edit_text("❌ Audio file empty ya corrupt hai!")
+        return
+
+    # Step 3: Mime type
+    mime_type = _get_mime_type(voice)
+    log.info(f"Using mime_type: {mime_type} for transcription")
+
+    # Step 4: Transcribe
+    await status_msg.edit_text(
+        f"🎙️ *Voice note mila! ({duration}s)*\n\n🤖 Gemini transcribe kar raha hai...",
+        parse_mode="Markdown"
+    )
 
     transcript = await _transcribe_with_gemini(audio_bytes, mime_type)
 
     if not transcript:
-        await status_msg.edit_text("❌ *Transcription fail ho gaya!* Dobara try karo.", parse_mode="Markdown")
+        await status_msg.edit_text(
+            "❌ *Transcription fail ho gaya!*\n\n"
+            "Possible reasons:\n"
+            "• GEMINI_API_KEY sahi nahi\n"
+            "• Audio too short/silent\n"
+            "• Network issue\n\n"
+            "Dobara try karo.",
+            parse_mode="Markdown"
+        )
         if voice_store:
             voice_store.add("[Transcription Failed]", "none", duration, "Failed")
         return
 
+    # Step 5: Classify & Save
     category = _classify_transcript(transcript)
-    saved_to = "diary"
+    saved_to  = "diary"
     extra_info = ""
 
     if category == "task":
         t = tasks.add(transcript[:100])
-        saved_to = f"task #{t['id']}"
+        saved_to   = f"task #{t['id']}"
         extra_info = f"✅ Task #{t['id']} bana diya!"
 
     elif category == "expense":
         m = re.search(r'(\d+(?:\.\d+)?)', transcript)
         if m:
             amount = float(m.group(1))
-            desc = re.sub(r'\d+(?:\.\d+)?', "", transcript).strip() or "Voice expense"
+            desc   = re.sub(r'\d+(?:\.\d+)?', "", transcript).strip() or "Voice expense"
             expenses.add(amount, desc[:60])
-            saved_to = "expenses"
+            saved_to   = "expenses"
             extra_info = f"💸 Rs.{amount} expense add ho gaya!"
         else:
             diary.add(f"[Voice] {transcript}")
-            saved_to = "diary"
+            saved_to   = "diary"
             extra_info = "📖 Diary mein save kiya (amount nahi mila)"
 
     elif category == "memory":
         memory.add(transcript)
-        saved_to = "memory"
+        saved_to   = "memory"
         extra_info = "🧠 Memory mein save ho gaya!"
 
-    else:
+    else:  # diary
         diary.add(f"[Voice] {transcript}")
-        saved_to = "diary"
+        saved_to   = "diary"
         extra_info = "📖 Diary mein save ho gaya!"
 
     if voice_store:
@@ -284,6 +407,10 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+# ================================================================
+# COMMAND: /voicenotes
+# ================================================================
+
 async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not voice_store:
         await update.message.reply_text("❌ Voice store unavailable")
@@ -291,7 +418,9 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     recent = voice_store.get_recent(10)
     if not recent:
-        await update.message.reply_text("🎙️ Koi voice note nahi hai abhi.\n\nVoice message bhejo — main transcribe kar dunga!")
+        await update.message.reply_text(
+            "🎙️ Koi voice note nahi hai abhi.\n\nVoice message bhejo — main transcribe kar dunga!"
+        )
         return
 
     lines = []
@@ -302,8 +431,15 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"   _{v['transcript'][:100]}_"
         )
 
-    await update.message.reply_text(f"🎙️ *Recent Voice Notes:*\n\n" + "\n\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text(
+        f"🎙️ *Recent Voice Notes:*\n\n" + "\n\n".join(lines),
+        parse_mode="Markdown"
+    )
 
+
+# ================================================================
+# REGISTER
+# ================================================================
 
 def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
