@@ -34,7 +34,7 @@ except ImportError:
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # ✅ FLASH use karo — PRO audio transcription support NAHI karta!
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
 
 _last_call = 0
 
