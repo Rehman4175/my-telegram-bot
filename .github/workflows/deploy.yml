@@ -23,35 +23,35 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        ffmpeg -version
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Download Vosk Model (REQUIRED for offline voice)
+    - name: Download Vosk Model
       run: |
         echo "📥 Downloading Vosk model..."
-        wget -q --show-progress https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
-        echo "📦 Extracting model..."
+        wget -q https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
         unzip -q vosk-model-small-hi-0.22.zip
         rm vosk-model-small-hi-0.22.zip
-        echo "✅ Vosk model downloaded and extracted"
-        ls -la vosk-model-small-hi-0.22/ | head -5
+        echo "✅ Vosk model ready"
     
-    - name: Kill previous bot instance (FIX CONFLICT)
+    - name: FORCE KILL all previous bot instances
       run: |
-        echo "🔪 Killing previous bot instances..."
-        pkill -f "python.*main.py" || true
-        pkill -f "python.*bot.py" || true
-        sleep 3
+        echo "🔪 Killing all Python bot processes..."
+        sudo pkill -9 -f "python.*main.py" || true
+        sudo pkill -9 -f "python.*bot.py" || true
+        sudo pkill -9 -f "python.*voice" || true
+        sudo killall python3 || true
+        sleep 5
     
-    - name: Delete webhook (FIX CONFLICT)
+    - name: FORCE DELETE webhook
       run: |
-        echo "🗑️ Deleting old webhook..."
+        echo "🗑️ Force deleting webhook..."
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/deleteWebhook?drop_pending_updates=true"
-        sleep 2
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/setWebhook" -d "url="
+        sleep 3
     
     - name: Run bot
       env:
@@ -64,7 +64,5 @@ jobs:
         DELETE_PASSWORD: ${{ secrets.DELETE_PASSWORD }}
         VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22
       run: |
-        echo "🚀 Starting bot..."
-        echo "Model path: $VOSK_MODEL_PATH"
-        ls -la $VOSK_MODEL_PATH || echo "⚠️ Model not found!"
+        echo "🚀 Starting bot with fresh instance..."
         python main.py
