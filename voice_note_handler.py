@@ -3,7 +3,7 @@
 """
 VOICE NOTE HANDLER — Rk Bot
 FIX: gemini-2.5-flash, retry on 503, correct debug labels
-ENHANCED: Multi-category support (expense, reminder, habit, water, task, memory, bill, calendar)
+ENHANCED: Multi-category support with OFFLINE VOICE FALLBACK
 """
 
 import os
@@ -14,6 +14,7 @@ import urllib.request
 import urllib.error
 import re
 import base64
+import asyncio
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime, timedelta
 
@@ -33,7 +34,6 @@ except ImportError:
     _SDM_AVAILABLE = False
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
 
 _last_call = 0
@@ -44,6 +44,116 @@ def _rate_limit():
     if elapsed < 2:
         time.sleep(2 - elapsed)
     _last_call = time.time()
+
+
+# ================================================================
+# OFFLINE VOICE RECOGNITION (VOSK)
+# ================================================================
+
+VOSK_AVAILABLE = False
+try:
+    from vosk import Model, KaldiRecognizer
+    from pydub import AudioSegment
+    VOSK_AVAILABLE = True
+    log.info("Vosk imported successfully")
+except ImportError as e:
+    log.warning(f"Vosk not available: {e}")
+
+class OfflineTranscriber:
+    def __init__(self):
+        self.model = None
+        self.available = False
+        model_path = os.environ.get("VOSK_MODEL_PATH", "vosk-model-small-hi-0.22")
+        
+        # Check multiple possible paths
+        possible_paths = [
+            model_path,
+            "vosk-model-small-hi-0.22",
+            "/home/runner/work/vosk-model-small-hi-0.22",
+            os.path.join(os.getcwd(), "vosk-model-small-hi-0.22")
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                model_path = path
+                break
+        
+        if VOSK_AVAILABLE and os.path.exists(model_path):
+            try:
+                self.model = Model(model_path)
+                self.available = True
+                log.info(f"✅ Offline Vosk model loaded from {model_path}")
+            except Exception as e:
+                log.error(f"Failed to load Vosk model: {e}")
+        else:
+            log.warning(f"❌ Vosk model not found at {model_path}")
+    
+    async def transcribe(self, audio_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
+        """Convert audio bytes to text using local Vosk model"""
+        if not self.available:
+            return None, "Offline model not available"
+        
+        temp_ogg = "temp_voice.ogg"
+        temp_wav = "temp_voice.wav"
+        
+        try:
+            # Save temp file
+            with open(temp_ogg, "wb") as f:
+                f.write(audio_bytes)
+            
+            # Run conversion in thread to avoid blocking
+            def convert_audio():
+                audio = AudioSegment.from_ogg(temp_ogg)
+                audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+                audio.export(temp_wav, format="wav")
+            
+            await asyncio.to_thread(convert_audio)
+            
+            # Transcribe
+            rec = KaldiRecognizer(self.model, 16000)
+            text_parts = []
+            
+            with open(temp_wav, "rb") as f:
+                while True:
+                    data = f.read(4000)
+                    if not data:
+                        break
+                    if rec.AcceptWaveform(data):
+                        result = json.loads(rec.Result())
+                        if result.get("text"):
+                            text_parts.append(result["text"])
+                
+                final = json.loads(rec.FinalResult())
+                if final.get("text"):
+                    text_parts.append(final["text"])
+            
+            text = " ".join(text_parts).strip()
+            
+            # Cleanup
+            for f in [temp_ogg, temp_wav]:
+                if os.path.exists(f):
+                    os.remove(f)
+            
+            if text:
+                log.info(f"✅ Offline transcribed: {text[:80]}")
+                return text, None
+            else:
+                return None, "No speech detected"
+            
+        except Exception as e:
+            log.error(f"Offline transcription error: {e}")
+            # Cleanup on error
+            for f in [temp_ogg, temp_wav]:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except:
+                        pass
+            return None, str(e)
+
+# Initialize offline transcriber
+offline_recognizer = OfflineTranscriber()
+
 
 # ================================================================
 # ENHANCED STORES (Reminders, Habits, Water, Bills, Calendar)
@@ -428,16 +538,12 @@ if _SDM_AVAILABLE:
 else:
     voice_store = None
 
+
 # ================================================================
-# GEMINI TRANSCRIPTION
+# GEMINI TRANSCRIPTION (ONLINE)
 # ================================================================
 
-async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Returns: (transcript_text, error_message)
-    Success: ("text...", None)
-    Failure: (None, "exact error detail")
-    """
+async def transcribe_audio_gemini(audio_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
     if not GEMINI_API_KEY:
         return None, "GEMINI_API_KEY GitHub Secret mein set nahi hai!"
 
@@ -527,23 +633,47 @@ Numbers in digits: 10, 100, 500."""
     text = re.sub(r'\n+', ' ', text).strip()
     text = re.sub(r'^(transcription|hinglish|text|output)[:\s]*', '', text, flags=re.IGNORECASE)
 
-    log.info(f"✅ Transcribed: {text[:80]}")
+    log.info(f"✅ Gemini transcribed: {text[:80]}")
     return text.strip(), None
+
+
+# ================================================================
+# TRANSCRIPTION WITH FALLBACK (Online -> Offline)
+# ================================================================
+
+async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[str], str]:
+    """
+    Returns: (transcript_text, error_message, source)
+    source: 'gemini', 'offline', or None
+    """
+    source = None
+    
+    # Try Gemini first (if API key exists)
+    if GEMINI_API_KEY:
+        transcript, error = await transcribe_audio_gemini(audio_bytes)
+        if transcript:
+            return transcript, None, "gemini"
+        log.warning(f"Gemini failed: {error}")
+    
+    # Fallback to offline Vosk
+    log.info("Falling back to offline Vosk transcription...")
+    transcript, error = await offline_recognizer.transcribe(audio_bytes)
+    
+    if transcript:
+        return transcript, None, "offline"
+    else:
+        return None, error or "Both online and offline transcription failed", None
+
 
 # ================================================================
 # ENHANCED CLASSIFICATION WITH KEYWORD ROUTING
 # ================================================================
 
 def parse_reminder_time(text: str) -> Tuple[str, str, int, str]:
-    """
-    Extract time from reminder text
-    Returns: (clean_text, time_str, time_value, time_unit)
-    """
     time_value = 0
     time_unit = ""
     time_str = ""
     
-    # Pattern: "2 minute", "5 min", "1 hour", "30 seconds", "2 din", "1 day"
     patterns = [
         (r'(\d+)\s*(minute|min|m)', 'minute'),
         (r'(\d+)\s*(second|sec|s)', 'second'),
@@ -556,7 +686,6 @@ def parse_reminder_time(text: str) -> Tuple[str, str, int, str]:
         if match:
             time_value = int(match.group(1))
             time_unit = unit
-            # Calculate due time
             now = datetime.now()
             if unit == 'minute':
                 due = now + timedelta(minutes=time_value)
@@ -569,22 +698,16 @@ def parse_reminder_time(text: str) -> Tuple[str, str, int, str]:
             else:
                 due = now
             time_str = due.strftime("%Y-%m-%d %H:%M:%S")
-            # Remove time part from text
             text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
             break
     
     return text, time_str, time_value, time_unit
 
 def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
-    """
-    Returns: (category, data)
-    Categories: expense, reminder, habit, water, task, memory, bill, calendar, diary
-    """
     original = text
     lower = text.lower().strip()
     
-    # ── 1. EXPENSE ─────────────────────────────────────────────────
-    # Pattern: "expense 500 movie ticket" or "kharcha 100 chai"
+    # 1. EXPENSE
     expense_patterns = [
         r'^(expense|kharcha|karcha|exp)\s+(\d+(?:\.\d+)?)(?:\s+(.+))?$',
         r'^(\d+(?:\.\d+)?)\s+(?:rs|rupees|rupaye)?\s+(?:kharch|expense|kharcha).+$'
@@ -604,7 +727,7 @@ def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
                 description = "Expense"
             return "expense", {"amount": amount, "description": description[:100]}
     
-    # ── 2. REMINDER ────────────────────────────────────────────────
+    # 2. REMINDER
     reminder_match = re.match(r'^(reminder|remind|yaad dilana|rem)\s+(.+)$', lower, re.IGNORECASE)
     if reminder_match:
         reminder_text = reminder_match.group(2)
@@ -616,13 +739,13 @@ def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
             "time_unit": time_unit
         }
     
-    # ── 3. HABIT ───────────────────────────────────────────────────
+    # 3. HABIT
     habit_match = re.match(r'^(habit|aadat|hab)\s+(.+)$', lower, re.IGNORECASE)
     if habit_match:
         habit_text = habit_match.group(2)
         return "habit", {"text": habit_text[:150]}
     
-    # ── 4. WATER INTAKE ────────────────────────────────────────────
+    # 4. WATER
     water_patterns = [
         r'^(water|pani|paani|water intake)\s+(\d+(?:\.\d+)?)\s*(glass|bottle|liter|ltr|ml)?',
         r'^(\d+(?:\.\d+)?)\s*(glass|bottle|liter|ltr|ml)?\s+(water|pani|paani)',
@@ -642,36 +765,33 @@ def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
                 unit = "glass"
             return "water", {"amount": amount, "unit": unit}
     
-    # ── 5. TASK ────────────────────────────────────────────────────
+    # 5. TASK
     task_match = re.match(r'^(task|kaam|tk)\s+(.+)$', lower, re.IGNORECASE)
     if task_match:
         task_text = task_match.group(2)
         return "task", {"text": task_text[:200]}
     
-    # ── 6. MEMORY ──────────────────────────────────────────────────
+    # 6. MEMORY
     memory_match = re.match(r'^(memory|yaad rakhna|remember|mem)\s+(.+)$', lower, re.IGNORECASE)
     if memory_match:
         memory_text = memory_match.group(2)
         return "memory", {"text": memory_text[:200]}
     
-    # ── 7. BILL ────────────────────────────────────────────────────
+    # 7. BILL
     bill_match = re.match(r'^(bill|payment|bil)\s+(\d+(?:\.\d+)?)(?:\s+(.+))?$', lower, re.IGNORECASE)
     if bill_match:
         amount = float(bill_match.group(2))
         description = bill_match.group(3) or ""
         return "bill", {"amount": amount, "description": description[:100]}
     
-    # ── 8. CALENDAR (Meeting/Appointment) ──────────────────────────
+    # 8. CALENDAR
     calendar_match = re.match(r'^(calendar|meeting|appointment|cal|mtg)\s+(.+)$', lower, re.IGNORECASE)
     if calendar_match:
         event_text = calendar_match.group(2)
-        # Extract date if present
         date_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)', event_text, re.IGNORECASE)
-        # Extract time if present
         time_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm))', event_text, re.IGNORECASE)
         event_date = date_match.group(1) if date_match else ""
         event_time = time_match.group(1) if time_match else ""
-        # Clean event text
         if date_match:
             event_text = event_text.replace(date_match.group(1), "").strip()
         if time_match:
@@ -683,8 +803,9 @@ def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
             "event_time": event_time
         }
     
-    # ── 9. DEFAULT: DIARY ──────────────────────────────────────────
+    # 9. DEFAULT: DIARY
     return "diary", {"text": text[:500]}
+
 
 # ================================================================
 # MAIN HANDLER
@@ -716,22 +837,22 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ *Download fail!*\n\n`{str(e)[:150]}`", parse_mode="Markdown")
         return
 
-    # Transcribe
+    # Transcribe with fallback
     await status_msg.edit_text(
-        f"🎙️ *Voice note* ({duration}s, {len(audio_bytes)//1024}KB)\n\n🤖 Gemini 2.5 Flash transcribe kar raha hai...",
+        f"🎙️ *Voice note* ({duration}s, {len(audio_bytes)//1024}KB)\n\n🤖 Transcribe kar raha hai...\n(Pehle Gemini try karega, fir offline)",
         parse_mode="Markdown"
     )
 
-    transcript, error = await transcribe_audio(audio_bytes)
+    transcript, error, source = await transcribe_audio(audio_bytes)
 
-    # ── FAILURE ──────────────────────────────────────────────────
+    # Failure
     if not transcript:
         await status_msg.edit_text(
             f"❌ *Transcription fail!*\n\n"
             f"*Error:*\n`{error}`\n\n"
             f"*Debug:*\n"
-            f"• API key: `{'SET ✅' if GEMINI_API_KEY else 'MISSING ❌'}`\n"
-            f"• Model: `gemini-2.5-flash`\n"
+            f"• Gemini API: `{'SET ✅' if GEMINI_API_KEY else 'MISSING ❌'}`\n"
+            f"• Offline Vosk: `{'✅' if offline_recognizer.available else '❌'}`\n"
             f"• Audio: `{len(audio_bytes)} bytes`\n"
             f"• Duration: `{duration}s`",
             parse_mode="Markdown"
@@ -740,7 +861,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             voice_store.add(f"[FAIL: {str(error)[:60]}]", "none", "failed", duration, "Failed")
         return
 
-    # ── Classify & Save ──────────────────────────────────────────
+    # Success - Classify and Save
     category, data = _classify_transcript(transcript)
     saved_to = "diary"
     extra_info = ""
@@ -749,52 +870,55 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"
     }
     emoji = emoji_map.get(category, "📝")
+    
+    source_emoji = "🌐" if source == "gemini" else "📴"
+    source_text = "Gemini (Online)" if source == "gemini" else "Vosk (Offline)"
 
-    # ── EXPENSE ────────────────────────────────────────────────────
+    # EXPENSE
     if category == "expense":
         expenses.add(data["amount"], data["description"])
         saved_to = "expenses"
         extra_info = f"Rs.{data['amount']} add kar diya!\n📝 *{data['description'][:50]}*"
 
-    # ── REMINDER ───────────────────────────────────────────────────
+    # REMINDER
     elif category == "reminder" and reminders:
         r = reminders.add(data["text"], data["due_time"])
         saved_to = f"reminder #{r['id']}"
         time_info = f" ⏰ {data['time_value']}{data['time_unit']}" if data['time_value'] else ""
         extra_info = f"Reminder #{r['id']} set!{time_info}\n📌 *{data['text'][:50]}*"
 
-    # ── HABIT ─────────────────────────────────────────────────────
+    # HABIT
     elif category == "habit" and habits:
         h = habits.add(data["text"])
         saved_to = f"habit #{h['id']}"
         extra_info = f"Habit #{h['id']} add kar diya!\n📌 *{data['text'][:50]}*"
 
-    # ── WATER INTAKE ──────────────────────────────────────────────
+    # WATER
     elif category == "water" and water_intake:
         w = water_intake.add(data["amount"], data["unit"])
         saved_to = "water"
         total = water_intake.today_total()
         extra_info = f"{data['amount']} {data['unit']} water logged!\n🚰 Total today: {total} {data['unit']}"
 
-    # ── TASK ──────────────────────────────────────────────────────
+    # TASK
     elif category == "task":
         t = tasks.add(data["text"])
         saved_to = f"task #{t['id']}"
         extra_info = f"Task #{t['id']} add kar diya!\n📌 *{data['text'][:60]}*"
 
-    # ── MEMORY ────────────────────────────────────────────────────
+    # MEMORY
     elif category == "memory":
         memory.add(data["text"])
         saved_to = "memory"
         extra_info = f"Smart memory mein save kar liya!\n📝 *{data['text'][:60]}*"
 
-    # ── BILL ──────────────────────────────────────────────────────
+    # BILL
     elif category == "bill" and bills:
         b = bills.add(data["amount"], data["description"])
         saved_to = f"bill #{b['id']}"
         extra_info = f"Bill Rs.{data['amount']} add!\n📝 *{data['description'][:50]}*"
 
-    # ── CALENDAR ──────────────────────────────────────────────────
+    # CALENDAR
     elif category == "calendar" and calendar_events:
         e = calendar_events.add(data["text"], data["event_date"], data["event_time"])
         saved_to = f"calendar #{e['id']}"
@@ -804,8 +928,8 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if data['event_time']:
             extra_info += f" ⏰ {data['event_time']}"
 
-    # ── DEFAULT: DIARY ────────────────────────────────────────────
-    else:  # diary
+    # DIARY (default)
+    else:
         diary.add(f"[Voice] {data['text']}")
         saved_to = "diary"
         extra_info = f"Diary mein save kar diya!"
@@ -821,6 +945,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'─'*20}\n"
         f"💾 {extra_info}\n\n"
         f"🎤 Category: *{category.upper()}*\n"
+        f"{source_emoji} Source: *{source_text}*\n"
         f"/voicenotes — Purane notes dekho"
     )
     await status_msg.edit_text(response_text, parse_mode="Markdown")
@@ -830,8 +955,9 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+
 # ================================================================
-# /voicenotes COMMAND
+# COMMANDS
 # ================================================================
 
 async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -876,9 +1002,6 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ================================================================
-# /voicehelp COMMAND
-# ================================================================
 
 async def cmd_voicehelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     help_text = """🎙️ *Voice Note Commands & Categories*
@@ -889,39 +1012,25 @@ Just send a voice message starting with a keyword!
 *Available Categories:*
 
 💸 *EXPENSE* — `expense 500 movie ticket`
-   → Saves to Expenses sheet
-
 ⏰ *REMINDER* — `reminder 5 minute baad pani peena`
-   → Saves to Reminders sheet with due time
-
 🔥 *HABIT* — `habit subah 5 baje uthna`
-   → Saves to Habits sheet
-
 💧 *WATER* — `water 2 glass` or `pani 1 liter`
-   → Logs water intake
-
 ✅ *TASK* — `task report submit karna hai`
-   → Saves to Tasks sheet
-
 🧠 *MEMORY* — `memory passport number 1234`
-   → Saves to Smart Memory
-
 🧾 *BILL* — `bill 1000 bijli ka`
-   → Saves to Bills sheet
+📅 *CALENDAR* — `calendar monday 3pm meeting`
+📖 *DIARY* — (default) `aaj acha din tha`
 
-📅 *CALENDAR* — `calendar monday 3pm doctor appointment`
-   → Saves to Calendar Events
-
-📖 *DIARY* — (default) `aaj bahut acha din tha`
-   → Saves to Diary
+*Transcription Source:*
+• 🌐 Gemini (Online) - High accuracy
+• 📴 Vosk (Offline) - Fallback when Gemini busy
 
 *Commands:*
-/voicenotes — See recent voice notes
-/voicehelp — Show this help
-
-*Note:* Don't know the keyword? Just speak naturally, I'll try to understand!
+/voicenotes — Recent voice notes
+/voicehelp — This help
 """
     await update.message.reply_text(help_text, parse_mode="Markdown")
+
 
 # ================================================================
 # REGISTER
@@ -931,4 +1040,8 @@ def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
     app.add_handler(CommandHandler("voicehelp", cmd_voicehelp))
-    log.info("✅ Voice handlers registered — model: gemini-2.5-flash with multi-category support")
+    
+    # Log status
+    gemini_status = "✅" if GEMINI_API_KEY else "❌"
+    vosk_status = "✅" if offline_recognizer.available else "❌"
+    log.info(f"✅ Voice handlers registered — Gemini: {gemini_status} | Vosk: {vosk_status}")
