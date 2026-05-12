@@ -2,13 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIXED v5:
-  - PREFIX SYSTEM: "diary add ...", "task add ...", "reminder add ..." → strict routing
-  - Fallback: keyword-based classification (improved)
-  - Reminder: chat_id properly stored → alarm triggers correctly
-  - Google Sheets: connection verified + retry + detailed logs
-  - Expense: won't go to diary anymore
-  - All categories: expense, reminder, task, habit, water, memory, bill, calendar, diary
+FIXED v6:
+  - REMINDER FIX: Full timestamp storage (YYYY-MM-DD HH:MM:SS) instead of just HH:MM
+  - Alarm will trigger correctly now
+  - All other features same as v5
 """
 
 import os
@@ -443,21 +440,17 @@ async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[
 
 
 # ================================================================
-# ✅ CLASSIFICATION SYSTEM — v5
+# ✅ CLASSIFICATION SYSTEM — v6 (FIXED REMINDER TIMESTAMP)
 #
 # STEP 1: PREFIX DETECTION (highest priority)
-#   "diary add ...", "task add ...", "reminder add ...", etc.
-#   → Jo bhi prefix ke baad bolo, wahi content save hoga
-#
-# STEP 2: KEYWORD FALLBACK (agar prefix nahi mila)
-#   → Broad keyword matching with confidence scoring
+# STEP 2: KEYWORD FALLBACK
 # ================================================================
 
 # --- All valid prefixes mapped to categories ---
 PREFIX_MAP = {
     # Diary
     "diary":        "diary",
-    "dairy":        "diary",   # common typo/mispronunciation
+    "dairy":        "diary",
     # Task
     "task":         "task",
     "todo":         "task",
@@ -503,12 +496,6 @@ def _try_prefix_match(text: str, chat_id: str = "") -> Optional[Tuple[str, Dict[
     """
     Check if transcript starts with a known category prefix.
     Returns (category, params) or None.
-
-    Supports:
-      "diary add aaj acha din tha"
-      "task karo report submit"
-      "reminder 5 minute baad pani peena"
-      "kharcha 500 chai pe"   ← "kharcha" itself is prefix
     """
     lower   = text.lower().strip()
     matched_category = None
@@ -523,7 +510,7 @@ def _try_prefix_match(text: str, chat_id: str = "") -> Optional[Tuple[str, Dict[
             words = rest.split()
             if words and words[0] in _ADD_WORDS:
                 rest = " ".join(words[1:]).strip()
-            content = rest or text  # fallback to full text if nothing left
+            content = rest or text
             content_start = len(text) - len(content)
             break
 
@@ -547,25 +534,24 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
         if amount_m:
             amount = float(amount_m.group(1))
             desc   = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
-            # Remove noise words
             for nw in ["rs", "rupees", "rupaye", "kharcha", "karcha", "kharch",
                        "add", "karo", "kr", "kiya", "tha", "hua", "diye", "laga", "spent"]:
                 desc = re.sub(r'\b' + re.escape(nw) + r'\b', ' ', desc, flags=re.IGNORECASE)
             desc = " ".join(desc.split()).strip() or "Expense"
             return "expense", {"amount": amount, "description": desc[:100]}
         else:
-            # No amount found — save to diary with note
             return "diary", {"text": f"[Expense note — no amount] {content[:500]}"}
 
     elif category == "reminder":
-        clean, due_time, t_val, t_unit = _parse_reminder_duration(lower)
+        # FIXED: Now returns FULL TIMESTAMP instead of just HH:MM
+        clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(lower)
         clean = " ".join(clean.split()).strip() or content
         return "reminder", {
             "text": clean[:200],
-            "due_time": due_time,
+            "due_timestamp": full_timestamp,  # ← FULL DATETIME (YYYY-MM-DD HH:MM:SS)
             "time_value": t_val,
             "time_unit": t_unit,
-            "chat_id": chat_id,   # ← critical for alarm trigger
+            "chat_id": chat_id,
         }
 
     elif category == "task":
@@ -624,31 +610,48 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
         return "diary", {"text": content[:500]}
 
 
-def _parse_reminder_duration(text: str) -> Tuple[str, str, int, str]:
-    """Extract time duration. Returns (clean_text, due_time_HH:MM, value, unit)"""
+def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
+    """
+    Extract time duration and return FULL TIMESTAMP.
+    Returns: (clean_text, full_timestamp_YYYY_MM_DD_HH_MM_SS, value, unit)
+    
+    Example: "5 minute baad pani piyo" 
+    → ("pani piyo", "2026-05-12 15:30:00", 5, "minute")
+    """
     patterns = [
         (r'(\d+)\s*(minute|min|mins|m)\b',   'minute'),
         (r'(\d+)\s*(second|sec|secs)\b',      'second'),
         (r'(\d+)\s*(hour|hr|hours|ghanta)\b', 'hour'),
         (r'(\d+)\s*(day|days|din)\b',         'day'),
     ]
+    
     for pattern, unit in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             value = int(match.group(1))
-            now   = datetime.now()
+            now = now_ist() if 'now_ist' in dir() else datetime.now()
+            
             if unit == 'minute':
                 due = now + timedelta(minutes=value)
             elif unit == 'second':
                 due = now + timedelta(seconds=value)
             elif unit == 'hour':
                 due = now + timedelta(hours=value)
-            else:
+            else:  # day
                 due = now + timedelta(days=value)
-            due_str = due.strftime("%H:%M")
-            clean   = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
-            return clean, due_str, value, unit
-    return text, "", 0, ""
+            
+            # 🔥 KEY FIX: Return FULL TIMESTAMP (not just HH:MM)
+            full_timestamp = due.strftime("%Y-%m-%d %H:%M:%S")
+            clean = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+            
+            log.info(f"⏰ Reminder parsed: {value} {unit} from now → {full_timestamp}")
+            return clean, full_timestamp, value, unit
+    
+    # No time pattern found → default to 5 minutes
+    default_time = (now_ist() if 'now_ist' in dir() else datetime.now()) + timedelta(minutes=5)
+    full_timestamp = default_time.strftime("%Y-%m-%d %H:%M:%S")
+    log.info(f"⏰ No time specified, defaulting to 5 minutes → {full_timestamp}")
+    return text, full_timestamp, 5, "minute"
 
 
 def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, Any]]:
@@ -811,16 +814,23 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── REMINDER ─────────────────────────────────────────────
     elif category == "reminder" and reminders:
-        due_time = data.get("due_time", "")
+        # 🔥 FIXED: Using full_timestamp instead of due_time
+        due_timestamp = data.get("due_timestamp", "")
         rem_text = data.get("text", "Reminder")
-        # chat_id MUST be passed so alarm triggers in correct chat
-        r_chat_id = data.get("chat_id") or chat_id
-        r        = reminders.add(r_chat_id, rem_text, due_time, repeat="once")
+        r_chat_id = int(data.get("chat_id") or chat_id)  # Convert to int
+        
+        # Store with FULL TIMESTAMP
+        r = reminders.add(
+            chat_id=r_chat_id,
+            text=rem_text,
+            due_timestamp=due_timestamp,  # ← Now full datetime
+            repeat="once"
+        )
         saved_to = f"reminder #{r['id']}"
         t_val    = data.get('time_value', 0)
         t_unit   = data.get('time_unit', '')
-        time_info = f" — {t_val} {t_unit}" if t_val else (f" — at {due_time}" if due_time else "")
-        extra_info = f"⏰ Reminder #{r['id']} set!{time_info}\n📌 *{rem_text[:60]}*"
+        time_info = f" — {t_val} {t_unit}" if t_val else ""
+        extra_info = f"⏰ Reminder #{r['id']} set!{time_info}\n📌 *{rem_text[:60]}*\n🕐 Will trigger at: *{due_timestamp}*"
 
     # ── TASK ─────────────────────────────────────────────────
     elif category == "task":
@@ -954,7 +964,7 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_voicehelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎙️ *Voice Note Guide — v5*\n\n"
+        "🎙️ *Voice Note Guide — v6 (Fixed Reminders)*\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "*🎯 PREFIX SYSTEM (Sabse reliable!)*\n"
         "Pehle category bolo, phir 'add', phir content:\n\n"
@@ -1024,14 +1034,14 @@ def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(CommandHandler("voicenotes",   cmd_voicenotes))
     app.add_handler(CommandHandler("voicehelp",    cmd_voicehelp))
-    app.add_handler(CommandHandler("sheetsdbg",    cmd_sheets_debug))   # ← new debug command
+    app.add_handler(CommandHandler("sheetsdbg",    cmd_sheets_debug))
 
     gemini_status = "✅" if GEMINI_API_KEY else "❌"
     vosk_status   = "✅" if offline_recognizer.available else "❌"
     sheets_status = "✅" if _SDM_AVAILABLE and sheets_backup and getattr(sheets_backup, 'connected', False) else "❌"
 
     log.info("═" * 50)
-    log.info("✅ Voice handlers registered (v5)")
+    log.info("✅ Voice handlers registered (v6 - Fixed Reminders)")
     log.info(f"   🌐 Gemini API   : {gemini_status}")
     log.info(f"   📴 Vosk Offline : {vosk_status}")
     log.info(f"   📊 Google Sheets: {sheets_status}")
