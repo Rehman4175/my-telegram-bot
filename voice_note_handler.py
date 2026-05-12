@@ -3,6 +3,7 @@
 """
 VOICE NOTE HANDLER — Rk Bot
 WITH OFFLINE VOSK SUPPORT (Fallback when Gemini busy)
+FIXED: Better model path detection + Sheets fallback
 """
 
 import os
@@ -28,8 +29,9 @@ try:
         now_ist, today_str, now_str, PrivateStore
     )
     _SDM_AVAILABLE = True
-except ImportError:
-    log.error("secure_data_manager import failed!")
+    log.info("✅ secure_data_manager loaded successfully")
+except ImportError as e:
+    log.error(f"secure_data_manager import failed: {e}")
     _SDM_AVAILABLE = False
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -46,7 +48,7 @@ def _rate_limit():
 
 
 # ================================================================
-# OFFLINE VOICE RECOGNITION (VOSK)
+# OFFLINE VOICE RECOGNITION (VOSK) - FIXED PATH DETECTION
 # ================================================================
 
 VOSK_AVAILABLE = False
@@ -54,43 +56,49 @@ try:
     from vosk import Model, KaldiRecognizer
     from pydub import AudioSegment
     VOSK_AVAILABLE = True
-    log.info("Vosk imported successfully")
+    log.info("✅ Vosk imported successfully")
 except ImportError as e:
-    log.warning(f"Vosk not available: {e}")
+    log.warning(f"⚠️ Vosk not available: {e}")
 
 class OfflineTranscriber:
     def __init__(self):
         self.model = None
         self.available = False
-        model_path = os.environ.get("VOSK_MODEL_PATH", "vosk-model-small-hi-0.22")
         
-        # Check multiple possible paths
+        # Try ALL possible paths for the model
         possible_paths = [
-            model_path,
+            os.environ.get("VOSK_MODEL_PATH", ""),
             "vosk-model-small-hi-0.22",
+            os.path.join(os.getcwd(), "vosk-model-small-hi-0.22"),
+            os.path.join(os.path.dirname(__file__), "vosk-model-small-hi-0.22"),
             "/home/runner/work/vosk-model-small-hi-0.22",
-            os.path.join(os.getcwd(), "vosk-model-small-hi-0.22")
+            "/home/runner/work/your-repo-name/vosk-model-small-hi-0.22",
+            "/github/workspace/vosk-model-small-hi-0.22",
+            "/opt/hostedtoolcache/vosk-model-small-hi-0.22",
         ]
         
+        model_path = None
         for path in possible_paths:
-            if os.path.exists(path):
+            if path and os.path.exists(path) and os.path.isdir(path):
                 model_path = path
+                log.info(f"✅ Found Vosk model at: {path}")
                 break
         
-        if VOSK_AVAILABLE and os.path.exists(model_path):
+        if VOSK_AVAILABLE and model_path:
             try:
                 self.model = Model(model_path)
                 self.available = True
-                log.info(f"✅ Offline Vosk model loaded from {model_path}")
+                log.info(f"✅ Offline Vosk model loaded successfully from {model_path}")
             except Exception as e:
-                log.error(f"Failed to load Vosk model: {e}")
+                log.error(f"❌ Failed to load Vosk model: {e}")
         else:
-            log.warning(f"❌ Vosk model not found at {model_path}")
+            log.warning(f"⚠️ Vosk model not found. Searched in: {possible_paths}")
+            log.warning("⚠️ Offline voice recognition will NOT work. Gemini will be used as fallback.")
     
     async def transcribe(self, audio_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
         """Convert audio bytes to text using local Vosk model"""
         if not self.available:
-            return None, "Offline model not available"
+            return None, "Offline model not available - using Gemini only"
         
         temp_ogg = "temp_voice.ogg"
         temp_wav = "temp_voice.wav"
@@ -131,7 +139,10 @@ class OfflineTranscriber:
             # Cleanup
             for f in [temp_ogg, temp_wav]:
                 if os.path.exists(f):
-                    os.remove(f)
+                    try:
+                        os.remove(f)
+                    except:
+                        pass
             
             if text:
                 log.info(f"✅ Offline transcribed: {text[:80]}")
@@ -149,7 +160,7 @@ class OfflineTranscriber:
                         pass
             return None, str(e)
 
-# Initialize offline transcriber
+# Initialize offline transcriber (may not be available)
 offline_recognizer = OfflineTranscriber()
 
 
@@ -169,7 +180,8 @@ class ReminderStore:
     
     def _ensure_sheet_tab(self):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
+                log.debug("Sheets not available, skipping tab creation")
                 return
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
             if self.TAB_NAME not in existing:
@@ -181,11 +193,11 @@ class ReminderStore:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
         except Exception as e:
-            log.warning(f"Reminders tab error: {e}")
+            log.debug(f"Reminders tab error (non-critical): {e}")
     
     def _append_to_sheet(self, row):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             ws = sheets_backup._ws_cache.get(self.TAB_NAME)
             if not ws:
@@ -194,7 +206,7 @@ class ReminderStore:
             if ws:
                 ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
         except Exception as e:
-            log.warning(f"Sheet append error: {e}")
+            log.debug(f"Sheet append error: {e}")
     
     def add(self, text: str, due_time: str = "") -> Dict[str, Any]:
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
@@ -229,7 +241,7 @@ class HabitStore:
     
     def _ensure_sheet_tab(self):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
             if self.TAB_NAME not in existing:
@@ -241,11 +253,11 @@ class HabitStore:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
         except Exception as e:
-            log.warning(f"Habits tab error: {e}")
+            log.debug(f"Habits tab error: {e}")
     
     def _append_to_sheet(self, row):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             ws = sheets_backup._ws_cache.get(self.TAB_NAME)
             if not ws:
@@ -254,7 +266,7 @@ class HabitStore:
             if ws:
                 ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
         except Exception as e:
-            log.warning(f"Sheet append error: {e}")
+            log.debug(f"Sheet append error: {e}")
     
     def add(self, name: str) -> Dict[str, Any]:
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
@@ -288,7 +300,7 @@ class WaterStore:
     
     def _ensure_sheet_tab(self):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
             if self.TAB_NAME not in existing:
@@ -300,11 +312,11 @@ class WaterStore:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
         except Exception as e:
-            log.warning(f"Water tab error: {e}")
+            log.debug(f"Water tab error: {e}")
     
     def _append_to_sheet(self, row):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             ws = sheets_backup._ws_cache.get(self.TAB_NAME)
             if not ws:
@@ -313,7 +325,7 @@ class WaterStore:
             if ws:
                 ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
         except Exception as e:
-            log.warning(f"Sheet append error: {e}")
+            log.debug(f"Sheet append error: {e}")
     
     def add(self, amount: float, unit: str = "glass") -> Dict[str, Any]:
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
@@ -355,7 +367,7 @@ class BillStore:
     
     def _ensure_sheet_tab(self):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
             if self.TAB_NAME not in existing:
@@ -367,11 +379,11 @@ class BillStore:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
         except Exception as e:
-            log.warning(f"Bills tab error: {e}")
+            log.debug(f"Bills tab error: {e}")
     
     def _append_to_sheet(self, row):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             ws = sheets_backup._ws_cache.get(self.TAB_NAME)
             if not ws:
@@ -380,7 +392,7 @@ class BillStore:
             if ws:
                 ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
         except Exception as e:
-            log.warning(f"Sheet append error: {e}")
+            log.debug(f"Sheet append error: {e}")
     
     def add(self, amount: float, description: str = "", due_date: str = "") -> Dict[str, Any]:
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
@@ -411,7 +423,7 @@ class CalendarStore:
     
     def _ensure_sheet_tab(self):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
             if self.TAB_NAME not in existing:
@@ -423,11 +435,11 @@ class CalendarStore:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
         except Exception as e:
-            log.warning(f"Calendar tab error: {e}")
+            log.debug(f"Calendar tab error: {e}")
     
     def _append_to_sheet(self, row):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             ws = sheets_backup._ws_cache.get(self.TAB_NAME)
             if not ws:
@@ -436,7 +448,7 @@ class CalendarStore:
             if ws:
                 ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
         except Exception as e:
-            log.warning(f"Sheet append error: {e}")
+            log.debug(f"Sheet append error: {e}")
     
     def add(self, event: str, event_date: str = "", event_time: str = "") -> Dict[str, Any]:
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
@@ -462,8 +474,10 @@ if _SDM_AVAILABLE:
     water_intake = WaterStore()
     bills = BillStore()
     calendar_events = CalendarStore()
+    log.info("✅ All voice stores initialized")
 else:
     reminders = habits = water_intake = bills = calendar_events = None
+    log.warning("⚠️ Voice stores not available (SDM missing)")
 
 # ================================================================
 # VOICE NOTE STORE
@@ -481,7 +495,7 @@ class VoiceNoteStore:
 
     def _ensure_sheet_tab(self):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
             if self.TAB_NAME not in existing:
@@ -495,11 +509,11 @@ class VoiceNoteStore:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
         except Exception as e:
-            log.warning(f"VoiceNotes tab error: {e}")
+            log.debug(f"VoiceNotes tab error: {e}")
 
     def _append_to_sheet(self, row):
         try:
-            if not sheets_backup._book:
+            if not sheets_backup or not sheets_backup._book:
                 return
             ws = sheets_backup._ws_cache.get(self.TAB_NAME)
             if not ws:
@@ -508,7 +522,7 @@ class VoiceNoteStore:
             if ws:
                 ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
         except Exception as e:
-            log.warning(f"Sheet append error: {e}")
+            log.debug(f"Sheet append error: {e}")
 
     def add(self, transcript: str, saved_to: str = "diary", category: str = "diary",
             duration: int = 0, status: str = "Success"):
@@ -533,6 +547,7 @@ class VoiceNoteStore:
 
 if _SDM_AVAILABLE:
     voice_store = VoiceNoteStore()
+    log.info("✅ VoiceNoteStore initialized")
 else:
     voice_store = None
 
@@ -653,14 +668,16 @@ async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[
             return transcript, None, "gemini"
         log.warning(f"Gemini failed: {error}")
     
-    # Fallback to offline Vosk
-    log.info("Falling back to offline Vosk transcription...")
-    transcript, error = await offline_recognizer.transcribe(audio_bytes)
-    
-    if transcript:
-        return transcript, None, "offline"
+    # Fallback to offline Vosk (if available)
+    if offline_recognizer.available:
+        log.info("Falling back to offline Vosk transcription...")
+        transcript, error = await offline_recognizer.transcribe(audio_bytes)
+        if transcript:
+            return transcript, None, "offline"
+        else:
+            return None, error or "Both online and offline transcription failed", None
     else:
-        return None, error or "Both online and offline transcription failed", None
+        return None, "No transcription method available (Gemini API missing and Vosk model not found)", None
 
 
 # ================================================================
@@ -811,7 +828,7 @@ def _classify_transcript(text: str) -> Tuple[str, Dict[str, Any]]:
 
 async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _SDM_AVAILABLE:
-        await update.message.reply_text("❌ Voice feature unavailable")
+        await update.message.reply_text("❌ Voice feature unavailable - secure_data_manager not loaded")
         return
 
     voice = update.message.voice or update.message.audio
@@ -845,12 +862,13 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Failure
     if not transcript:
+        vosk_status = "✅" if offline_recognizer.available else "❌"
         await status_msg.edit_text(
             f"❌ *Transcription fail!*\n\n"
             f"*Error:*\n`{error}`\n\n"
             f"*Debug:*\n"
             f"• Gemini API: `{'SET ✅' if GEMINI_API_KEY else 'MISSING ❌'}`\n"
-            f"• Offline Vosk: `{'✅' if offline_recognizer.available else '❌'}`\n"
+            f"• Offline Vosk: `{vosk_status}`\n"
             f"• Audio: `{len(audio_bytes)} bytes`\n"
             f"• Duration: `{duration}s`",
             parse_mode="Markdown"
@@ -949,7 +967,8 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await status_msg.edit_text(response_text, parse_mode="Markdown")
 
     try:
-        sheets_backup.log_event("voice_note", user_name, f"[{category}] {transcript[:80]}")
+        if sheets_backup:
+            sheets_backup.log_event("voice_note", user_name, f"[{category}] {transcript[:80]}")
     except Exception:
         pass
 
@@ -1045,4 +1064,11 @@ def register_voice_handlers(app):
     # Log status
     gemini_status = "✅" if GEMINI_API_KEY else "❌"
     vosk_status = "✅" if offline_recognizer.available else "❌"
-    log.info(f"✅ Voice handlers registered — Gemini: {gemini_status} | Vosk: {vosk_status}")
+    sheets_status = "✅" if _SDM_AVAILABLE and sheets_backup and sheets_backup.connected else "❌"
+    
+    log.info("═" * 50)
+    log.info("✅ Voice handlers registered")
+    log.info(f"   🌐 Gemini API: {gemini_status}")
+    log.info(f"   📴 Vosk Offline: {vosk_status}")
+    log.info(f"   📊 Google Sheets: {sheets_status}")
+    log.info("═" * 50)
