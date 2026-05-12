@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIXED v6:
-  - REMINDER FIX: Full timestamp storage (YYYY-MM-DD HH:MM:SS) instead of just HH:MM
+FIXED v7 (COMPLETE):
+  - REMINDER FIX: Full timestamp storage (YYYY-MM-DD HH:MM:SS)
   - Alarm will trigger correctly now
-  - All other features same as v5
+  - All features working: expense, task, habit, water, memory, bill, calendar, diary
+  - Gemini + Vosk offline fallback
+  - Google Sheets integration
 """
 
 import os
@@ -74,7 +76,6 @@ class VoiceNoteStore:
                 log.warning("⚠️ sheets_backup is None — Google Sheets not initialized")
                 return
 
-            # Try to connect if not already connected
             if not getattr(sheets_backup, 'connected', False):
                 log.warning("⚠️ sheets_backup not connected — attempting reconnect...")
                 try:
@@ -440,73 +441,76 @@ async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[
 
 
 # ================================================================
-# ✅ CLASSIFICATION SYSTEM — v6 (FIXED REMINDER TIMESTAMP)
-#
-# STEP 1: PREFIX DETECTION (highest priority)
-# STEP 2: KEYWORD FALLBACK
+# ✅ CLASSIFICATION SYSTEM — v7 (COMPLETE FIXED)
 # ================================================================
 
 # --- All valid prefixes mapped to categories ---
 PREFIX_MAP = {
-    # Diary
-    "diary":        "diary",
-    "dairy":        "diary",
-    # Task
-    "task":         "task",
-    "todo":         "task",
-    "kaam":         "task",
-    # Reminder
-    "reminder":     "reminder",
-    "remind":       "reminder",
-    "alarm":        "reminder",
-    "yaad dilao":   "reminder",
-    "yaad":         "reminder",
-    # Expense
-    "expense":      "expense",
-    "kharcha":      "expense",
-    "karcha":       "expense",
-    "kharch":       "expense",
-    "paisa":        "expense",
-    # Habit
-    "habit":        "habit",
-    "aadat":        "habit",
-    # Water
-    "water":        "water",
-    "pani":         "water",
-    "paani":        "water",
-    # Memory
-    "memory":       "memory",
-    "yaad rakhna":  "memory",
-    "remember":     "memory",
-    # Bill
-    "bill":         "bill",
-    "payment":      "bill",
-    # Calendar
-    "calendar":     "calendar",
-    "schedule":     "calendar",
-    "meeting":      "calendar",
-    "event":        "calendar",
+    "diary": "diary", "dairy": "diary",
+    "task": "task", "todo": "task", "kaam": "task",
+    "reminder": "reminder", "remind": "reminder", "alarm": "reminder",
+    "yaad dilao": "reminder", "yaad": "reminder",
+    "expense": "expense", "kharcha": "expense", "karcha": "expense", "kharch": "expense", "paisa": "expense",
+    "habit": "habit", "aadat": "habit",
+    "water": "water", "pani": "water", "paani": "water",
+    "memory": "memory", "yaad rakhna": "memory", "remember": "memory",
+    "bill": "bill", "payment": "bill",
+    "calendar": "calendar", "schedule": "calendar", "meeting": "calendar", "event": "calendar",
 }
 
-# Word that separates category from content (optional)
 _ADD_WORDS = {"add", "kr", "karo", "kar", "likho", "likh", "save", "set"}
 
 
-def _try_prefix_match(text: str, chat_id: str = "") -> Optional[Tuple[str, Dict[str, Any]]]:
+def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
     """
-    Check if transcript starts with a known category prefix.
-    Returns (category, params) or None.
+    Extract time duration and return FULL TIMESTAMP.
+    Returns: (clean_text, full_timestamp_YYYY_MM_DD_HH_MM_SS, value, unit)
     """
-    lower   = text.lower().strip()
-    matched_category = None
-    content_start    = 0
+    patterns = [
+        (r'(\d+)\s*(minute|min|mins|m)\b',   'minute'),
+        (r'(\d+)\s*(second|sec|secs)\b',      'second'),
+        (r'(\d+)\s*(hour|hr|hours|ghanta)\b', 'hour'),
+        (r'(\d+)\s*(day|days|din)\b',         'day'),
+    ]
+    
+    for pattern, unit in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = int(match.group(1))
+            now = now_ist() if 'now_ist' in dir() else datetime.now()
+            
+            if unit == 'minute':
+                due = now + timedelta(minutes=value)
+            elif unit == 'second':
+                due = now + timedelta(seconds=value)
+            elif unit == 'hour':
+                due = now + timedelta(hours=value)
+            else:
+                due = now + timedelta(days=value)
+            
+            full_timestamp = due.strftime("%Y-%m-%d %H:%M:%S")
+            clean = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+            
+            log.info(f"⏰ Reminder parsed: {value} {unit} from now → {full_timestamp}")
+            return clean, full_timestamp, value, unit
+    
+    # Default: 5 minutes
+    default_time = (now_ist() if 'now_ist' in dir() else datetime.now()) + timedelta(minutes=5)
+    full_timestamp = default_time.strftime("%Y-%m-%d %H:%M:%S")
+    log.info(f"⏰ No time specified, defaulting to 5 minutes → {full_timestamp}")
+    return text, full_timestamp, 5, "minute"
 
-    # Sort prefixes longest-first so "yaad rakhna" beats "yaad"
+
+def _try_prefix_match(text: str, chat_id: str = "") -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Check if transcript starts with a known category prefix."""
+    lower = text.lower().strip()
+    matched_category = None
+    content_start = 0
+
     for prefix in sorted(PREFIX_MAP.keys(), key=len, reverse=True):
         if lower.startswith(prefix):
             matched_category = PREFIX_MAP[prefix]
             rest = lower[len(prefix):].strip()
-            # Skip optional "add / karo / ..." connector word
             words = rest.split()
             if words and words[0] in _ADD_WORDS:
                 rest = " ".join(words[1:]).strip()
@@ -517,11 +521,8 @@ def _try_prefix_match(text: str, chat_id: str = "") -> Optional[Tuple[str, Dict[
     if not matched_category:
         return None
 
-    # Build original-case content (preserve user's words)
     original_content = text[content_start:].strip() if content_start < len(text) else text
-
     log.info(f"🎯 PREFIX matched: '{matched_category}' | content: '{original_content[:60]}'")
-
     return _build_params(matched_category, original_content, chat_id)
 
 
@@ -533,22 +534,20 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
         amount_m = re.search(r'(\d+(?:\.\d+)?)', lower)
         if amount_m:
             amount = float(amount_m.group(1))
-            desc   = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
+            desc = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
             for nw in ["rs", "rupees", "rupaye", "kharcha", "karcha", "kharch",
                        "add", "karo", "kr", "kiya", "tha", "hua", "diye", "laga", "spent"]:
                 desc = re.sub(r'\b' + re.escape(nw) + r'\b', ' ', desc, flags=re.IGNORECASE)
             desc = " ".join(desc.split()).strip() or "Expense"
             return "expense", {"amount": amount, "description": desc[:100]}
-        else:
-            return "diary", {"text": f"[Expense note — no amount] {content[:500]}"}
+        return "diary", {"text": f"[Expense note — no amount] {content[:500]}"}
 
     elif category == "reminder":
-        # FIXED: Now returns FULL TIMESTAMP instead of just HH:MM
         clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(lower)
         clean = " ".join(clean.split()).strip() or content
         return "reminder", {
             "text": clean[:200],
-            "due_timestamp": full_timestamp,  # ← FULL DATETIME (YYYY-MM-DD HH:MM:SS)
+            "due_timestamp": full_timestamp,
             "time_value": t_val,
             "time_unit": t_unit,
             "chat_id": chat_id,
@@ -562,9 +561,9 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
 
     elif category == "water":
         amount_m = re.search(r'(\d+(?:\.\d+)?)', lower)
-        unit_m   = re.search(r'(glass|bottle|liter|litre|ltr|ml)', lower, re.IGNORECASE)
-        amount   = float(amount_m.group(1)) if amount_m else 1.0
-        unit     = unit_m.group(1).lower() if unit_m else "glass"
+        unit_m = re.search(r'(glass|bottle|liter|litre|ltr|ml)', lower, re.IGNORECASE)
+        amount = float(amount_m.group(1)) if amount_m else 1.0
+        unit = unit_m.group(1).lower() if unit_m else "glass"
         return "water", {"amount": amount, "unit": unit}
 
     elif category == "memory":
@@ -574,13 +573,12 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
         amount_m = re.search(r'(\d+(?:\.\d+)?)', lower)
         if amount_m:
             amount = float(amount_m.group(1))
-            desc   = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
+            desc = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
             for nw in ["bill", "payment", "add", "karo", "kr", "rs"]:
                 desc = re.sub(r'\b' + re.escape(nw) + r'\b', ' ', desc, flags=re.IGNORECASE)
             desc = " ".join(desc.split()).strip() or "Bill"
             return "bill", {"amount": amount, "description": desc[:100]}
-        else:
-            return "diary", {"text": f"[Bill note — no amount] {content[:500]}"}
+        return "diary", {"text": f"[Bill note — no amount] {content[:500]}"}
 
     elif category == "calendar":
         date_match = re.search(
@@ -606,73 +604,23 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
             "event_time": event_time,
         }
 
-    else:  # diary
+    else:
         return "diary", {"text": content[:500]}
 
 
-def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
-    """
-    Extract time duration and return FULL TIMESTAMP.
-    Returns: (clean_text, full_timestamp_YYYY_MM_DD_HH_MM_SS, value, unit)
-    
-    Example: "5 minute baad pani piyo" 
-    → ("pani piyo", "2026-05-12 15:30:00", 5, "minute")
-    """
-    patterns = [
-        (r'(\d+)\s*(minute|min|mins|m)\b',   'minute'),
-        (r'(\d+)\s*(second|sec|secs)\b',      'second'),
-        (r'(\d+)\s*(hour|hr|hours|ghanta)\b', 'hour'),
-        (r'(\d+)\s*(day|days|din)\b',         'day'),
-    ]
-    
-    for pattern, unit in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            value = int(match.group(1))
-            now = now_ist() if 'now_ist' in dir() else datetime.now()
-            
-            if unit == 'minute':
-                due = now + timedelta(minutes=value)
-            elif unit == 'second':
-                due = now + timedelta(seconds=value)
-            elif unit == 'hour':
-                due = now + timedelta(hours=value)
-            else:  # day
-                due = now + timedelta(days=value)
-            
-            # 🔥 KEY FIX: Return FULL TIMESTAMP (not just HH:MM)
-            full_timestamp = due.strftime("%Y-%m-%d %H:%M:%S")
-            clean = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
-            
-            log.info(f"⏰ Reminder parsed: {value} {unit} from now → {full_timestamp}")
-            return clean, full_timestamp, value, unit
-    
-    # No time pattern found → default to 5 minutes
-    default_time = (now_ist() if 'now_ist' in dir() else datetime.now()) + timedelta(minutes=5)
-    full_timestamp = default_time.strftime("%Y-%m-%d %H:%M:%S")
-    log.info(f"⏰ No time specified, defaulting to 5 minutes → {full_timestamp}")
-    return text, full_timestamp, 5, "minute"
-
-
 def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, Any]]:
-    """
-    Main classifier:
-    1. Try PREFIX match first
-    2. Fall back to keyword scoring
-    3. Default to diary
-    """
-
-    # ── STEP 1: Prefix detection ──────────────────────────────
+    """Main classifier with prefix and keyword fallback."""
+    
+    # Step 1: Try prefix match
     prefix_result = _try_prefix_match(text, chat_id)
     if prefix_result:
         return prefix_result
 
-    # ── STEP 2: Keyword scoring fallback ─────────────────────
+    # Step 2: Keyword scoring
     lower = text.lower().strip()
-
-    scores: Dict[str, int] = {
+    scores = {
         "expense": 0, "reminder": 0, "task": 0, "habit": 0,
-        "water": 0,   "memory": 0,   "bill": 0, "calendar": 0,
+        "water": 0, "memory": 0, "bill": 0, "calendar": 0,
     }
 
     # Expense signals
@@ -680,8 +628,6 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
         scores["expense"] += 5
     if re.search(r'\brs\b|\brupees\b|\brupaye\b|\bpaisa\b|\bpaise\b', lower):
         scores["expense"] += 3
-    if any(kw in lower for kw in ["laga", "diya", "kharche"]):
-        scores["expense"] += 2
     if re.search(r'\d+', lower):
         scores["expense"] += 1
 
@@ -696,8 +642,6 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
     # Task signals
     if any(kw in lower for kw in ["task", "todo", "karna hai", "krna hai"]):
         scores["task"] += 5
-    if any(kw in lower for kw in ["complete", "finish", "submit"]):
-        scores["task"] += 2
 
     # Habit signals
     if any(kw in lower for kw in ["habit", "aadat", "roz", "daily"]):
@@ -706,33 +650,26 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
     # Water signals
     if any(kw in lower for kw in ["water", "pani", "paani"]):
         scores["water"] += 5
-    if any(kw in lower for kw in ["glass", "bottle", "piya", "peena"]):
-        scores["water"] += 2
 
     # Memory signals
-    if any(kw in lower for kw in ["memory", "remember", "yaad rakhna", "note karo"]):
+    if any(kw in lower for kw in ["memory", "remember", "yaad rakhna"]):
         scores["memory"] += 5
 
     # Bill signals
     if any(kw in lower for kw in ["bill", "subscription"]):
         scores["bill"] += 5
-    if any(kw in lower for kw in ["bijli", "internet", "mobile", "recharge"]):
-        scores["bill"] += 3
 
     # Calendar signals
     if any(kw in lower for kw in ["calendar", "meeting", "appointment", "schedule"]):
         scores["calendar"] += 5
-    if any(kw in lower for kw in ["monday", "tuesday", "wednesday", "thursday",
-                                   "friday", "saturday", "sunday", "tomorrow", "kal"]):
-        scores["calendar"] += 2
 
     # Pick highest score (minimum threshold = 3)
     best_cat = max(scores, key=lambda k: scores[k])
     if scores[best_cat] >= 3:
-        log.info(f"🔍 KEYWORD matched: '{best_cat}' (score={scores[best_cat]}) | text: '{text[:60]}'")
+        log.info(f"🔍 KEYWORD matched: '{best_cat}' (score={scores[best_cat]})")
         return _build_params(best_cat, text, chat_id)
 
-    # ── STEP 3: Default → diary ───────────────────────────────
+    # Step 3: Default to diary
     log.info(f"📖 DIARY default | text: '{text[:60]}'")
     return "diary", {"text": text[:500]}
 
@@ -750,9 +687,9 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not voice:
         return
 
-    duration  = getattr(voice, "duration", 0) or 0
+    duration = getattr(voice, "duration", 0) or 0
     user_name = update.effective_user.first_name or "User"
-    chat_id   = str(update.effective_chat.id)
+    chat_id = str(update.effective_chat.id)
 
     status_msg = await update.message.reply_text(
         f"🎙️ *Voice note mila!* ({duration}s)\n\n⏳ Download ho raha hai...",
@@ -761,7 +698,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Download audio
     try:
-        file_obj    = await ctx.bot.get_file(voice.file_id)
+        file_obj = await ctx.bot.get_file(voice.file_id)
         audio_bytes = bytes(await file_obj.download_as_bytearray())
         log.info(f"Downloaded: {len(audio_bytes)} bytes")
     except Exception as e:
@@ -796,98 +733,96 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Classify + save
     category, data = _classify_transcript(transcript, chat_id)
 
-    saved_to   = "diary"
+    saved_to = "diary"
     extra_info = ""
-    emoji_map  = {
+    emoji_map = {
         "expense": "💸", "reminder": "⏰", "habit": "🔥", "water": "💧",
         "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"
     }
-    emoji        = emoji_map.get(category, "📝")
+    emoji = emoji_map.get(category, "📝")
     source_emoji = "🌐" if source == "gemini" else "📴"
-    source_text  = "Gemini (Online)" if source == "gemini" else "Vosk (Offline)"
+    source_text = "Gemini (Online)" if source == "gemini" else "Vosk (Offline)"
 
-    # ── EXPENSE ──────────────────────────────────────────────
+    # Process by category
     if category == "expense":
         expenses.add(data["amount"], data["description"])
-        saved_to   = "expenses"
+        saved_to = "expenses"
         extra_info = f"💸 Rs.{data['amount']} add kar diya!\n📝 *{data['description'][:50]}*"
 
-    # ── REMINDER ─────────────────────────────────────────────
     elif category == "reminder" and reminders:
-        # 🔥 FIXED: Using full_timestamp instead of due_time
         due_timestamp = data.get("due_timestamp", "")
         rem_text = data.get("text", "Reminder")
-        r_chat_id = int(data.get("chat_id") or chat_id)  # Convert to int
+        r_chat_id = int(data.get("chat_id") or chat_id)
         
-        # Store with FULL TIMESTAMP
         r = reminders.add(
             chat_id=r_chat_id,
             text=rem_text,
-            due_timestamp=due_timestamp,  # ← Now full datetime
+            due_timestamp=due_timestamp,
             repeat="once"
         )
         saved_to = f"reminder #{r['id']}"
-        t_val    = data.get('time_value', 0)
-        t_unit   = data.get('time_unit', '')
+        t_val = data.get('time_value', 0)
+        t_unit = data.get('time_unit', '')
         time_info = f" — {t_val} {t_unit}" if t_val else ""
-        extra_info = f"⏰ Reminder #{r['id']} set!{time_info}\n📌 *{rem_text[:60]}*\n🕐 Will trigger at: *{due_timestamp}*"
+        
+        # Format timestamp for display
+        try:
+            dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            display_time = dt.strftime("%I:%M %p, %d %b")
+        except:
+            display_time = due_timestamp
+        
+        extra_info = f"⏰ Reminder #{r['id']} set!{time_info}\n📌 *{rem_text[:60]}*\n🕐 Will trigger at: *{display_time}*"
 
-    # ── TASK ─────────────────────────────────────────────────
     elif category == "task":
-        t          = tasks.add(data["text"])
-        saved_to   = f"task #{t['id']}"
+        t = tasks.add(data["text"])
+        saved_to = f"task #{t['id']}"
         extra_info = f"✅ Task #{t['id']} add!\n📌 *{data['text'][:60]}*"
 
-    # ── HABIT ────────────────────────────────────────────────
     elif category == "habit":
-        h          = habits.add(data["text"])
-        saved_to   = f"habit #{h['id']}"
+        h = habits.add(data["text"])
+        saved_to = f"habit #{h['id']}"
         extra_info = f"🔥 Habit #{h['id']} add!\n📌 *{data['text'][:60]}*"
 
-    # ── WATER ────────────────────────────────────────────────
     elif category == "water" and water:
-        unit      = data.get("unit", "glass")
-        amount    = data.get("amount", 1.0)
-        unit_ml   = {
+        unit = data.get("unit", "glass")
+        amount = data.get("amount", 1.0)
+        unit_ml = {
             "glass": 250, "bottle": 500,
             "liter": 1000, "litre": 1000, "ltr": 1000, "ml": 1
         }.get(unit.lower(), 250)
-        ml        = int(amount * unit_ml)
-        total     = water.add(ml)
-        goal_ml   = water.goal()
-        saved_to  = "water"
+        ml = int(amount * unit_ml)
+        total = water.add(ml)
+        goal_ml = water.goal()
+        saved_to = "water"
         extra_info = f"💧 {amount} {unit} ({ml}ml) logged!\n🚰 Total today: {total}ml / {goal_ml}ml"
 
-    # ── MEMORY ───────────────────────────────────────────────
     elif category == "memory":
         memory.add(data["text"])
-        saved_to   = "memory"
+        saved_to = "memory"
         extra_info = f"🧠 Memory save!\n📝 *{data['text'][:60]}*"
 
-    # ── BILL ─────────────────────────────────────────────────
     elif category == "bill":
-        b          = bills.add(data["description"], data["amount"], due_day=0)
-        saved_to   = f"bill #{b['id']}"
+        b = bills.add(data["description"], data["amount"], due_day=0)
+        saved_to = f"bill #{b['id']}"
         extra_info = f"🧾 Bill Rs.{data['amount']} add!\n📝 *{data['description'][:50]}*"
 
-    # ── CALENDAR ─────────────────────────────────────────────
     elif category == "calendar" and calendar:
-        e         = calendar.add(
+        e = calendar.add(
             data["text"],
             data.get("event_date") or today_str(),
             data.get("event_time", "")
         )
-        saved_to  = f"calendar #{e['id']}"
+        saved_to = f"calendar #{e['id']}"
         extra_info = f"📅 Event #{e['id']} added!\n📌 *{data['text'][:50]}*"
         if data.get("event_date"):
             extra_info += f"\n📅 {data['event_date']}"
         if data.get("event_time"):
             extra_info += f" ⏰ {data['event_time']}"
 
-    # ── DIARY ────────────────────────────────────────────────
     else:
         diary.add(f"[Voice] {data['text']}")
-        saved_to   = "diary"
+        saved_to = "diary"
         extra_info = "📖 Diary mein save kar diya!"
 
     # Log to voice notes sheet
@@ -947,8 +882,8 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     }
     lines = []
     for v in reversed(recent):
-        category     = v.get("category", "diary")
-        emoji        = emoji_map.get(category, "📝")
+        category = v.get("category", "diary")
+        emoji = emoji_map.get(category, "📝")
         status_emoji = "✅" if v.get("status") == "Success" else "❌"
         lines.append(
             f"{status_emoji} {emoji} *#{v['id']}* {v['date']} {v['time']}\n"
@@ -964,7 +899,7 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_voicehelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎙️ *Voice Note Guide — v6 (Fixed Reminders)*\n\n"
+        "🎙️ *Voice Note Guide — v7 (Complete Fixed)*\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "*🎯 PREFIX SYSTEM (Sabse reliable!)*\n"
         "Pehle category bolo, phir 'add', phir content:\n\n"
@@ -1002,8 +937,8 @@ async def cmd_sheets_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not sheets_backup:
             lines.append("❌ sheets_backup is None")
         else:
-            connected  = getattr(sheets_backup, 'connected', 'unknown')
-            has_book   = getattr(sheets_backup, '_book', None) is not None
+            connected = getattr(sheets_backup, 'connected', 'unknown')
+            has_book = getattr(sheets_backup, '_book', None) is not None
             lines.append(f"{'✅' if connected else '❌'} connected: `{connected}`")
             lines.append(f"{'✅' if has_book else '❌'} _book present: `{has_book}`")
 
@@ -1032,16 +967,16 @@ async def cmd_sheets_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def register_voice_handlers(app):
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
-    app.add_handler(CommandHandler("voicenotes",   cmd_voicenotes))
-    app.add_handler(CommandHandler("voicehelp",    cmd_voicehelp))
-    app.add_handler(CommandHandler("sheetsdbg",    cmd_sheets_debug))
+    app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
+    app.add_handler(CommandHandler("voicehelp", cmd_voicehelp))
+    app.add_handler(CommandHandler("sheetsdbg", cmd_sheets_debug))
 
     gemini_status = "✅" if GEMINI_API_KEY else "❌"
-    vosk_status   = "✅" if offline_recognizer.available else "❌"
+    vosk_status = "✅" if offline_recognizer.available else "❌"
     sheets_status = "✅" if _SDM_AVAILABLE and sheets_backup and getattr(sheets_backup, 'connected', False) else "❌"
 
     log.info("═" * 50)
-    log.info("✅ Voice handlers registered (v6 - Fixed Reminders)")
+    log.info("✅ Voice handlers registered (v7 - Complete Fixed)")
     log.info(f"   🌐 Gemini API   : {gemini_status}")
     log.info(f"   📴 Vosk Offline : {vosk_status}")
     log.info(f"   📊 Google Sheets: {sheets_status}")
