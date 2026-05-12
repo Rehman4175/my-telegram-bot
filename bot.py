@@ -1889,21 +1889,14 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Reminder job runs every 60 seconds - THIS IS ENOUGH!
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
-        log.info("Reminder job scheduled (every 60s)")
-
-    # Start reminder checker background task from reminder_bot.py
-    try:
-        from reminder_bot import reminder_checker
-        import asyncio
-        asyncio.create_task(reminder_checker(app))
-        log.info("✅ Reminder checker background task started")
-    except Exception as e:
-        log.warning(f"Could not start reminder_checker: {e}")
+        log.info("⏰ Reminder job scheduled (every 60s)")
+    else:
+        log.warning("⚠️ JobQueue not available - reminders may not work!")
 
     log.info("Bot ready! Starting polling...")
-    # Use drop_pending_updates=True to ignore old updates
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
