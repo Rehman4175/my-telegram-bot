@@ -1,4 +1,4 @@
-name: Deploy Bot
+name: Deploy Bot with Offline Voice
 
 on:
   push:
@@ -17,33 +17,39 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+        cache: 'pip'
 
-    - name: Install dependencies
+    - name: Install ffmpeg
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Cache Vosk Model
-      id: cache-vosk
-      uses: actions/cache@v3
-      with:
-        path: vosk-model-small-hi-0.22
-        key: ${{ runner.os }}-vosk-model-v1
-
-    - name: Download Vosk Model
-      if: steps.cache-vosk.outputs.cache-hit != 'true'
+    - name: Download Vosk Model (GitHub Actions path)
       run: |
+        # Download model to current directory
         wget -q https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
         unzip -q vosk-model-small-hi-0.22.zip
         rm vosk-model-small-hi-0.22.zip
+        ls -la vosk-model-small-hi-0.22/
+        
+        # Set environment variable for model path
+        echo "VOSK_MODEL_PATH=$(pwd)/vosk-model-small-hi-0.22" >> $GITHUB_ENV
 
-    - name: Kill old instance (IMPORTANT!)
+    - name: Kill previous bot instance
       run: |
-        # Kill any existing bot process
-        sudo pkill -f "python.*bot.py" || true
-        sudo pkill -f "python.*main.py" || true
-        sleep 5
+        pkill -f "python.*bot.py" || true
+        pkill -f "python.*main.py" || true
+        sleep 3
+
+    - name: Delete webhook (fix conflict)
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/deleteWebhook?drop_pending_updates=true"
+        sleep 2
 
     - name: Run bot
       env:
@@ -56,11 +62,9 @@ jobs:
         DELETE_PASSWORD: ${{ secrets.DELETE_PASSWORD }}
         VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22
       run: |
-        # Delete webhook (prevents conflict)
-        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        # Verify model exists
+        echo "VOSK_MODEL_PATH=$VOSK_MODEL_PATH"
+        ls -la $VOSK_MODEL_PATH || echo "Model not found!"
         
-        # Add small delay
-        sleep 3
-        
-        # Run with polling but single instance
-        python bot.py
+        # Run bot
+        python main.py
