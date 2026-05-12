@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIXED v7 (COMPLETE):
-  - REMINDER FIX: Full timestamp storage (YYYY-MM-DD HH:MM:SS)
-  - Alarm will trigger correctly now
-  - All features working: expense, task, habit, water, memory, bill, calendar, diary
-  - Gemini + Vosk offline fallback
-  - Google Sheets integration
+FIXED v8 (FINAL):
+  - VOSK FIRST: Offline transcription priority (more reliable for Hinglish)
+  - Gemini fallback only if Vosk fails
+  - Better Hinglish time parsing ("2 minute baad", "5 min mein", etc.)
+  - Proper text cleanup for voice commands
+  - Full timestamp storage (YYYY-MM-DD HH:MM:SS)
+  - All categories working: expense, reminder, task, habit, water, memory, bill, calendar, diary
 """
 
 import os
@@ -70,27 +71,22 @@ class VoiceNoteStore:
         self._ensure_sheet_tab()
 
     def _ensure_sheet_tab(self):
-        """Ensure Voice Notes tab exists in Google Sheets — with detailed logging."""
+        """Ensure Voice Notes tab exists in Google Sheets"""
         try:
             if not sheets_backup:
-                log.warning("⚠️ sheets_backup is None — Google Sheets not initialized")
                 return
 
             if not getattr(sheets_backup, 'connected', False):
-                log.warning("⚠️ sheets_backup not connected — attempting reconnect...")
                 try:
                     sheets_backup.connect()
-                    log.info("✅ sheets_backup reconnected")
                 except Exception as ce:
                     log.error(f"❌ sheets_backup reconnect failed: {ce}")
                     return
 
             if not getattr(sheets_backup, '_book', None):
-                log.warning("⚠️ sheets_backup._book is None after connect")
                 return
 
             existing = [ws.title for ws in sheets_backup._book.worksheets()]
-            log.info(f"📊 Existing sheets: {existing}")
 
             if self.TAB_NAME not in existing:
                 ws = sheets_backup._book.add_worksheet(
@@ -98,45 +94,30 @@ class VoiceNoteStore:
                 )
                 ws.append_row(self.HEADERS, value_input_option="USER_ENTERED")
                 sheets_backup._ws_cache[self.TAB_NAME] = ws
-                log.info(f"✅ Created '{self.TAB_NAME}' tab in Google Sheets")
+                log.info(f"✅ Created '{self.TAB_NAME}' tab")
             else:
                 if self.TAB_NAME not in sheets_backup._ws_cache:
                     ws = sheets_backup._book.worksheet(self.TAB_NAME)
                     sheets_backup._ws_cache[self.TAB_NAME] = ws
-                log.info(f"✅ '{self.TAB_NAME}' tab already exists and cached")
 
         except Exception as e:
-            log.error(f"❌ VoiceNotes tab error: {e}", exc_info=True)
+            log.error(f"❌ VoiceNotes tab error: {e}")
 
     def _append_to_sheet(self, row):
-        """Append row to Google Sheets with retry and detailed error logging."""
-        for attempt in range(3):
-            try:
-                if not sheets_backup:
-                    log.warning("⚠️ sheets_backup None — cannot append")
-                    return
-
-                if not getattr(sheets_backup, 'connected', False):
-                    log.warning("⚠️ Sheets not connected — trying reconnect before append")
-                    sheets_backup.connect()
-
-                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
-                if not ws:
-                    self._ensure_sheet_tab()
-                    ws = sheets_backup._ws_cache.get(self.TAB_NAME)
-
-                if not ws:
-                    log.error("❌ Could not get Voice Notes worksheet")
-                    return
-
-                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
-                log.info(f"✅ Appended to Google Sheets row: {row[:4]}")
+        """Append row to Google Sheets"""
+        try:
+            if not sheets_backup or not getattr(sheets_backup, 'connected', False):
                 return
 
-            except Exception as e:
-                log.error(f"❌ Sheet append attempt {attempt+1}/3 failed: {e}")
-                if attempt < 2:
-                    time.sleep(2)
+            ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+            if not ws:
+                self._ensure_sheet_tab()
+                ws = sheets_backup._ws_cache.get(self.TAB_NAME)
+
+            if ws:
+                ws.append_row([str(x) for x in row], value_input_option="USER_ENTERED")
+        except Exception as e:
+            log.error(f"Sheet append failed: {e}")
 
     def add(self, transcript: str, saved_to: str = "diary", category: str = "diary",
             duration: int = 0, status: str = "Success"):
@@ -214,7 +195,7 @@ class OfflineTranscriber:
             try:
                 self.model     = Model(model_path)
                 self.available = True
-                log.info(f"✅ Vosk model loaded from {model_path}")
+                log.info(f"✅ Vosk model loaded")
             except Exception as e:
                 log.error(f"Vosk model load failed: {e}")
         else:
@@ -228,7 +209,7 @@ class OfflineTranscriber:
             return dest_path
 
         try:
-            log.info(f"📥 Downloading Vosk model from: {self.MODEL_URL}")
+            log.info(f"📥 Downloading Vosk model...")
             urllib.request.urlretrieve(self.MODEL_URL, zip_path)
 
             if os.path.exists(zip_path):
@@ -320,7 +301,7 @@ offline_recognizer = OfflineTranscriber()
 
 
 # ================================================================
-# GEMINI TRANSCRIPTION
+# GEMINI TRANSCRIPTION (FALLBACK)
 # ================================================================
 
 async def transcribe_audio_gemini(audio_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
@@ -418,30 +399,36 @@ Numbers in digits: 10, 100, 500."""
 
 
 # ================================================================
-# TRANSCRIPTION WITH FALLBACK
+# TRANSCRIPTION WITH FALLBACK — VOSK FIRST
 # ================================================================
 
 async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[str], str]:
-    """Returns: (text, error, source)  source = 'gemini' | 'offline' | None"""
-
+    """
+    Returns: (text, error, source)
+    Priority: VOSK (Offline) first → Gemini (Online) fallback
+    """
+    # 🎯 TRY OFFLINE VOSK FIRST (more reliable for Hinglish)
+    if offline_recognizer.available:
+        log.info("🎯 Using OFFLINE Vosk first (more reliable for Hinglish)")
+        transcript, error = await offline_recognizer.transcribe(audio_bytes)
+        if transcript and len(transcript) > 3:
+            log.info(f"✅ Offline transcribed: {transcript[:80]}")
+            return transcript, None, "offline"
+        log.warning(f"Offline failed: {error}, falling back to Gemini")
+    
+    # Then try Gemini as fallback
     if GEMINI_API_KEY:
+        log.info("🌐 Falling back to Gemini Online")
         transcript, error = await transcribe_audio_gemini(audio_bytes)
         if transcript:
             return transcript, None, "gemini"
         log.warning(f"Gemini failed: {error}")
 
-    if offline_recognizer.available:
-        log.info("Falling back to offline Vosk...")
-        transcript, error = await offline_recognizer.transcribe(audio_bytes)
-        if transcript:
-            return transcript, None, "offline"
-        return None, error or "Both methods failed", None
-
-    return None, "No transcription method available (Gemini API missing)", None
+    return None, "No transcription method available (Vosk offline + Gemini API both failed)", None
 
 
 # ================================================================
-# ✅ CLASSIFICATION SYSTEM — v7 (COMPLETE FIXED)
+# ✅ CLASSIFICATION SYSTEM — v8 (BETTER HINGLISH PARSING)
 # ================================================================
 
 # --- All valid prefixes mapped to categories ---
@@ -458,26 +445,39 @@ PREFIX_MAP = {
     "calendar": "calendar", "schedule": "calendar", "meeting": "calendar", "event": "calendar",
 }
 
-_ADD_WORDS = {"add", "kr", "karo", "kar", "likho", "likh", "save", "set"}
+_ADD_WORDS = {"add", "kr", "karo", "kar", "likho", "likh", "save", "set", "lagao", "laga"}
 
 
 def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
     """
     Extract time duration and return FULL TIMESTAMP.
-    Returns: (clean_text, full_timestamp_YYYY_MM_DD_HH_MM_SS, value, unit)
+    Better parsing for Hinglish voice commands like:
+    - "2 minute baad pani piyo"
+    - "5 min mein chai"
+    - "1 ghante baad meeting"
+    - "10 second baad"
     """
+    text_lower = text.lower().strip()
+    now = now_ist() if 'now_ist' in dir() else datetime.now()
+    
+    # More patterns for Hinglish
     patterns = [
-        (r'(\d+)\s*(minute|min|mins|m)\b',   'minute'),
-        (r'(\d+)\s*(second|sec|secs)\b',      'second'),
-        (r'(\d+)\s*(hour|hr|hours|ghanta)\b', 'hour'),
-        (r'(\d+)\s*(day|days|din)\b',         'day'),
+        # "2 minute baad", "2 min baad", "2 minutes baad", "2 minute mein", "2 min main"
+        (r'(\d+)\s*(?:minute|min|minutes|mins)\s*(?:baad|mein|main|after|ke baad|bad mein|me)', 'minute'),
+        # "2 minute" (without baad)
+        (r'(\d+)\s*(?:minute|min|minutes|mins)\b', 'minute'),
+        # "2 second baad"
+        (r'(\d+)\s*(?:second|sec|seconds|secs)\s*(?:baad|mein|main|after)', 'second'),
+        # "2 hour baad", "2 ghante baad", "2 ghanta baad"
+        (r'(\d+)\s*(?:hour|hr|hours|hrs|ghanta|ghante)\s*(?:baad|mein|main|after)', 'hour'),
+        # "2 day baad", "2 din baad"
+        (r'(\d+)\s*(?:day|days|din)\s*(?:baad|mein|main|after)', 'day'),
     ]
     
     for pattern, unit in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, text_lower, re.IGNORECASE)
         if match:
             value = int(match.group(1))
-            now = now_ist() if 'now_ist' in dir() else datetime.now()
             
             if unit == 'minute':
                 due = now + timedelta(minutes=value)
@@ -489,16 +489,49 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
                 due = now + timedelta(days=value)
             
             full_timestamp = due.strftime("%Y-%m-%d %H:%M:%S")
-            clean = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
             
-            log.info(f"⏰ Reminder parsed: {value} {unit} from now → {full_timestamp}")
+            # Clean the text properly - remove time pattern and common words
+            clean = text
+            # Remove the time pattern
+            clean = re.sub(pattern, '', clean, flags=re.IGNORECASE)
+            # Remove common command/noise words
+            noise_words = [
+                'reminder', 'lagao', 'laga', 'karo', 'kar', 'kr', 'set', 'add', 
+                'baad', 'mein', 'main', 'after', 'please', 'plz', 'bata', 'dena',
+                'ke', 'me', 'bad', 'minute', 'min', 'second', 'sec', 'hour', 'hr',
+                'ghanta', 'ghante', 'day', 'din', 'minutes', 'seconds', 'hours', 'days'
+            ]
+            for word in noise_words:
+                clean = re.sub(r'\b' + re.escape(word) + r'\b', '', clean, flags=re.IGNORECASE)
+            # Remove extra spaces
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            
+            # If clean text is too short or empty, use original but cleaned
+            if not clean or len(clean) < 2:
+                clean = text
+                for word in noise_words[:10]:  # Only remove main noise words
+                    clean = re.sub(r'\b' + re.escape(word) + r'\b', '', clean, flags=re.IGNORECASE)
+                clean = re.sub(r'\s+', ' ', clean).strip()
+            
+            clean = clean or "Reminder"
+            
+            log.info(f"⏰ Reminder parsed: {value} {unit} from now → {full_timestamp}, clean text: '{clean}'")
             return clean, full_timestamp, value, unit
     
-    # Default: 5 minutes
-    default_time = (now_ist() if 'now_ist' in dir() else datetime.now()) + timedelta(minutes=5)
+    # No time pattern found → default to 5 minutes
+    default_time = now + timedelta(minutes=5)
     full_timestamp = default_time.strftime("%Y-%m-%d %H:%M:%S")
-    log.info(f"⏰ No time specified, defaulting to 5 minutes → {full_timestamp}")
-    return text, full_timestamp, 5, "minute"
+    log.info(f"⏰ No time pattern found, defaulting to 5 minutes → {full_timestamp}")
+    
+    # Clean default text
+    clean = text
+    noise_words = ['reminder', 'lagao', 'laga', 'karo', 'kar', 'kr', 'set', 'add', 'please', 'plz']
+    for word in noise_words:
+        clean = re.sub(r'\b' + re.escape(word) + r'\b', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    clean = clean or "Reminder"
+    
+    return clean, full_timestamp, 5, "minute"
 
 
 def _try_prefix_match(text: str, chat_id: str = "") -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -543,8 +576,23 @@ def _build_params(category: str, content: str, chat_id: str) -> Tuple[str, Dict[
         return "diary", {"text": f"[Expense note — no amount] {content[:500]}"}
 
     elif category == "reminder":
-        clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(lower)
-        clean = " ".join(clean.split()).strip() or content
+        # Clean content first
+        content_clean = content
+        # Fix common transcription errors
+        content_clean = content_clean.replace('laga0', '')
+        content_clean = content_clean.replace('laga 0', '')
+        content_clean = content_clean.replace('lagao', '')
+        content_clean = re.sub(r'\breminder\b', '', content_clean, flags=re.IGNORECASE)
+        
+        clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content_clean)
+        
+        # Final cleanup
+        clean = clean.strip()
+        if not clean or len(clean) < 2:
+            clean = "Reminder"
+        
+        log.info(f"⏰ Reminder after cleanup: '{clean}' at {full_timestamp}")
+        
         return "reminder", {
             "text": clean[:200],
             "due_timestamp": full_timestamp,
@@ -636,8 +684,8 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
         scores["reminder"] += 5
     if any(kw in lower for kw in ["yaad dilao", "yaad dila", "bata dena"]):
         scores["reminder"] += 4
-    if any(kw in lower for kw in ["baad", "minute", "ghante", "hour"]):
-        scores["reminder"] += 2
+    if any(kw in lower for kw in ["baad", "minute", "ghante", "hour", "mein", "main"]):
+        scores["reminder"] += 3
 
     # Task signals
     if any(kw in lower for kw in ["task", "todo", "karna hai", "krna hai"]):
@@ -705,10 +753,10 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ *Download fail!*\n\n`{str(e)[:150]}`", parse_mode="Markdown")
         return
 
-    # Transcribe
+    # Transcribe (Vosk first, then Gemini)
     await status_msg.edit_text(
         f"🎙️ *Voice note* ({duration}s, {len(audio_bytes)//1024}KB)\n\n"
-        f"🤖 Transcribe kar raha hai...\n(Pehle Gemini, phir offline)",
+        f"🤖 Transcribe kar raha hai...\n(Pehle Vosk offline, phir Gemini)",
         parse_mode="Markdown"
     )
 
@@ -730,6 +778,17 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             voice_store.add(f"[FAIL: {str(error)[:60]}]", "none", "failed", duration, "Failed")
         return
 
+    # Log raw transcript for debugging
+    log.info(f"📝 RAW TRANSCRIPT: '{transcript}'")
+    log.info(f"📝 SOURCE: {source}")
+
+    # Fix common transcription errors
+    transcript = transcript.replace('laga0', '')
+    transcript = transcript.replace('laga 0', '')
+    transcript = transcript.replace('lagao', '')
+    transcript = re.sub(r'\b(\d+)\s*baad\b', r'\1 minute baad', transcript)
+    transcript = re.sub(r'\s+', ' ', transcript).strip()
+
     # Classify + save
     category, data = _classify_transcript(transcript, chat_id)
 
@@ -740,8 +799,8 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"
     }
     emoji = emoji_map.get(category, "📝")
-    source_emoji = "🌐" if source == "gemini" else "📴"
-    source_text = "Gemini (Online)" if source == "gemini" else "Vosk (Offline)"
+    source_emoji = "📴" if source == "offline" else "🌐"
+    source_text = "Vosk (Offline)" if source == "offline" else "Gemini (Online)"
 
     # Process by category
     if category == "expense":
@@ -899,26 +958,26 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_voicehelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎙️ *Voice Note Guide — v7 (Complete Fixed)*\n\n"
+        "🎙️ *Voice Note Guide — v8 (Vosk First!)*\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "*🎯 PREFIX SYSTEM (Sabse reliable!)*\n"
-        "Pehle category bolo, phir 'add', phir content:\n\n"
-        "💸 `kharcha add 500 chai pe`\n"
-        "⏰ `reminder add 5 minute baad pani peena`\n"
-        "✅ `task add report submit karna hai`\n"
-        "🔥 `habit add subah 5 baje uthna`\n"
-        "💧 `water add 2 glass piya`\n"
-        "🧠 `memory add passport number 1234`\n"
-        "🧾 `bill add 1000 bijli ka`\n"
-        "📅 `calendar add monday 3pm meeting`\n"
-        "📖 `diary add aaj bahut acha din tha`\n\n"
+        "Pehle category bolo, phir content:\n\n"
+        "💸 `kharcha 500 chai pe`\n"
+        "⏰ `reminder 2 minute baad pani peena`\n"
+        "✅ `task report submit karna hai`\n"
+        "🔥 `habit subah uthna`\n"
+        "💧 `water 2 glass`\n"
+        "🧠 `memory passport number 1234`\n"
+        "🧾 `bill 1000 bijli ka`\n"
+        "📅 `calendar monday 3pm meeting`\n"
+        "📖 `diary aaj acha din tha`\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "*⚡ Short forms bhi kaam karte hain:*\n"
-        "`kharcha 500 chai pe` → expense\n"
-        "`pani 2 glass` → water\n"
-        "`yaad dilao 10 min baad meeting` → reminder\n\n"
+        "*⚡ Hinglish time examples:*\n"
+        "`2 minute baad pani piyo`\n"
+        "`5 min mein chai yaad dilana`\n"
+        "`1 ghante baad meeting`\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🌐 Gemini (Online) → 📴 Vosk (Offline fallback)\n\n"
+        "📴 Vosk (Offline) → 🌐 Gemini (Online fallback)\n\n"
         "/voicenotes — Recent notes dekho",
         parse_mode="Markdown"
     )
@@ -976,8 +1035,8 @@ def register_voice_handlers(app):
     sheets_status = "✅" if _SDM_AVAILABLE and sheets_backup and getattr(sheets_backup, 'connected', False) else "❌"
 
     log.info("═" * 50)
-    log.info("✅ Voice handlers registered (v7 - Complete Fixed)")
-    log.info(f"   🌐 Gemini API   : {gemini_status}")
-    log.info(f"   📴 Vosk Offline : {vosk_status}")
+    log.info("✅ Voice handlers registered (v8 - Vosk First! Better Hinglish parsing)")
+    log.info(f"   📴 Vosk Offline : {vosk_status} (Priority)")
+    log.info(f"   🌐 Gemini API   : {gemini_status} (Fallback)")
     log.info(f"   📊 Google Sheets: {sheets_status}")
     log.info("═" * 50)
