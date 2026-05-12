@@ -58,7 +58,6 @@ DEL_AWAIT_CHOICE       = 51
 DEL_AWAIT_SHEET        = 52
 DEL_AWAIT_NUKE_CONFIRM = 53
 CLEARCHAT_AWAIT_PASS   = 60
-CLEARCHAT_AWAIT_LIMIT  = 61
 
 # ----------------------------------------------------------------
 # KEY_MAP: All sheets now have ID column as first column
@@ -375,27 +374,16 @@ def _wipe_local_store(key: str) -> str:
 
 
 # ================================================================
+# ================================================================
 # ████████  /clearchat — Telegram Chat Force Clear
 # ================================================================
 
 async def cmd_clearchat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /clearchat command — Telegram chat ke messages delete karta hai.
-    
-    ⚠️ TELEGRAM HARD LIMIT:
-    - Bots sirf wo messages delete kar sakte hain jo BOT ne bheje hain
-      ya wo messages jo recent hain (generally last 48 hours).
-    - User ke purane messages bot delete NAHI kar sakta — yeh Telegram API ki limit hai.
-    - /clearchat bot ke sent messages + recent messages delete karega.
-    """
-    ctx.user_data["clearchat_entry"] = True
+    """Password maango, phir confirm button, phir SAARI chat delete."""
     await update.effective_chat.send_message(
         "🧹 *TELEGRAM CHAT CLEAR*\n\n"
-        "⚠️ *Telegram Limit samjho:*\n"
-        "• Bot sirf *apne bheje messages* delete kar sakta hai\n"
-        "• *Last ~48 hours* ke messages delete ho sakte hain\n"
-        "• Purane messages Telegram allow nahi karta delete karne ko\n\n"
-        "🔐 *Password daalo* confirm ke liye:",
+        "🔐 *Password daalo:*\n\n"
+        "/cancel — Bahar jao",
         parse_mode="Markdown"
     )
     return CLEARCHAT_AWAIT_PASS
@@ -419,62 +407,70 @@ async def clearchat_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYP
         ctx.user_data.clear()
         return ConversationHandler.END
 
+    confirm_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Haan, Poori Chat Delete Karo", callback_data="cc_confirm"),
+        InlineKeyboardButton("❌ Cancel",                       callback_data="cc_cancel"),
+    ]])
+
     await update.effective_chat.send_message(
-        "✅ *Password sahi!*\n\n"
-        "Kitne *last messages* delete karने hain? (max 200)\n\n"
-        "Example: `50` ya `200`\n\n"
-        "_(Telegram limit: bot sirf apne + recent messages delete kar sakta)_\n"
-        "/cancel — Bahar jao",
-        parse_mode="Markdown"
+        "✅ *Password Sahi!*\n\n"
+        "🧹 *POORI CHAT DELETE*\n\n"
+        "Saare messages delete ho jayenge.\n"
+        "_(Telegram limit: last ~48h ke messages delete ho sakte hain)_\n\n"
+        "Confirm karo:",
+        parse_mode="Markdown",
+        reply_markup=confirm_kb
     )
-    return CLEARCHAT_AWAIT_LIMIT
+    return CLEARCHAT_AWAIT_PASS
 
 
-async def clearchat_do_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return ConversationHandler.END
+async def clearchat_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Inline confirm/cancel callback for /clearchat."""
+    import asyncio
 
-    text = update.message.text.strip()
+    query = update.callback_query
+    await query.answer()
 
-    try:
-        limit = int(text)
-        limit = max(1, min(limit, 200))
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Sirf number daalo! Example: `50`\n/cancel — Bahar jao",
+    if query.data == "cc_cancel":
+        await query.edit_message_text(
+            "❌ *Chat clear cancel. Koi message delete nahi hua.* 🛡️",
             parse_mode="Markdown"
         )
-        return CLEARCHAT_AWAIT_LIMIT
+        ctx.user_data.clear()
+        return ConversationHandler.END
 
-    chat_id     = update.effective_chat.id
-    current_mid = update.message.message_id
-    status_msg  = await update.effective_chat.send_message(
-        f"🧹 *Deleting last {limit} messages...*\n\n⏳ Please wait...",
+    if query.data != "cc_confirm":
+        ctx.user_data.clear()
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "🧹 *Poori chat delete ho rahi hai...*\n\n⏳ Please wait...",
         parse_mode="Markdown"
     )
 
-    deleted  = 0
-    failed   = 0
-    too_old  = 0
+    chat_id     = update.effective_chat.id
+    current_mid = query.message.message_id
+    deleted     = 0
+    too_old     = 0
+    failed      = 0
 
-    # message_id se upar aur neeche range mein try karo
-    # Current message se peeche jaao
+    # Aggressive scan — 2000 message IDs peeche tak try karo
     start_mid = current_mid - 1
-    end_mid   = max(1, start_mid - (limit * 3))  # 3x range try karo (gaps hote hain)
+    end_mid   = max(1, start_mid - 2000)
 
     for mid in range(start_mid, end_mid, -1):
-        if deleted >= limit:
-            break
-        if mid == status_msg.message_id:
+        if mid == current_mid:
             continue
         try:
             await ctx.bot.delete_message(chat_id=chat_id, message_id=mid)
             deleted += 1
+            if deleted % 20 == 0:
+                await asyncio.sleep(0.5)
         except BadRequest as e:
             err = str(e).lower()
             if "message to delete not found" in err:
-                continue  # Already deleted ya exist nahi karta
-            elif "message can't be deleted" in err or "too old" in err:
+                continue
+            elif "message can\'t be deleted" in err or "too old" in err:
                 too_old += 1
                 continue
             else:
@@ -482,57 +478,47 @@ async def clearchat_do_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except TelegramError:
             failed += 1
 
-    # Status message bhi delete karo
     try:
-        await status_msg.delete()
+        await query.message.delete()
     except Exception:
         pass
 
-    # Current command message delete karo
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-
-    # Final report
-    summary_lines = [f"🧹 *Chat Clear Complete!*\n"]
-    summary_lines.append(f"✅ Deleted: `{deleted}` messages")
+    lines_out = ["🧹 *Chat Clear Complete!*\n"]
+    lines_out.append(f"✅ Deleted: `{deleted}` messages")
     if too_old > 0:
-        summary_lines.append(
-            f"⏰ Too old (Telegram ne nahi diya): `{too_old}` — yeh Telegram ki limit hai"
-        )
+        lines_out.append(f"⏰ Too old (Telegram API limit): `{too_old}`")
     if failed > 0:
-        summary_lines.append(f"⚠️ Failed: `{failed}`")
-    summary_lines.append(
-        f"\n💡 *Note:* Telegram bots sirf recent messages delete kar sakte hain.\n"
-        f"Purane messages ke liye Telegram app mein manually 'Clear Chat History' use karo."
+        lines_out.append(f"⚠️ Failed: `{failed}`")
+    lines_out.append(
+        "\n💡 *Purane messages ke liye:*\n"
+        "Telegram app → Chat → ... → *Clear Chat History*\n"
+        "_(Yeh sirf tum khud kar sakte ho, bot nahi)_"
     )
 
     final_msg = await update.effective_chat.send_message(
-        "\n".join(summary_lines),
+        "\n".join(lines_out),
         parse_mode="Markdown"
     )
 
-    # Yeh bhi thodi der baad delete ho jaye (optional)
-    import asyncio
-    await asyncio.sleep(10)
+    await asyncio.sleep(15)
     try:
         await final_msg.delete()
     except Exception:
         pass
 
-    log.info(f"/clearchat: deleted={deleted}, too_old={too_old}, failed={failed} in chat {chat_id}")
+    log.info(f"/clearchat done: deleted={deleted}, too_old={too_old}, failed={failed}, chat={chat_id}")
     ctx.user_data.clear()
     return ConversationHandler.END
 
 
 async def clearchat_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
-    await update.message.reply_text("❌ Chat clear cancel. Koi message delete nahi hua.")
+    await update.message.reply_text(
+        "❌ *Chat clear cancel. Koi message delete nahi hua.* 🛡️",
+        parse_mode="Markdown"
+    )
     return ConversationHandler.END
 
-
-# ================================================================
 # KEYBOARDS
 # ================================================================
 
@@ -1018,13 +1004,12 @@ def register_delete_handlers(app: Application):
         states={
             CLEARCHAT_AWAIT_PASS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, clearchat_password_check),
-            ],
-            CLEARCHAT_AWAIT_LIMIT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, clearchat_do_delete),
+                CallbackQueryHandler(clearchat_callback, pattern=r"^cc_"),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", clearchat_cancel),
+            CallbackQueryHandler(clearchat_callback, pattern=r"^cc_cancel$"),
         ],
         allow_reentry=True,
         per_message=False,
