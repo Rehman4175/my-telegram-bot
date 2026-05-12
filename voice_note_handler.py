@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIX: gemini-2.5-flash, retry on 503, correct debug labels
-ENHANCED: Multi-category support with OFFLINE VOICE FALLBACK
+WITH OFFLINE VOSK SUPPORT (Fallback when Gemini busy)
 """
 
 import os
@@ -142,7 +141,6 @@ class OfflineTranscriber:
             
         except Exception as e:
             log.error(f"Offline transcription error: {e}")
-            # Cleanup on error
             for f in [temp_ogg, temp_wav]:
                 if os.path.exists(f):
                     try:
@@ -968,16 +966,19 @@ async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     recent = voice_store.get_recent(10)
     if not recent:
         await update.message.reply_text(
-            "🎙️ Abhi koi voice note nahi hai.\n\nVoice message bhejo — main transcribe kar dunga!\n\n"
+            "🎙️ *Abhi koi voice note nahi hai*\n\n"
+            "Voice message bhejo — main transcribe kar dunga!\n\n"
             "*Available categories:*\n"
-            "💸 expense 500 movie\n"
+            "💸 expense 500 movie ticket\n"
             "⏰ reminder 5 minute baad pani peena\n"
             "🔥 habit subah 5 baje uthna\n"
             "💧 water 2 glass\n"
             "✅ task report submit karna\n"
             "🧠 memory passport number 1234\n"
             "🧾 bill 1000 bijli ka\n"
-            "📅 calendar monday 3pm meeting"
+            "📅 calendar monday 3pm meeting\n"
+            "📖 (default) aaj acha din tha",
+            parse_mode="Markdown"
         )
         return
     
