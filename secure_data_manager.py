@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER — FIXED v4
+SECURE DATA MANAGER — FIXED v5
 - ID columns added to all sheets
 - Fixed reminder store integrated with reminder_bot.py
+- Google Sheets sync working for reminders
 - All features working
 """
 
@@ -67,10 +68,12 @@ class GoogleSheetsBackup:
         "Water":     "Water Intake",
         "Logs":      "Miscellaneous",
         "Diary":     "Diary",
+        "VoiceNotes": "Voice Notes",
+        "SmartMemory": "Smart Memory",
     }
 
     HEADERS = {
-        "Reminders": ["ID", "Due", "Text", "Repeat", "Triggered", "Created Date", "Chat ID", "Last Fired", "Acknowledged", "Remarks"],
+        "Reminders": ["ID", "Due", "Text", "Repeat", "Status", "Created Date", "Chat ID", "Last Fired", "Acknowledged", "Remarks"],
         "Tasks":     ["ID", "Title", "Priority", "Status", "Created", "Done Date"],
         "Memory":    ["ID", "Date", "Time", "Fact"],
         "Goals":     ["ID", "Title", "Progress", "Status", "Deadline", "Created"],
@@ -81,6 +84,8 @@ class GoogleSheetsBackup:
         "Water":     ["ID", "Date", "Time", "ML Added", "Day Total"],
         "Logs":      ["ID", "Timestamp", "Date", "Role", "User", "Message"],
         "Diary":     ["ID", "Date", "Time", "Text", "Mood"],
+        "VoiceNotes": ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status", "Category"],
+        "SmartMemory": ["ID", "Date", "Time", "Question", "Answer", "Keywords", "User"],
     }
 
     _expense_counter = 0
@@ -88,11 +93,14 @@ class GoogleSheetsBackup:
     _memory_counter = 0
     _water_counter = 0
     _logs_counter = 0
+    _voicenotes_counter = 0
+    _smartmemory_counter = 0
 
     def __init__(self):
         self._client   = None
         self._book     = None
         self._ws_cache = {}
+        self.connected = False
         self._connect()
         self._load_counters()
 
@@ -107,6 +115,8 @@ class GoogleSheetsBackup:
                     self._memory_counter = counters.get('memory', 0)
                     self._water_counter = counters.get('water', 0)
                     self._logs_counter = counters.get('logs', 0)
+                    self._voicenotes_counter = counters.get('voicenotes', 0)
+                    self._smartmemory_counter = counters.get('smartmemory', 0)
             except:
                 pass
 
@@ -119,7 +129,9 @@ class GoogleSheetsBackup:
                     'diary': self._diary_counter,
                     'memory': self._memory_counter,
                     'water': self._water_counter,
-                    'logs': self._logs_counter
+                    'logs': self._logs_counter,
+                    'voicenotes': self._voicenotes_counter,
+                    'smartmemory': self._smartmemory_counter
                 }, f)
         except:
             pass
@@ -145,6 +157,14 @@ class GoogleSheetsBackup:
             self._logs_counter += 1
             self._save_counters()
             return self._logs_counter
+        elif sheet_type == 'voicenotes':
+            self._voicenotes_counter += 1
+            self._save_counters()
+            return self._voicenotes_counter
+        elif sheet_type == 'smartmemory':
+            self._smartmemory_counter += 1
+            self._save_counters()
+            return self._smartmemory_counter
         return 0
 
     def _connect(self):
@@ -191,11 +211,14 @@ class GoogleSheetsBackup:
             for ws in self._book.worksheets():
                 self._ws_cache[ws.title] = ws
                 self._ensure_id_column(ws)
+            self.connected = True
             log.info(f"Sheet tabs: {list(self._ws_cache.keys())}")
         except Exception as e:
             log.error(f"Cannot open sheet: {e}")
+            self.connected = False
 
     def _ensure_id_column(self, ws):
+        """Add ID column to beginning if missing"""
         try:
             raw_headers = ws.row_values(1)
             headers = []
@@ -213,10 +236,6 @@ class GoogleSheetsBackup:
                 log.debug(f"ID column already exists in {ws.title}")
         except Exception as e:
             log.debug(f"Could not verify ID column for {ws.title}: {e}")
-
-    @property
-    def connected(self):
-        return self._book is not None
 
     def _ws(self, key):
         if not self._book:
@@ -319,12 +338,12 @@ class GoogleSheetsBackup:
             r.get("due", r.get("time", "")),
             r.get("text",""),
             r.get("repeat","once"),
-            "Triggered" if r.get("triggered") else "Active",
+            "Active" if not r.get("triggered") else "Triggered",
             r.get("created_at", r.get("date", today_str())),
             r.get("chat_id",""),
             r.get("last_fired",""),
             str(r.get("acknowledged", False)),
-            r.get("remarks",""),
+            r.get("remarks", ""),
         ]
         if action == "created":
             return self._append("Reminders", row)
@@ -434,6 +453,14 @@ class GoogleSheetsBackup:
     def diary(self, text, mood="📝"):
         diary_id = self._get_next_id('diary')
         return self._append("Diary", [diary_id, today_str(), now_str(), text, mood])
+
+    def voice_note(self, transcript, saved_to, category, duration):
+        vn_id = self._get_next_id('voicenotes')
+        return self._append("VoiceNotes", [vn_id, today_str(), now_str(), transcript[:500], saved_to, duration, "Success", category])
+
+    def smart_memory(self, question, answer, keywords, user):
+        sm_id = self._get_next_id('smartmemory')
+        return self._append("SmartMemory", [sm_id, today_str(), now_str(), question, answer, keywords, user])
 
     def test_connection(self):
         ok = self.log_event("system", "Bot", f"Started {now_ist().strftime('%H:%M IST')}")
@@ -551,11 +578,6 @@ class PrivateStore:
     def save(self):
         repo_manager.save_file(self.name, self.data)
 
-
-# ================================================================
-# IMPORT REMINDER MANAGER (from reminder_bot.py)
-# ================================================================
-# We'll create reminders after all other stores are defined
 
 # ================================================================
 # MEMORY STORE
@@ -851,8 +873,6 @@ class GoalStore:
 # ================================================================
 # REMINDER MANAGER (FROM reminder_bot.py)
 # ================================================================
-# We'll create a wrapper that uses ReminderManager from reminder_bot
-
 _reminder_manager_instance = None
 
 def get_reminder_manager():
@@ -860,8 +880,9 @@ def get_reminder_manager():
     if _reminder_manager_instance is None:
         try:
             from reminder_bot import ReminderManager
-            _reminder_manager_instance = ReminderManager(PrivateStore)
-            log.info("✅ ReminderManager loaded from reminder_bot.py")
+            # Pass sheets_backup for Google Sheets sync
+            _reminder_manager_instance = ReminderManager(PrivateStore, sheets_backup)
+            log.info("✅ ReminderManager loaded from reminder_bot.py with sheets sync")
         except ImportError as e:
             log.error(f"Could not import ReminderManager: {e}")
             # Fallback to simple reminder store
@@ -945,7 +966,7 @@ class SimpleReminderStore:
         return before - len(self.store.data["list"])
 
 
-# Create reminders instance
+# Create reminders instance with sheets sync
 reminders = get_reminder_manager()
 
 
@@ -1162,6 +1183,34 @@ class ChatHistoryStore:
 
 
 # ================================================================
+# VOICE NOTE STORE
+# ================================================================
+class VoiceNoteStore:
+    def __init__(self):
+        self.store = PrivateStore("voice_notes", {"list": [], "counter": 0})
+
+    def add(self, transcript, saved_to, category, duration, status="Success"):
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        vid = self.store.data["counter"]
+        entry = {
+            "id": vid, "date": today_str(), "time": now_str(),
+            "transcript": transcript, "saved_to": saved_to,
+            "category": category, "duration": duration, "status": status,
+        }
+        self.store.data["list"].append(entry)
+        self.store.data["list"] = self.store.data["list"][-500:]
+        self.store.save()
+        try:
+            sheets_backup.voice_note(transcript, saved_to, category, duration)
+        except Exception:
+            pass
+        return entry
+
+    def get_recent(self, n=10):
+        return self.store.data.get("list", [])[-n:]
+
+
+# ================================================================
 # INITIALIZE ALL STORES
 # ================================================================
 memory    = MemoryStore()
@@ -1174,16 +1223,9 @@ water     = WaterStore()
 bills     = BillStore()
 calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
+voice_note_store = VoiceNoteStore()
 
 # Reminders is already created above using get_reminder_manager()
-
-# Voice stores
-try:
-    from voice_note_handler import VoiceNoteStore
-    voice_note_store = VoiceNoteStore()
-except ImportError:
-    voice_note_store = None
-    log.warning("VoiceNoteStore not available")
 
 try:
     sheets_backup.test_connection()
@@ -1192,7 +1234,7 @@ except Exception as e:
     log.error(f"Sheets startup: {e}")
 
 log.info("=" * 60)
-log.info("SECURE DATA MANAGER READY — v4 with ReminderManager")
+log.info("SECURE DATA MANAGER READY — v5 with ReminderManager + Sheets Sync")
 log.info(f"  GitHub : {'Connected' if repo_manager.is_connected else 'Local only'}")
 log.info(f"  Sheets : {'Connected' if sheets_backup.connected else 'NOT connected'}")
 log.info(f"  Reminders: {'ReminderManager' if _reminder_manager_instance else 'SimpleReminderStore'}")
