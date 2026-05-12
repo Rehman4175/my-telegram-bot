@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v12 (FINAL):
+FIXES v13 (FINAL):
+  - FIXED: Hinglish response (Gemini ab Hinglish mein reply karega)
   - REMINDER FIX: Full timestamp support (YYYY-MM-DD HH:MM:SS)
   - Voice handler integration with proper reminder storage
   - Fixed ReminderManager compatibility (no direct store access)
@@ -32,7 +33,7 @@ from telegram.ext import (
 )
 
 # ── NEW ADDON IMPORTS ──────────────────────────────
-# Voice handler with multiple transcription methods (UPDATED v7)
+# Voice handler with multiple transcription methods (UPDATED v8)
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
 # ──────────────────────────────────────────────────
@@ -64,6 +65,7 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 _last_gemini_call = 0
 
 def call_gemini(prompt, max_tokens=400):
+    """Call Gemini API with Hinglish instruction"""
     global _last_gemini_call
     if not GEMINI_API_KEY:
         return None
@@ -71,22 +73,63 @@ def call_gemini(prompt, max_tokens=400):
     if elapsed < 2:
         time.sleep(2 - elapsed)
     _last_gemini_call = time.time()
+    
+    # Strong Hinglish instruction
+    system_instruction = """You are Rk, a personal AI assistant for a Muslim user.
+
+🚨 CRITICAL RULES - FOLLOW STRICTLY:
+1. Reply ONLY in HINGLISH (Hindi words written in English/Roman script)
+2. ALWAYS start with Assalamualaikum or Alhamdulillah
+3. Use Muslim phrases: InshAllah, MashAllah, JazakAllah, SubhanAllah
+4. Keep replies SHORT (2-3 lines maximum)
+5. NEVER use pure English
+6. NEVER use Devanagari/Hindi script
+
+✅ GOOD Examples:
+- "Assalamualaikum! Aapki help chahiye? Batao kya kar sakta hoon!"
+- "Alhamdulillah! Task complete ho gaya! MashAllah!"
+- "InshAllah, reminder set kar diya! Kuch aur?"
+- "SubhanAllah! Aaj 3 habits complete! Bohat acha!"
+
+❌ BAD Examples (NEVER use):
+- "Hello! How can I help you?" (English - NO)
+- "नमस्ते! मैं कैसे मदद कर सकता हूँ?" (Hindi script - NO)
+- "Good morning! Your tasks are pending" (English - NO)
+
+Always reply in HINGLISH like a friendly Indian Muslim assistant!"""
+
     payload = json.dumps({
+        "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.75, "maxOutputTokens": max_tokens}
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": max_tokens}
     }).encode("utf-8")
+    
     for model in GEMINI_MODELS:
         try:
             url = GEMINI_URL.format(model=model, key=GEMINI_API_KEY)
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                reply = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
+                # Post-process: Ensure Hinglish
+                # Remove pure English greetings
+                english_greetings = ["Hello", "Hi", "Hey", "Good morning", "Good evening", "Good afternoon"]
+                for eng in english_greetings:
+                    if reply.lower().startswith(eng.lower()):
+                        reply = "Assalamualaikum! " + reply[len(eng):].strip()
+                
+                # Add Assalamualaikum if missing
+                if not any(word in reply.lower() for word in ['assalamualaikum', 'alaikum', 'salam', 'alhamdulillah']):
+                    reply = "Assalamualaikum! " + reply
+                
+                return reply
         except Exception as e:
             log.warning(f"Gemini error ({model}): {e}")
     return None
 
 def build_system_prompt():
+    """Build system prompt with current data"""
     tp = tasks.today_pending()
     hd, hp = habits.today_status()
     exp_t = expenses.today_total()
@@ -94,17 +137,27 @@ def build_system_prompt():
     wg = water.goal()
     active_rem = reminders.all_active()
     today_events = calendar.today_events()
-    return (f"Tu mera Personal AI Assistant hai — naam Rk.\n"
-            f"Main ek Muslim hoon, isliye Muslim greetings aur phrases use karo jaise:\n"
-            f"Assalamualaikum, Alhamdulillah, InshAllah, MashAllah, SubhanAllah, JazakAllah Khair.\n"
-            f"TIME: {now_ist().strftime('%A, %d %b — %I:%M %p')} IST\n\n"
-            f"Tasks: {len(tp)} pending\n"
-            f"Habits: {len(hd)} done, {len(hp)} pending\n"
-            f"Kharcha: Rs.{exp_t}\n"
-            f"Paani: {wt}ml/{wg}ml\n"
-            f"Reminders: {len(active_rem)} active\n"
-            f"Aaj ke events: {len(today_events)}\n\n"
-            f"Hamesha Hinglish mein SHORT jawab do. Muslim phrases zaroor use karo.")
+    
+    return (f"""☪️ ASSALAMUALAIKUM! Main Rk hoon - aapka personal AI assistant.
+
+⏰ TIME: {now_ist().strftime('%A, %d %b — %I:%M %p')} IST
+
+📊 TODAY'S STATUS:
+• Tasks pending: {len(tp)}
+• Habits done: {len(hd)} / Pending: {len(hp)}
+• Kharcha: Rs.{exp_t}
+• Paani: {wt}ml/{wg}ml
+• Active reminders: {len(active_rem)}
+• Aaj ke events: {len(today_events)}
+
+🚨 IMPORTANT - Jab main reply karunga:
+- HINGLISH mein karunga (Hindi + English mix)
+- Assalamualaikum ya Alhamdulillah se start karunga
+- InshAllah, MashAllah, JazakAllah zaroor use karunga
+- Short reply hoga (2-3 lines)
+
+User ka message padho aur HINGLISH mein jawab do!""")
+
 
 def alarm_keyboard(rid):
     return InlineKeyboardMarkup([[
@@ -573,7 +626,6 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines = []
             for r in active:
                 due = r.get("due", "")
-                # If due is full timestamp, format nicely
                 if due and len(due) > 5 and ":" in due:
                     try:
                         dt = datetime.strptime(due, "%Y-%m-%d %H:%M:%S")
@@ -599,7 +651,6 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = " ".join(ctx.args[1:])
     now = now_ist()
     
-    # Parse relative time (e.g., "30m", "2h", "5min")
     if time_arg.endswith("m") and time_arg[:-1].isdigit():
         mins = int(time_arg[:-1])
         remind_dt = now + timedelta(minutes=mins)
@@ -625,12 +676,10 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("/remind 30m Chai ya /remind 15:30 Meeting")
         return
     
-    # Add reminder with full timestamp
     r = reminders.add(update.effective_chat.id, text, due_timestamp)
     
     _log_action(update.effective_user.first_name or "User", "reminder_set", f"#{r['id']} at {due_timestamp}: {text}")
 
-    # Format display nicely
     remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
     date_display = remind_dt.strftime("%d %b %Y")
     h, m_val = remind_dt.hour, remind_dt.minute
@@ -1166,7 +1215,6 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     log.error(f"Bills reminder failed: {ex}")
 
     # Check active reminders using FULL TIMESTAMP
-    # Get all active reminders (ReminderManager has all_active method)
     active_reminders = reminders.all_active()
     
     for r in active_reminders:
@@ -1174,22 +1222,18 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             continue
         reminder_due = r.get("due", "")
         
-        # Skip if no due time
         if not reminder_due:
             continue
             
-        # Check if due timestamp matches current time (minute precision)
-        if len(reminder_due) > 10:  # Full timestamp format
-            due_min = reminder_due[:16]  # "YYYY-MM-DD HH:MM"
+        if len(reminder_due) > 10:
+            due_min = reminder_due[:16]
             if due_min == now_str_full:
-                # Check if already fired this minute
                 if r.get("last_fired_minute") == now_str_full:
                     continue
                     
                 fire_count = r.get("fire_count", 0)
                 suffix = f"\n⚠️ {fire_count + 1}vi baar baj raha hai — OK dabao!" if fire_count > 0 else ""
                 
-                # Format due time for display
                 try:
                     due_dt = datetime.strptime(reminder_due, "%Y-%m-%d %H:%M:%S")
                     due_time_display = due_dt.strftime("%I:%M %p")
@@ -1205,21 +1249,8 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                         chat_id=int(r["chat_id"]), text=alert,
                         reply_markup=alarm_keyboard(r["id"]), parse_mode="Markdown"
                     )
-                    # Update fire count in reminder
-                    # Try to update via ReminderManager methods or directly if needed
-                    try:
-                        # Mark as triggered (this will also increment fire_count in ReminderManager)
-                        reminders.mark_triggered(r["id"])
-                    except AttributeError:
-                        # Fallback for SimpleReminderStore
-                        if hasattr(reminders, 'store') and hasattr(reminders.store, 'data'):
-                            for item in reminders.store.data.get("list", []):
-                                if item.get("id") == r["id"]:
-                                    item["fire_count"] = item.get("fire_count", 0) + 1
-                                    item["last_fired_minute"] = now_str_full
-                                    item["last_fired"] = now_ist().isoformat()
-                                    reminders.store.save()
-                                    break
+                    # Mark as triggered
+                    reminders.mark_triggered(r["id"])
                     _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
                 except Exception as e:
                     log.error(f"Failed to send alarm: {e}")
@@ -1328,15 +1359,12 @@ def parse_user_message(user_msg: str):
     if any(w in lower for w in remind_words):
         def _parse_reminder_time(lwr):
             now_t = now_ist()
-            # Relative: X minutes
             mm = _re.search(r'(\d+)\s*(?:min(?:ute)?s?)\b', lwr)
             if mm:
                 return (now_t + timedelta(minutes=int(mm.group(1)))).strftime("%Y-%m-%d %H:%M:%S"), False
-            # Relative: X hours
             hh = _re.search(r'(\d+)\s*(?:hour|hr|ghanta)\b', lwr)
             if hh:
                 return (now_t + timedelta(hours=int(hh.group(1)))).strftime("%Y-%m-%d %H:%M:%S"), False
-            # Absolute: HH:MM
             hm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
             if hm:
                 h, mi = int(hm.group(1)), int(hm.group(2))
@@ -1347,7 +1375,6 @@ def parse_user_message(user_msg: str):
                 elif remind_dt < now_t:
                     remind_dt += timedelta(days=1)
                 return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
-            # Absolute: X AM/PM
             amp = _re.search(r'(\d{1,2})\s*(?:am|pm)', lwr)
             if amp:
                 h = int(amp.group(1))
@@ -1364,7 +1391,6 @@ def parse_user_message(user_msg: str):
 
         due_timestamp, _ = _parse_reminder_time(lower)
         if due_timestamp:
-            # Extract clean text without time words
             stop_words = remind_words + [
                 "kal","kl","aaj","tomorrow","subha","subah","morning",
                 "shaam","sham","raat","night","evening","dopahar",
@@ -1372,7 +1398,6 @@ def parse_user_message(user_msg: str):
                 "mujhe","please","plz","zara","min","minute","hour","hr"
             ]
             text_clean = lower
-            # Remove time patterns
             text_clean = _re.sub(r'\d+\s*(?:min(?:ute)?s?)\b', '', text_clean)
             text_clean = _re.sub(r'\d+\s*(?:hour|hr|ghanta)\b', '', text_clean)
             text_clean = _re.sub(r'\d{1,2}:\d{2}', '', text_clean)
@@ -1683,10 +1708,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         due_timestamp = params.get("time", "")
         text = params.get("text", "Reminder")
         
-        # Add reminder with full timestamp
         r = reminders.add(update.effective_chat.id, text, due_timestamp)
         
-        # Format display nicely
         try:
             remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
             date_display = remind_dt.strftime("%d %b %Y")
@@ -1823,10 +1846,34 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🧠 *Note Save Ho Gaya!* ✅\n\n_{text[:150]}_", parse_mode="Markdown")
 
     else:  # AI chat
-        prompt = build_system_prompt() + f"\n\nUser: {user_msg}\n\nShort Hinglish reply (2-3 lines), Muslim phrases zaroor use karo:"
+        # Build prompt with strong Hinglish instruction
+        prompt = build_system_prompt() + f"""
+
+USER SAID: {user_msg}
+
+🚨 IMPORTANT - APNA REPLY HINGLISH MEIN DO:
+- Hinglish matlab Hindi words English letters mein likhna
+- Example: "Assalamualaikum! Aapka task complete ho gaya!"
+- Example: "Alhamdulillah! Aaj aapne {len(habits.today_status()[0])} habits kar liye!"
+- Example: "InshAllah, main aapki help kar dunga!"
+
+YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
+        
         reply = call_gemini(prompt)
+        
         if not reply:
             reply = "☪️ Assalamualaikum! Batao kya help chahiye?\nTasks, reminders, kharcha, diary, calendar, bills?"
+        
+        # Fix common English responses
+        english_greetings = ["Hello", "Hi", "Hey", "Good morning", "Good evening", "Good afternoon"]
+        for eng in english_greetings:
+            if reply.lower().startswith(eng.lower()):
+                reply = "Assalamualaikum! " + reply[len(eng):].strip()
+        
+        # Add Assalamualaikum if missing
+        if not any(word in reply.lower() for word in ['assalamualaikum', 'alaikum', 'salam', 'alhamdulillah']):
+            reply = "Assalamualaikum! " + reply
+        
         _log_action(user_name, "ai_chat", f"Q: {user_msg[:60]} | A: {reply[:60]}")
         await update.message.reply_text(reply, parse_mode="Markdown")
 
@@ -1842,7 +1889,7 @@ def main():
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v12 FINAL | Voice handler with offline fallback | FIXED REMINDERS")
+    log.info("Rk Bot v13 FINAL | Hinglish fixes | Voice offline | Fixed Reminders")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1856,7 +1903,7 @@ def main():
 
     register_memory_handlers(app)
     
-    # Voice handlers with multiple transcription methods (UPDATED v7)
+    # Voice handlers with multiple transcription methods (UPDATED v8)
     register_voice_handlers(app)
 
     app.add_handler(ConversationHandler(
@@ -1889,14 +1936,14 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Reminder job runs every 60 seconds - THIS IS ENOUGH!
+    # Reminder job runs every 60 seconds
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
     else:
         log.warning("⚠️ JobQueue not available - reminders may not work!")
 
-    log.info("Bot ready! Starting polling...")
+    log.info("✅ Bot ready! Starting polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
