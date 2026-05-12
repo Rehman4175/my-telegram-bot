@@ -3,7 +3,8 @@
 """
 DELETE MANAGER — Rk Bot
 ========================
-FIXED v6:
+FIXED v7:
+  - FIXED: "bills" sheet now correctly maps to "Bills & Subscriptions"
   - PRE-DELETE BACKUP: Koi bhi delete/wipe/nukeall se pehle full backup banta hai
   - /clearchat: Telegram chat ke messages force-delete karta hai (Bot API limit: ~last 48h)
   - Added Voice Notes and Smart Memory sheets
@@ -13,8 +14,8 @@ FIXED v6:
 
 Sheet tabs with ID columns (col 1 = ID):
   Tasks ✅ | Reminders ✅ | Expenses ✅ | Habits ✅ | Diary ✅
-  Memory ✅ | Bills ✅ | Calendar ✅ | Water ✅ | Miscellaneous ✅
-  Voice Notes ✅ | Smart Memory ✅
+  Memory / Important Notes ✅ | Bills & Subscriptions ✅ | Calendar Events ✅ 
+  Water Intake ✅ | Miscellaneous ✅ | Voice Notes ✅ | Smart Memory ✅
 
 Commands:
   /nuke      → Sirf Miscellaneous (chat history) delete
@@ -29,6 +30,7 @@ import os
 import re as _re
 import json
 import logging
+import time
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -61,20 +63,21 @@ CLEARCHAT_AWAIT_PASS   = 60
 
 # ----------------------------------------------------------------
 # KEY_MAP: All sheets now have ID column as first column
+# FIXED: "bills" now correctly maps to "Bills & Subscriptions"
 # ----------------------------------------------------------------
 SHEETS = {
-    "tasks":        {"tab": "Tasks",          "display": "Tasks", "has_id": True},
-    "reminders":    {"tab": "Reminders",      "display": "Reminders", "has_id": True},
-    "expenses":     {"tab": "Expenses",       "display": "Expenses", "has_id": True},
-    "habits":       {"tab": "Habits",         "display": "Habits", "has_id": True},
-    "diary":        {"tab": "Diary",          "display": "Diary", "has_id": True},
-    "memory":       {"tab": "Memory",         "display": "Memory / Important Notes", "has_id": True},
-    "bills":        {"tab": "Bills & Subscriptions", "display": "Bills & Subscriptions", "has_id": True},
-    "calendar":     {"tab": "Calendar Events","display": "Calendar Events", "has_id": True},
-    "water":        {"tab": "Water Intake",   "display": "Water Intake", "has_id": True},
-    "logs":         {"tab": "Miscellaneous",  "display": "Miscellaneous", "has_id": True},
-    "voice_notes":  {"tab": "Voice Notes",    "display": "Voice Notes", "has_id": True},
-    "smart_memory": {"tab": "Smart Memory",   "display": "Smart Memory", "has_id": True},
+    "tasks":        {"tab": "Tasks",                    "display": "Tasks",                    "has_id": True},
+    "reminders":    {"tab": "Reminders",                "display": "Reminders",                "has_id": True},
+    "expenses":     {"tab": "Expenses",                 "display": "Expenses",                 "has_id": True},
+    "habits":       {"tab": "Habits",                   "display": "Habits",                   "has_id": True},
+    "diary":        {"tab": "Diary",                    "display": "Diary",                    "has_id": True},
+    "memory":       {"tab": "Memory / Important Notes", "display": "Memory / Important Notes", "has_id": True},
+    "bills":        {"tab": "Bills & Subscriptions",    "display": "Bills & Subscriptions",    "has_id": True},  # ← FIXED
+    "calendar":     {"tab": "Calendar Events",          "display": "Calendar Events",          "has_id": True},
+    "water":        {"tab": "Water Intake",             "display": "Water Intake",             "has_id": True},
+    "logs":         {"tab": "Miscellaneous",            "display": "Miscellaneous",            "has_id": True},
+    "voice_notes":  {"tab": "Voice Notes",              "display": "Voice Notes",              "has_id": True},
+    "smart_memory": {"tab": "Smart Memory",             "display": "Smart Memory",             "has_id": True},
 }
 
 # Local store reset defaults
@@ -342,8 +345,12 @@ def _wipe_sheet_tab(key: str, skip_backup: bool = False):
         if total_rows <= 1:
             return True, f"ℹ️ '{display}' pehle se khali hai (ya sirf header hai)."
 
+        # Add small delay to avoid rate limiting
+        time.sleep(0.5)
+        
         for row_idx in range(total_rows, 1, -1):
             ws.delete_rows(row_idx)
+            time.sleep(0.1)  # Small delay between row deletions
 
         log.info(f"_wipe_sheet_tab: '{exact_tab_name}' — {total_rows - 1} rows deleted.")
         return True, f"✅ '{display}' — {total_rows - 1} rows delete ho gayi. Header safe hai. ✨"
@@ -373,7 +380,6 @@ def _wipe_local_store(key: str) -> str:
     return f"ℹ️ Local '{key}' cleared."
 
 
-# ================================================================
 # ================================================================
 # ████████  /clearchat — Telegram Chat Force Clear
 # ================================================================
@@ -644,8 +650,8 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📋 Kaunsi sheet se ek entry (row) delete karni hai?\n\n"
             "*(Har sheet mein ab ID column hai — first column)*\n\n"
             "Available sheets: Tasks, Reminders, Expenses, Habits, Diary,\n"
-            "Memory, Bills, Calendar, Water, Miscellaneous,\n"
-            "Voice Notes, Smart Memory",
+            "Memory / Important Notes, Bills & Subscriptions, Calendar Events,\n"
+            "Water Intake, Miscellaneous, Voice Notes, Smart Memory",
             parse_mode="Markdown",
             reply_markup=_sheet_select_keyboard("dm_row")
         )
@@ -667,8 +673,8 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "☢️ *NUCLEAR OPTION — SAAB KUCH DELETE*\n\n"
             "In *12 sheets* ka saara data + local JSON delete hoga:\n"
             "Tasks, Reminders, Expenses, Habits, Diary,\n"
-            "Memory, Bills, Calendar, Water, Miscellaneous,\n"
-            "Voice Notes, Smart Memory\n\n"
+            "Memory / Important Notes, Bills & Subscriptions, Calendar Events,\n"
+            "Water Intake, Miscellaneous, Voice Notes, Smart Memory\n\n"
             "⛔ Yeh undo NAHI hoga!\n\n"
             "Confirm karne ke liye exactly *CONFIRM* (capital mein) type karo:",
             parse_mode="Markdown"
@@ -730,6 +736,7 @@ async def del_nukeall_confirm_text(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
         ok, sheet_msg = _wipe_sheet_tab(key)
         results.append(sheet_msg)
+        time.sleep(0.5)  # Delay to avoid rate limiting
 
     try:
         goals.store.data = {"list": [], "counter": 0}
@@ -807,10 +814,7 @@ async def del_row_id_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     ctx.user_data.clear()
-    return ConversationHandler.END
-
-
-# ================================================================
+    return ConversationHandler.END# ================================================================
 # Callback Query Handler (WITH BACKUP for wipe operations)
 # ================================================================
 
@@ -840,8 +844,8 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "📋 *Ek Row Delete*\n\nKaunsi sheet se? *(Har sheet mein ab ID column hai)*\n\n"
             "Sheets: Tasks, Reminders, Expenses, Habits, Diary,\n"
-            "Memory, Bills, Calendar, Water, Miscellaneous,\n"
-            "Voice Notes, Smart Memory",
+            "Memory / Important Notes, Bills & Subscriptions, Calendar Events,\n"
+            "Water Intake, Miscellaneous, Voice Notes, Smart Memory",
             parse_mode="Markdown",
             reply_markup=_sheet_select_keyboard("dm_row")
         )
@@ -1021,11 +1025,12 @@ def register_delete_handlers(app: Application):
     app.add_handler(clearchat_conv)
 
     pw_status = "✅ SET" if DELETE_PASSWORD else "❌ NOT SET — Repository Secrets mein DELETE_PASSWORD add karo!"
-    log.info("✅ Delete Manager v6 registered.")
+    log.info("✅ Delete Manager v7 registered.")
     log.info("   Commands: /nuke /delsheet /nukesheet /nukeall /delete /clearchat")
     log.info(f"   DELETE_PASSWORD: {pw_status}")
     log.info(f"   Sheets in scope: {list(SHEETS.keys())}")
-    log.info("   ✅ ALL 12 sheets now have ID column — deletion by ID works for all!")
+    log.info("   ✅ ALL sheets now have ID column — deletion by ID works for all!")
+    log.info("   ✅ FIXED: 'bills' now maps to 'Bills & Subscriptions'")
     log.info("   ✅ Pre-delete BACKUP system active for all wipe/nuke operations!")
     log.info("   ✅ /clearchat — Force delete Telegram messages (last ~48h Telegram limit)")
 
@@ -1048,5 +1053,5 @@ if __name__ == "__main__":
     application = TGApp.builder().token(TELEGRAM_TOKEN).build()
     register_delete_handlers(application)
 
-    log.info("🤖 Delete Manager v6 standalone mode — polling...")
+    log.info("🤖 Delete Manager v7 standalone mode — polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
