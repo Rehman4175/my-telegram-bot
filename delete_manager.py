@@ -64,18 +64,18 @@ CLEARCHAT_AWAIT_LIMIT  = 61
 # KEY_MAP: All sheets now have ID column as first column
 # ----------------------------------------------------------------
 SHEETS = {
-    "tasks":        {"tab": "Tasks",        "display": "Tasks", "has_id": True},
-    "reminders":    {"tab": "Reminders",    "display": "Reminders", "has_id": True},
-    "expenses":     {"tab": "Expenses",     "display": "Expenses", "has_id": True},
-    "habits":       {"tab": "Habits",       "display": "Habits", "has_id": True},
-    "diary":        {"tab": "Diary",        "display": "Diary", "has_id": True},
-    "memory":       {"tab": "Memory",       "display": "Memory / Important Notes", "has_id": True},
-    "bills":        {"tab": "Bills",        "display": "Bills & Subscriptions", "has_id": True},
-    "calendar":     {"tab": "Calendar",     "display": "Calendar Events", "has_id": True},
-    "water":        {"tab": "Water",        "display": "Water Intake", "has_id": True},
-    "logs":         {"tab": "Logs",         "display": "Miscellaneous", "has_id": True},
-    "voice_notes":  {"tab": "VoiceNotes",   "display": "Voice Notes", "has_id": True},
-    "smart_memory": {"tab": "SmartMemory",  "display": "Smart Memory", "has_id": True},
+    "tasks":        {"tab": "Tasks",          "display": "Tasks", "has_id": True},
+    "reminders":    {"tab": "Reminders",      "display": "Reminders", "has_id": True},
+    "expenses":     {"tab": "Expenses",       "display": "Expenses", "has_id": True},
+    "habits":       {"tab": "Habits",         "display": "Habits", "has_id": True},
+    "diary":        {"tab": "Diary",          "display": "Diary", "has_id": True},
+    "memory":       {"tab": "Memory",         "display": "Memory / Important Notes", "has_id": True},
+    "bills":        {"tab": "Bills & Subscriptions", "display": "Bills & Subscriptions", "has_id": True},
+    "calendar":     {"tab": "Calendar Events","display": "Calendar Events", "has_id": True},
+    "water":        {"tab": "Water Intake",   "display": "Water Intake", "has_id": True},
+    "logs":         {"tab": "Miscellaneous",  "display": "Miscellaneous", "has_id": True},
+    "voice_notes":  {"tab": "Voice Notes",    "display": "Voice Notes", "has_id": True},
+    "smart_memory": {"tab": "Smart Memory",   "display": "Smart Memory", "has_id": True},
 }
 
 # Local store reset defaults
@@ -140,7 +140,7 @@ def _create_full_backup(label: str = "pre_delete") -> tuple[bool, str]:
             for key, info in SHEETS.items():
                 try:
                     tab_key = info["tab"]
-                    ws = sheets_backup._ws(tab_key)
+                    ws = sheets_backup._book.worksheet(tab_key)
                     if ws:
                         all_values = ws.get_all_values()
                         sheets_data[key] = all_values
@@ -197,7 +197,7 @@ def _create_sheet_backup(sheet_key: str, label: str = "pre_wipe") -> tuple[bool,
         }
 
         if sheets_backup.connected:
-            ws = sheets_backup._ws(tab_key)
+            ws = sheets_backup._book.worksheet(tab_key)
             if ws:
                 backup_data["data"] = ws.get_all_values()
 
@@ -295,10 +295,24 @@ def parse_delete_intent(text: str):
 # HELPER: Sheet wipe (WITH BACKUP)
 # ================================================================
 
+def _get_worksheet_direct(exact_tab_name: str):
+    """TAB_MAP bypass — directly exact tab name se worksheet laata hai."""
+    try:
+        if hasattr(sheets_backup, '_ws_cache') and exact_tab_name in sheets_backup._ws_cache:
+            return sheets_backup._ws_cache[exact_tab_name]
+        ws = sheets_backup._book.worksheet(exact_tab_name)
+        if hasattr(sheets_backup, '_ws_cache'):
+            sheets_backup._ws_cache[exact_tab_name] = ws
+        return ws
+    except Exception as e:
+        log.error(f"_get_worksheet_direct [{exact_tab_name}]: {e}")
+        return None
+
+
 def _wipe_sheet_tab(key: str, skip_backup: bool = False):
     """
     Sheet ke saare rows delete karta hai (header bachta hai).
-    skip_backup=True sirf tab pass karo jab pehle se backup ho chuka ho.
+    TAB_MAP bypass — directly exact Google Sheet tab name se access karta hai.
     """
     if not sheets_backup.connected:
         return False, "⚠️ Google Sheets connected nahi hai!"
@@ -307,21 +321,21 @@ def _wipe_sheet_tab(key: str, skip_backup: bool = False):
     if not sheet_info:
         return False, f"⚠️ Unknown sheet key: {key}"
 
-    tab_key      = sheet_info["tab"]
-    display      = sheet_info["display"]
-    tab_real_name = sheets_backup.TAB_MAP.get(tab_key, tab_key)
-    ws_cache      = sheets_backup._ws_cache
+    exact_tab_name = sheet_info["tab"]
+    display        = sheet_info["display"]
 
-    if tab_real_name not in ws_cache:
-        try:
-            ws_found = sheets_backup._book.worksheet(tab_real_name)
-            sheets_backup._ws_cache[tab_real_name] = ws_found
-        except Exception:
-            return False, f"⚠️ Tab '{display}' Google Sheet mein nahi mili."
-
-    ws = sheets_backup._ws(tab_key)
+    ws = _get_worksheet_direct(exact_tab_name)
     if not ws:
-        return False, f"⚠️ '{display}' tab access nahi ho saka!"
+        try:
+            available = [s.title for s in sheets_backup._book.worksheets()]
+            log.error(f"Tab '{exact_tab_name}' nahi mili. Available: {available}")
+            return False, (
+                f"⚠️ Tab '{display}' nahi mili!\n"
+                f"Available tabs: {', '.join(available)}\n"
+                f"SHEETS dict mein tab naam fix karo."
+            )
+        except Exception as e:
+            return False, f"⚠️ Tab '{display}' access error: {e}"
 
     try:
         all_values = ws.get_all_values()
@@ -332,10 +346,11 @@ def _wipe_sheet_tab(key: str, skip_backup: bool = False):
         for row_idx in range(total_rows, 1, -1):
             ws.delete_rows(row_idx)
 
+        log.info(f"_wipe_sheet_tab: '{exact_tab_name}' — {total_rows - 1} rows deleted.")
         return True, f"✅ '{display}' — {total_rows - 1} rows delete ho gayi. Header safe hai. ✨"
 
     except Exception as e:
-        log.error(f"_wipe_sheet_tab [{key}]: {e}")
+        log.error(f"_wipe_sheet_tab [{key}] [{exact_tab_name}]: {e}")
         return False, f"❌ Error wiping '{display}': {e}"
 
 
