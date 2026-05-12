@@ -1,4 +1,4 @@
-name: Deploy Bot with Offline Voice
+name: Deploy Bot
 
 on:
   push:
@@ -12,45 +12,47 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
+    
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
-
+    
     - name: Install ffmpeg
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-
+        ffmpeg -version
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
-    - name: Download Vosk Model (GitHub Actions path)
+    
+    - name: Download Vosk Model (REQUIRED for offline voice)
       run: |
-        # Download model to current directory
-        wget -q https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+        echo "📥 Downloading Vosk model..."
+        wget -q --show-progress https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+        echo "📦 Extracting model..."
         unzip -q vosk-model-small-hi-0.22.zip
         rm vosk-model-small-hi-0.22.zip
-        ls -la vosk-model-small-hi-0.22/
-        
-        # Set environment variable for model path
-        echo "VOSK_MODEL_PATH=$(pwd)/vosk-model-small-hi-0.22" >> $GITHUB_ENV
-
-    - name: Kill previous bot instance
+        echo "✅ Vosk model downloaded and extracted"
+        ls -la vosk-model-small-hi-0.22/ | head -5
+    
+    - name: Kill previous bot instance (FIX CONFLICT)
       run: |
-        pkill -f "python.*bot.py" || true
+        echo "🔪 Killing previous bot instances..."
         pkill -f "python.*main.py" || true
+        pkill -f "python.*bot.py" || true
         sleep 3
-
-    - name: Delete webhook (fix conflict)
+    
+    - name: Delete webhook (FIX CONFLICT)
       run: |
+        echo "🗑️ Deleting old webhook..."
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/deleteWebhook?drop_pending_updates=true"
         sleep 2
-
+    
     - name: Run bot
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -62,9 +64,7 @@ jobs:
         DELETE_PASSWORD: ${{ secrets.DELETE_PASSWORD }}
         VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22
       run: |
-        # Verify model exists
-        echo "VOSK_MODEL_PATH=$VOSK_MODEL_PATH"
-        ls -la $VOSK_MODEL_PATH || echo "Model not found!"
-        
-        # Run bot
+        echo "🚀 Starting bot..."
+        echo "Model path: $VOSK_MODEL_PATH"
+        ls -la $VOSK_MODEL_PATH || echo "⚠️ Model not found!"
         python main.py
