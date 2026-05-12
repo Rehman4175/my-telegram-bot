@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v11:
+FIXES v12 (FINAL):
   - REMINDER FIX: Full timestamp support (YYYY-MM-DD HH:MM:SS)
   - Voice handler integration with proper reminder storage
+  - Fixed ReminderManager compatibility (no direct store access)
   - Reminder reply mein actual date + time dono show hoti hai
   - /start mein current date & time show hoti hai
   - FIXED: Conflict error - cleanup before starting
@@ -31,7 +32,7 @@ from telegram.ext import (
 )
 
 # ── NEW ADDON IMPORTS ──────────────────────────────
-# Voice handler with multiple transcription methods (UPDATED v6)
+# Voice handler with multiple transcription methods (UPDATED v7)
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
 # ──────────────────────────────────────────────────
@@ -603,24 +604,19 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         mins = int(time_arg[:-1])
         remind_dt = now + timedelta(minutes=mins)
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        remind_time = remind_dt.strftime("%H:%M")
         
     elif time_arg.endswith("h") and time_arg[:-1].isdigit():
         hours = int(time_arg[:-1])
         remind_dt = now + timedelta(hours=hours)
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        remind_time = remind_dt.strftime("%H:%M")
         
     elif time_arg.endswith("min") and time_arg[:-3].isdigit():
         mins = int(time_arg[:-3])
         remind_dt = now + timedelta(minutes=mins)
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        remind_time = remind_dt.strftime("%H:%M")
         
     elif ":" in time_arg:
         parts = time_arg.split(":")
-        remind_time = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
-        # Convert to full timestamp
         remind_dt = datetime(now.year, now.month, now.day, int(parts[0]), int(parts[1]))
         if remind_dt < now:
             remind_dt += timedelta(days=1)
@@ -654,8 +650,11 @@ async def cmd_delremind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         active = reminders.all_active()
         if active:
-            lines = "\n".join(f"  #{r['id']} {r['time']} — {r['text']}" for r in active[:10])
-            await update.message.reply_text(f"Active reminders:\n{lines}\n\n/delremind id", parse_mode="Markdown")
+            lines = []
+            for r in active[:10]:
+                due_display = r.get("due", "")[:16] if r.get("due") else ""
+                lines.append(f"  #{r['id']} {due_display} — {r['text']}")
+            await update.message.reply_text(f"Active reminders:\n" + "\n".join(lines) + "\n\n/delremind id", parse_mode="Markdown")
         else:
             await update.message.reply_text("/delremind id", parse_mode="Markdown")
         return
@@ -1120,7 +1119,7 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================================================================
-# REMINDER JOB (UPDATED for full timestamp)
+# REMINDER JOB (UPDATED for full timestamp - FIXED for ReminderManager)
 # ================================================================
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1167,7 +1166,10 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     log.error(f"Bills reminder failed: {ex}")
 
     # Check active reminders using FULL TIMESTAMP
-    for r in reminders.all_active():
+    # Get all active reminders (ReminderManager has all_active method)
+    active_reminders = reminders.all_active()
+    
+    for r in active_reminders:
         if r.get("acknowledged", False):
             continue
         reminder_due = r.get("due", "")
@@ -1180,8 +1182,10 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
         if len(reminder_due) > 10:  # Full timestamp format
             due_min = reminder_due[:16]  # "YYYY-MM-DD HH:MM"
             if due_min == now_str_full:
+                # Check if already fired this minute
                 if r.get("last_fired_minute") == now_str_full:
                     continue
+                    
                 fire_count = r.get("fire_count", 0)
                 suffix = f"\n⚠️ {fire_count + 1}vi baar baj raha hai — OK dabao!" if fire_count > 0 else ""
                 
@@ -1201,13 +1205,21 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                         chat_id=int(r["chat_id"]), text=alert,
                         reply_markup=alarm_keyboard(r["id"]), parse_mode="Markdown"
                     )
-                    for item in reminders.store.data["list"]:
-                        if item["id"] == r["id"]:
-                            item["fire_count"] = item.get("fire_count", 0) + 1
-                            item["last_fired_minute"] = now_str_full
-                            item["last_fired"] = now_ist().isoformat()
-                            break
-                    reminders.store.save()
+                    # Update fire count in reminder
+                    # Try to update via ReminderManager methods or directly if needed
+                    try:
+                        # Mark as triggered (this will also increment fire_count in ReminderManager)
+                        reminders.mark_triggered(r["id"])
+                    except AttributeError:
+                        # Fallback for SimpleReminderStore
+                        if hasattr(reminders, 'store') and hasattr(reminders.store, 'data'):
+                            for item in reminders.store.data.get("list", []):
+                                if item.get("id") == r["id"]:
+                                    item["fire_count"] = item.get("fire_count", 0) + 1
+                                    item["last_fired_minute"] = now_str_full
+                                    item["last_fired"] = now_ist().isoformat()
+                                    reminders.store.save()
+                                    break
                     _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
                 except Exception as e:
                     log.error(f"Failed to send alarm: {e}")
@@ -1830,7 +1842,7 @@ def main():
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v11 | Voice handler with offline fallback | FIXED REMINDERS")
+    log.info("Rk Bot v12 FINAL | Voice handler with offline fallback | FIXED REMINDERS")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1844,7 +1856,7 @@ def main():
 
     register_memory_handlers(app)
     
-    # Voice handlers with multiple transcription methods (UPDATED v6)
+    # Voice handlers with multiple transcription methods (UPDATED v7)
     register_voice_handlers(app)
 
     app.add_handler(ConversationHandler(
@@ -1880,6 +1892,15 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("Reminder job scheduled (every 60s)")
+
+    # Start reminder checker background task from reminder_bot.py
+    try:
+        from reminder_bot import reminder_checker
+        import asyncio
+        asyncio.create_task(reminder_checker(app))
+        log.info("✅ Reminder checker background task started")
+    except Exception as e:
+        log.warning(f"Could not start reminder_checker: {e}")
 
     log.info("Bot ready! Starting polling...")
     # Use drop_pending_updates=True to ignore old updates
