@@ -1,11 +1,14 @@
-name: Deploy Bot with Cached Vosk Model
+name: Deploy Bot
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-  schedule:
-    - cron: '*/10 * * * *'  # Har 10 minute me restart (prevents idle)
+
+# IMPORTANT: Cancel previous running workflow
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -31,56 +34,41 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # ============================================================
-    # VOSK MODEL CACHE - Ek baar download, hamesha rahega!
-    # ============================================================
     - name: Cache Vosk Model
       id: cache-vosk
       uses: actions/cache@v3
       with:
         path: vosk-model-small-hi-0.22
         key: vosk-model-small-hi-0.22-v1
-        restore-keys: |
-          vosk-model-small-hi-0.22-
 
-    - name: Download Vosk Model (only on first run)
+    - name: Download Vosk Model (first time only)
       if: steps.cache-vosk.outputs.cache-hit != 'true'
       run: |
-        echo "📥 First time - Downloading Vosk model (will be cached)..."
+        echo "📥 Downloading Vosk model..."
         wget -q https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
         unzip -q vosk-model-small-hi-0.22.zip
         rm vosk-model-small-hi-0.22.zip
-        echo "✅ Vosk model downloaded and will be cached"
-        
-    - name: Verify Vosk Model
-      run: |
-        if [ -d "vosk-model-small-hi-0.22" ]; then
-          echo "✅ Vosk model exists! Size: $(du -sh vosk-model-small-hi-0.22 | cut -f1)"
-        else
-          echo "❌ Vosk model missing!"
-          exit 1
-        fi
+        echo "✅ Vosk model ready"
 
-    # ============================================================
-    # KILL PREVIOUS INSTANCE
-    # ============================================================
-    - name: Kill previous bot instances
+    # CRITICAL: Kill all previous bot processes
+    - name: Kill all previous bot instances
       run: |
-        echo "🔪 Killing previous bot processes..."
-        pkill -9 -f "python.*main.py" || true
-        pkill -9 -f "python.*bot.py" || true
-        sleep 3
+        echo "🔪 Killing all previous Python bot processes..."
+        sudo pkill -9 -f "python.*main.py" || true
+        sudo pkill -9 -f "python.*bot.py" || true
+        sudo pkill -9 -f "python.*voice" || true
+        sudo killall -9 python3 || true
+        sleep 5
 
+    # CRITICAL: Force delete webhook
     - name: Force delete webhook
       run: |
-        echo "🗑️ Deleting webhook..."
+        echo "🗑️ Deleting old webhook..."
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/deleteWebhook?drop_pending_updates=true"
-        sleep 2
+        sleep 3
 
-    # ============================================================
-    # RUN BOT
-    # ============================================================
-    - name: Run bot
+    # CRITICAL: Get a new unique session
+    - name: Run bot with fresh session
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -92,8 +80,7 @@ jobs:
         VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22
       run: |
         echo "🚀 Starting bot..."
-        echo "Model path: $VOSK_MODEL_PATH"
-        python main.py &
+        python main.py 2>&1 | tee bot.log &
         
         # Keep workflow alive
         sleep infinity
