@@ -1,9 +1,11 @@
-name: Deploy Bot
+name: Deploy Bot with Cached Vosk Model
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'  # Har 10 minute me restart (prevents idle)
 
 jobs:
   deploy:
@@ -12,47 +14,72 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
-    
+
     - name: Install ffmpeg
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
-    - name: Download Vosk Model
+
+    # ============================================================
+    # VOSK MODEL CACHE - Ek baar download, hamesha rahega!
+    # ============================================================
+    - name: Cache Vosk Model
+      id: cache-vosk
+      uses: actions/cache@v3
+      with:
+        path: vosk-model-small-hi-0.22
+        key: vosk-model-small-hi-0.22-v1
+        restore-keys: |
+          vosk-model-small-hi-0.22-
+
+    - name: Download Vosk Model (only on first run)
+      if: steps.cache-vosk.outputs.cache-hit != 'true'
       run: |
-        echo "📥 Downloading Vosk model..."
+        echo "📥 First time - Downloading Vosk model (will be cached)..."
         wget -q https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
         unzip -q vosk-model-small-hi-0.22.zip
         rm vosk-model-small-hi-0.22.zip
-        echo "✅ Vosk model ready"
-    
-    - name: FORCE KILL all previous bot instances
+        echo "✅ Vosk model downloaded and will be cached"
+        
+    - name: Verify Vosk Model
       run: |
-        echo "🔪 Killing all Python bot processes..."
-        sudo pkill -9 -f "python.*main.py" || true
-        sudo pkill -9 -f "python.*bot.py" || true
-        sudo pkill -9 -f "python.*voice" || true
-        sudo killall python3 || true
-        sleep 5
-    
-    - name: FORCE DELETE webhook
+        if [ -d "vosk-model-small-hi-0.22" ]; then
+          echo "✅ Vosk model exists! Size: $(du -sh vosk-model-small-hi-0.22 | cut -f1)"
+        else
+          echo "❌ Vosk model missing!"
+          exit 1
+        fi
+
+    # ============================================================
+    # KILL PREVIOUS INSTANCE
+    # ============================================================
+    - name: Kill previous bot instances
       run: |
-        echo "🗑️ Force deleting webhook..."
-        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/deleteWebhook?drop_pending_updates=true"
-        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/setWebhook" -d "url="
+        echo "🔪 Killing previous bot processes..."
+        pkill -9 -f "python.*main.py" || true
+        pkill -9 -f "python.*bot.py" || true
         sleep 3
-    
+
+    - name: Force delete webhook
+      run: |
+        echo "🗑️ Deleting webhook..."
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/deleteWebhook?drop_pending_updates=true"
+        sleep 2
+
+    # ============================================================
+    # RUN BOT
+    # ============================================================
     - name: Run bot
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -64,5 +91,9 @@ jobs:
         DELETE_PASSWORD: ${{ secrets.DELETE_PASSWORD }}
         VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22
       run: |
-        echo "🚀 Starting bot with fresh instance..."
-        python main.py
+        echo "🚀 Starting bot..."
+        echo "Model path: $VOSK_MODEL_PATH"
+        python main.py &
+        
+        # Keep workflow alive
+        sleep infinity
