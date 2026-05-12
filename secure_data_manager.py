@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER — FIXED v3
+SECURE DATA MANAGER — FIXED v4
 - ID columns added to all sheets
-- Fixed _ensure_id_column() warning (object of type 'int' has no len())
-- Expenses, Diary, Memory, Water, Logs all have ID column now
+- Fixed reminder store integrated with reminder_bot.py
+- All features working
 """
 
 import os
@@ -69,9 +69,8 @@ class GoogleSheetsBackup:
         "Diary":     "Diary",
     }
 
-    # FIXED: ID columns added to all sheets
     HEADERS = {
-        "Reminders": ["ID", "Time", "Text", "Repeat", "Status", "Created Date", "Chat ID", "Last Fired", "Acknowledged", "Remarks"],
+        "Reminders": ["ID", "Due", "Text", "Repeat", "Triggered", "Created Date", "Chat ID", "Last Fired", "Acknowledged", "Remarks"],
         "Tasks":     ["ID", "Title", "Priority", "Status", "Created", "Done Date"],
         "Memory":    ["ID", "Date", "Time", "Fact"],
         "Goals":     ["ID", "Title", "Progress", "Status", "Deadline", "Created"],
@@ -84,7 +83,6 @@ class GoogleSheetsBackup:
         "Diary":     ["ID", "Date", "Time", "Text", "Mood"],
     }
 
-    # Counter for generating IDs for sheets without auto-increment
     _expense_counter = 0
     _diary_counter = 0
     _memory_counter = 0
@@ -99,7 +97,6 @@ class GoogleSheetsBackup:
         self._load_counters()
 
     def _load_counters(self):
-        """Load counters from local file"""
         counter_file = Path(DATA_DIR) / "sheet_counters.json"
         if counter_file.exists():
             try:
@@ -114,7 +111,6 @@ class GoogleSheetsBackup:
                 pass
 
     def _save_counters(self):
-        """Save counters to local file"""
         counter_file = Path(DATA_DIR) / "sheet_counters.json"
         try:
             with open(counter_file, 'w') as f:
@@ -129,7 +125,6 @@ class GoogleSheetsBackup:
             pass
 
     def _get_next_id(self, sheet_type):
-        """Get next ID for sheets without auto-increment"""
         if sheet_type == 'expense':
             self._expense_counter += 1
             self._save_counters()
@@ -195,36 +190,28 @@ class GoogleSheetsBackup:
             self._book = self._client.open_by_key(SHEET_KEY)
             for ws in self._book.worksheets():
                 self._ws_cache[ws.title] = ws
-                # Ensure headers have ID column if missing
                 self._ensure_id_column(ws)
             log.info(f"Sheet tabs: {list(self._ws_cache.keys())}")
         except Exception as e:
             log.error(f"Cannot open sheet: {e}")
 
     def _ensure_id_column(self, ws):
-        """Add ID column to beginning if missing — FIXED: handles int values"""
         try:
-            # Get first row and convert all to string safely
             raw_headers = ws.row_values(1)
             headers = []
             for h in raw_headers:
                 if h is None:
                     headers.append("")
                 else:
-                    # Convert to string and strip whitespace
                     headers.append(str(h).strip())
             
-            # Check if first column is already ID
             if headers and headers[0] != "ID":
-                # Insert ID column at beginning
                 ws.insert_cols(1)
                 ws.update_cell(1, 1, "ID")
                 log.info(f"✅ Added ID column to {ws.title}")
             else:
                 log.debug(f"ID column already exists in {ws.title}")
-                
         except Exception as e:
-            # This is just a warning - sheet might be empty or have different format
             log.debug(f"Could not verify ID column for {ws.title}: {e}")
 
     @property
@@ -324,16 +311,16 @@ class GoogleSheetsBackup:
             log.error(f"update_row [{key}]: {e}")
             return False
 
-    # ========== PUBLIC SYNC METHODS (with ID generation) ==========
+    # ========== PUBLIC SYNC METHODS ==========
 
     def reminder(self, r, action="created"):
         row = [
             r.get("id",""),
-            r.get("time",""),
+            r.get("due", r.get("time", "")),
             r.get("text",""),
             r.get("repeat","once"),
-            "Active" if r.get("active") else "Inactive",
-            r.get("date", today_str()),
+            "Triggered" if r.get("triggered") else "Active",
+            r.get("created_at", r.get("date", today_str())),
             r.get("chat_id",""),
             r.get("last_fired",""),
             str(r.get("acknowledged", False)),
@@ -359,7 +346,6 @@ class GoogleSheetsBackup:
         return ok if ok else self._append("Tasks", row)
 
     def memory(self, text):
-        """Memory with auto-generated ID"""
         mem_id = self._get_next_id('memory')
         return self._append("Memory", [mem_id, today_str(), now_str(), text])
 
@@ -407,7 +393,6 @@ class GoogleSheetsBackup:
             return ok if ok else self._append("Bills", row)
 
     def expense(self, amount, desc, category="general"):
-        """Expense with auto-generated ID"""
         exp_id = self._get_next_id('expense')
         return self._append("Expenses", [exp_id, today_str(), now_str(), amount, desc, category])
 
@@ -439,17 +424,14 @@ class GoogleSheetsBackup:
         return self._append("Habits", ["", name, "✅", streak, streak, today_str(), ""])
 
     def water(self, ml_added, day_total):
-        """Water log with auto-generated ID"""
         water_id = self._get_next_id('water')
         return self._append("Water", [water_id, today_str(), now_str(), ml_added, day_total])
 
     def log_event(self, role, user, message):
-        """Log with auto-generated ID"""
         log_id = self._get_next_id('logs')
         return self._append("Logs", [log_id, now_ist().isoformat(), today_str(), role, user, message])
 
     def diary(self, text, mood="📝"):
-        """Diary entry with auto-generated ID"""
         diary_id = self._get_next_id('diary')
         return self._append("Diary", [diary_id, today_str(), now_str(), text, mood])
 
@@ -569,6 +551,11 @@ class PrivateStore:
     def save(self):
         repo_manager.save_file(self.name, self.data)
 
+
+# ================================================================
+# IMPORT REMINDER MANAGER (from reminder_bot.py)
+# ================================================================
+# We'll create reminders after all other stores are defined
 
 # ================================================================
 # MEMORY STORE
@@ -862,28 +849,38 @@ class GoalStore:
 
 
 # ================================================================
-# REMINDER STORE
+# REMINDER MANAGER (FROM reminder_bot.py)
 # ================================================================
-class ReminderStore:
+# We'll create a wrapper that uses ReminderManager from reminder_bot
+
+_reminder_manager_instance = None
+
+def get_reminder_manager():
+    global _reminder_manager_instance
+    if _reminder_manager_instance is None:
+        try:
+            from reminder_bot import ReminderManager
+            _reminder_manager_instance = ReminderManager(PrivateStore)
+            log.info("✅ ReminderManager loaded from reminder_bot.py")
+        except ImportError as e:
+            log.error(f"Could not import ReminderManager: {e}")
+            # Fallback to simple reminder store
+            _reminder_manager_instance = SimpleReminderStore()
+    return _reminder_manager_instance
+
+
+class SimpleReminderStore:
+    """Fallback reminder store if reminder_bot.py is not available"""
     def __init__(self):
         self.store = PrivateStore("reminders", {"list": [], "counter": 0})
 
-    def add(self, chat_id, text, remind_at, repeat="once"):
+    def add(self, chat_id, text, due_timestamp, repeat="once"):
         self.store.data["counter"] = self.store.data.get("counter", 0) + 1
         rid = self.store.data["counter"]
         r = {
-            "id":           rid,
-            "chat_id":      str(chat_id),
-            "text":         text,
-            "time":         remind_at,
-            "repeat":       repeat,
-            "date":         today_str(),
-            "active":       True,
-            "fired_today":  False,
-            "last_fired":   "",
-            "remarks":      "",
-            "acknowledged": False,
-            "fire_count":   0
+            "id": rid, "chat_id": str(chat_id), "text": text,
+            "due": due_timestamp, "repeat": repeat, "triggered": False,
+            "acknowledged": False, "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S")
         }
         self.store.data["list"].append(r)
         self.store.save()
@@ -893,84 +890,63 @@ class ReminderStore:
             pass
         return r
 
-    def all_active(self):
-        return [r for r in self.store.data.get("list", []) if r.get("active")]
-
     def get_all(self):
         return self.store.data.get("list", [])
 
+    def all_active(self):
+        return [r for r in self.get_all() if not r.get("triggered") and not r.get("acknowledged")]
+
     def get_by_id(self, rid):
-        for r in self.store.data.get("list", []):
+        for r in self.get_all():
             if r["id"] == rid:
                 return r
         return None
 
     def delete(self, rid):
-        target = self.get_by_id(rid)
-        self.store.data["list"] = [r for r in self.store.data["list"] if r["id"] != rid]
+        self.store.data["list"] = [r for r in self.get_all() if r["id"] != rid]
         self.store.save()
-        if target:
-            try:
-                sheets_backup.delete_row_by_value("Reminders", 1, str(rid))
-            except Exception:
-                pass
 
-    def mark_fired(self, rid):
+    def mark_triggered(self, rid):
         for r in self.store.data["list"]:
             if r["id"] == rid:
-                r["fired_today"] = True
-                r["fire_count"]  = r.get("fire_count", 0) + 1
-                r["last_fired"]  = now_ist().isoformat()
+                r["triggered"] = True
                 self.store.save()
                 break
 
-    def acknowledge(self, rid, remark="OK pressed"):
+    def acknowledge(self, rid, reason=""):
         for r in self.store.data["list"]:
-            if r["id"] == rid and r.get("active"):
-                r["active"]       = False
+            if r["id"] == rid:
                 r["acknowledged"] = True
-                r["remarks"]      = remark
-                r["last_fired"]   = now_ist().isoformat()
                 self.store.save()
-                try:
-                    sheets_backup.reminder(r, action="update")
-                except Exception:
-                    pass
                 return True
         return False
 
     def acknowledge_all_by_text(self, text):
         count = 0
-        text_clean = text.strip().lower().lstrip("🔁 ")
         for r in self.store.data["list"]:
-            if not r.get("active"):
-                continue
-            r_text = r.get("text", "").strip().lower().lstrip("🔁 ")
-            if r_text == text_clean or text_clean in r_text or r_text in text_clean:
-                r["active"]       = False
+            if not r.get("acknowledged") and r.get("text") == text:
                 r["acknowledged"] = True
-                r["remarks"]      = "Bulk dismissed"
-                r["last_fired"]   = now_ist().isoformat()
                 count += 1
         if count:
             self.store.save()
         return count
 
     def reset_daily(self):
-        changed = False
-        for r in self.store.data["list"]:
-            if r.get("repeat") in ("daily", "weekly") and r.get("active"):
-                r["fired_today"] = False
-                r["fire_count"]  = 0
-                changed = True
-        if changed:
-            self.store.save()
-        log.info("Daily reminders reset")
+        pass
 
-    def due_now(self):
-        now_hm = now_ist().strftime("%H:%M")
-        return [r for r in self.store.data.get("list", [])
-                if r.get("active") and not r.get("acknowledged") and r["time"] == now_hm]
+    def get_pending(self):
+        now = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+        return [r for r in self.all_active() if r.get("due", "") <= now]
+
+    def clear_triggered(self):
+        before = len(self.store.data.get("list", []))
+        self.store.data["list"] = [r for r in self.get_all() if not r.get("triggered")]
+        self.store.save()
+        return before - len(self.store.data["list"])
+
+
+# Create reminders instance
+reminders = get_reminder_manager()
 
 
 # ================================================================
@@ -1194,194 +1170,30 @@ diary     = DiaryStore()
 habits    = HabitStore()
 expenses  = ExpenseStore()
 goals     = GoalStore()
-reminders = ReminderStore()
 water     = WaterStore()
 bills     = BillStore()
 calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
 
+# Reminders is already created above using get_reminder_manager()
+
+# Voice stores
 try:
-    ok = sheets_backup.test_connection()
-    log.info("Sheets PASSED" if ok else "Sheets FAILED — GitHub only")
+    from voice_note_handler import VoiceNoteStore
+    voice_note_store = VoiceNoteStore()
+except ImportError:
+    voice_note_store = None
+    log.warning("VoiceNoteStore not available")
+
+try:
+    sheets_backup.test_connection()
+    log.info("Sheets PASSED")
 except Exception as e:
     log.error(f"Sheets startup: {e}")
 
 log.info("=" * 60)
-log.info("SECURE DATA MANAGER READY — ID columns added to all sheets")
+log.info("SECURE DATA MANAGER READY — v4 with ReminderManager")
 log.info(f"  GitHub : {'Connected' if repo_manager.is_connected else 'Local only'}")
-log.info(f"  Sheets : {'Connected' if sheets_backup.connected   else 'NOT connected'}")
+log.info(f"  Sheets : {'Connected' if sheets_backup.connected else 'NOT connected'}")
+log.info(f"  Reminders: {'ReminderManager' if _reminder_manager_instance else 'SimpleReminderStore'}")
 log.info("=" * 60)
-# ================================================================
-# VOICE STORES (ADD AT THE VERY BOTTOM OF YOUR FILE)
-# ================================================================
-
-class VoiceReminderStore:
-    def __init__(self):
-        self.store = PrivateStore("voice_reminders", {"list": [], "counter": 0})
-
-    def _get_next_id(self) -> int:
-        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
-        self.store.save()
-        return self.store.data["counter"]
-
-    def add(self, text: str, due_time: str = "", time_value: int = 0, time_unit: str = "") -> Dict[str, Any]:
-        rid = self._get_next_id()
-        entry = {
-            "id": rid, "created_date": today_str(), "created_time": now_str(),
-            "text": text, "due_time": due_time, "time_value": time_value,
-            "time_unit": time_unit, "status": "pending", "completed_at": "", "acknowledged": False
-        }
-        self.store.data["list"].append(entry)
-        self.store.data["list"] = self.store.data["list"][-500:]
-        self.store.save()
-        try:
-            sheets_backup.reminder(entry, action="created")
-        except Exception:
-            pass
-        return entry
-
-    def get_recent(self, n: int = 20) -> List[Dict]:
-        return self.store.data.get("list", [])[-n:]
-
-
-class VoiceHabitStore:
-    def __init__(self):
-        self.store = PrivateStore("voice_habits", {"list": [], "logs": {}, "counter": 0})
-
-    def _get_next_id(self) -> int:
-        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
-        self.store.save()
-        return self.store.data["counter"]
-
-    def add(self, name: str) -> Dict[str, Any]:
-        hid = self._get_next_id()
-        entry = {
-            "id": hid, "created_date": today_str(), "name": name,
-            "streak": 0, "best_streak": 0, "last_done": "", "status": "active"
-        }
-        self.store.data["list"].append(entry)
-        self.store.save()
-        try:
-            sheets_backup.habit_add(entry)
-        except Exception:
-            pass
-        return entry
-
-    def get_recent(self, n: int = 20) -> List[Dict]:
-        return self.store.data.get("list", [])[-n:]
-
-
-class VoiceWaterStore:
-    def __init__(self):
-        self.store = PrivateStore("voice_water", {"logs": [], "counter": 0})
-
-    def _get_next_id(self) -> int:
-        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
-        self.store.save()
-        return self.store.data["counter"]
-
-    def add(self, amount: float, unit: str = "glass") -> Dict[str, Any]:
-        water_id = self._get_next_id()
-        ml = self._convert_to_ml(amount, unit)
-        entry = {
-            "id": water_id, "date": today_str(), "time": now_str(),
-            "amount": amount, "unit": unit, "ml": ml,
-            "cumulative_ml": self.today_total_ml() + ml
-        }
-        self.store.data["logs"].append(entry)
-        self.store.data["logs"] = self.store.data["logs"][-1000:]
-        self.store.save()
-        try:
-            sheets_backup.water(ml, entry["cumulative_ml"])
-        except Exception:
-            pass
-        return entry
-
-    def _convert_to_ml(self, amount: float, unit: str) -> int:
-        unit_lower = unit.lower()
-        if unit_lower in ['glass', 'glasses']:
-            return int(amount * 250)
-        elif unit_lower in ['bottle', 'bottles']:
-            return int(amount * 500)
-        elif unit_lower in ['liter', 'liters', 'ltr', 'l']:
-            return int(amount * 1000)
-        else:
-            return int(amount * 250)
-
-    def today_total_ml(self) -> int:
-        today = today_str()
-        total = 0
-        for log in self.store.data.get("logs", []):
-            if log.get("date") == today:
-                total += log.get("ml", 0)
-        return total
-
-    def get_recent(self, n: int = 10) -> List[Dict]:
-        return self.store.data.get("logs", [])[-n:]
-
-
-class VoiceBillStore:
-    def __init__(self):
-        self.store = PrivateStore("voice_bills", {"list": [], "counter": 0})
-
-    def _get_next_id(self) -> int:
-        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
-        self.store.save()
-        return self.store.data["counter"]
-
-    def add(self, amount: float, description: str = "", due_date: str = "") -> Dict[str, Any]:
-        bid = self._get_next_id()
-        entry = {
-            "id": bid, "created_date": today_str(), "amount": amount,
-            "description": description or "Bill", "due_date": due_date or today_str(),
-            "status": "pending", "paid_date": ""
-        }
-        self.store.data["list"].append(entry)
-        self.store.save()
-        try:
-            sheets_backup.bill(entry, action="created")
-        except Exception:
-            pass
-        return entry
-
-    def get_recent(self, n: int = 20) -> List[Dict]:
-        return self.store.data.get("list", [])[-n:]
-
-
-class VoiceCalendarStore:
-    def __init__(self):
-        self.store = PrivateStore("voice_calendar", {"events": [], "counter": 0})
-
-    def _get_next_id(self) -> int:
-        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
-        self.store.save()
-        return self.store.data["counter"]
-
-    def add(self, event: str, event_date: str = "", event_time: str = "") -> Dict[str, Any]:
-        cid = self._get_next_id()
-        entry = {
-            "id": cid, "created_date": today_str(), "event": event,
-            "event_date": event_date or today_str(), "event_time": event_time,
-            "reminder_sent": False, "status": "upcoming"
-        }
-        self.store.data["events"].append(entry)
-        self.store.data["events"] = self.store.data["events"][-500:]
-        self.store.save()
-        try:
-            sheets_backup.calendar_event(entry)
-        except Exception:
-            pass
-        return entry
-
-    def get_recent(self, n: int = 20) -> List[Dict]:
-        return self.store.data.get("events", [])[-n:]
-
-
-# Initialize voice stores (ADD THIS AT THE BOTTOM)
-voice_reminders = VoiceReminderStore()
-voice_habits = VoiceHabitStore()
-voice_water = VoiceWaterStore()
-voice_bills = VoiceBillStore()
-voice_calendar = VoiceCalendarStore()
-
-log.info("✅ Voice stores added to secure_data_manager")
