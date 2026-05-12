@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-REMINDER BOT — With working alarms
+REMINDER BOT — With working alarms + Google Sheets Sync
 - Stores reminders with full timestamp
 - Background loop checks every 30 seconds
 - Sends message when reminder time arrives
+- SYNC TO GOOGLE SHEETS
 """
 
 import logging
@@ -16,14 +17,16 @@ log = logging.getLogger(__name__)
 
 
 class ReminderManager:
-    def __init__(self, private_store_class):
+    def __init__(self, private_store_class, sheets_backup=None):
         """
         Initialize reminder manager
         
         Args:
             private_store_class: PrivateStore class from secure_data_manager
+            sheets_backup: GoogleSheetsBackup instance for syncing
         """
         self.PrivateStore = private_store_class
+        self.sheets_backup = sheets_backup
         self.store = private_store_class("reminders", {"list": [], "counter": 0})
         
     def _next_id(self) -> int:
@@ -38,6 +41,39 @@ class ReminderManager:
         except ImportError:
             # Fallback - IST is UTC+5:30
             return datetime.utcnow() + timedelta(hours=5, minutes=30)
+    
+    def _sync_to_sheets(self, reminder: Dict[str, Any], action: str = "created"):
+        """Sync reminder to Google Sheets"""
+        if not self.sheets_backup:
+            log.debug("No sheets_backup available, skipping sync")
+            return
+        
+        try:
+            # Prepare row for Google Sheets
+            row = [
+                reminder.get("id", ""),
+                reminder.get("due", reminder.get("time", "")),
+                reminder.get("text", ""),
+                reminder.get("repeat", "once"),
+                "Active" if not reminder.get("triggered") else "Triggered",
+                reminder.get("created_at", reminder.get("date", "")),
+                reminder.get("chat_id", ""),
+                reminder.get("last_fired", ""),
+                str(reminder.get("acknowledged", False)),
+                reminder.get("remarks", ""),
+            ]
+            
+            if action == "created":
+                # Append new row
+                sheets_backup._append("Reminders", row)
+                log.info(f"📊 Synced reminder #{reminder['id']} to Google Sheets")
+            else:
+                # Update existing row
+                sheets_backup.update_row_by_value("Reminders", 1, str(reminder["id"]), row)
+                log.info(f"📊 Updated reminder #{reminder['id']} in Google Sheets")
+                
+        except Exception as e:
+            log.error(f"Failed to sync reminder to sheets: {e}")
     
     def add(self, chat_id: int, text: str, due_timestamp: str, repeat: str = "once") -> Dict[str, Any]:
         """
@@ -75,6 +111,10 @@ class ReminderManager:
         self.store.data["list"].append(reminder)
         self.store.save()
         log.info(f"✅ Reminder #{reminder['id']} added: '{text[:50]}' at {due_timestamp}")
+        
+        # 🔥 SYNC TO GOOGLE SHEETS
+        self._sync_to_sheets(reminder, action="created")
+        
         return reminder
     
     def get_all(self) -> List[Dict[str, Any]]:
@@ -106,6 +146,7 @@ class ReminderManager:
         for r in self.store.data.get("list", []):
             if r["id"] == reminder_id:
                 r["triggered"] = True
+                r["last_fired"] = self._get_now_ist().strftime("%Y-%m-%d %H:%M:%S")
                 
                 # Handle repeat reminders
                 if r.get("repeat") == "daily":
@@ -128,6 +169,9 @@ class ReminderManager:
                     )
                 
                 self.store.save()
+                
+                # 🔥 SYNC UPDATE TO SHEETS
+                self._sync_to_sheets(r, action="update")
                 break
     
     def acknowledge(self, reminder_id: int, reason: str = "User pressed OK"):
@@ -138,6 +182,10 @@ class ReminderManager:
                 r["acknowledged_at"] = self._get_now_ist().strftime("%Y-%m-%d %H:%M:%S")
                 r["acknowledge_reason"] = reason
                 self.store.save()
+                
+                # 🔥 SYNC UPDATE TO SHEETS
+                self._sync_to_sheets(r, action="update")
+                
                 log.info(f"✅ Reminder #{reminder_id} acknowledged: {reason}")
                 return True
         return False
@@ -150,6 +198,7 @@ class ReminderManager:
                 r["acknowledged"] = True
                 r["acknowledged_at"] = self._get_now_ist().strftime("%Y-%m-%d %H:%M:%S")
                 r["acknowledge_reason"] = "OK button (batch)"
+                self._sync_to_sheets(r, action="update")
                 count += 1
         if count > 0:
             self.store.save()
@@ -159,18 +208,30 @@ class ReminderManager:
     def reset_daily(self):
         """Reset daily flags - called at midnight"""
         for r in self.store.data.get("list", []):
-            r["triggered"] = False
-            r["acknowledged"] = False
+            if r.get("repeat") in ("daily", "weekly"):
+                r["triggered"] = False
+                r["acknowledged"] = False
+                self._sync_to_sheets(r, action="update")
         self.store.save()
         log.info("🔄 Daily reset - all reminders reactivated")
     
     def delete(self, reminder_id: int) -> bool:
         """Delete a reminder"""
+        target = self.get_by_id(reminder_id)
         reminders = self.store.data.get("list", [])
         for i, r in enumerate(reminders):
             if r["id"] == reminder_id:
                 del reminders[i]
                 self.store.save()
+                
+                # 🔥 DELETE FROM SHEETS as well
+                if self.sheets_backup:
+                    try:
+                        self.sheets_backup.delete_row_by_value("Reminders", 1, str(reminder_id))
+                        log.info(f"📊 Deleted reminder #{reminder_id} from Google Sheets")
+                    except Exception as e:
+                        log.error(f"Failed to delete from sheets: {e}")
+                
                 log.info(f"🗑️ Reminder #{reminder_id} deleted")
                 return True
         return False
