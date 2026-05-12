@@ -1,4 +1,4 @@
-name: Deploy Bot with Offline Voice
+name: Deploy Bot
 
 on:
   push:
@@ -13,27 +13,17 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # Python with CACHE - Fast!
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'  # 3.10 se 3.11 better hai
-        cache: 'pip'  # ✅ CACHE ADDED - Baar baar install nahi hoga
+        python-version: '3.11'
 
-    # FFmpeg for audio processing
-    - name: Install ffmpeg
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        ffmpeg -version
-
-    # Install dependencies with cache
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # VOSK MODEL CACHE - Offline voice ke liye
     - name: Cache Vosk Model
       id: cache-vosk
       uses: actions/cache@v3
@@ -41,16 +31,20 @@ jobs:
         path: vosk-model-small-hi-0.22
         key: ${{ runner.os }}-vosk-model-v1
 
-    # Download Vosk model (only if not cached)
     - name: Download Vosk Model
       if: steps.cache-vosk.outputs.cache-hit != 'true'
       run: |
-        wget https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
-        unzip vosk-model-small-hi-0.22.zip
+        wget -q https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+        unzip -q vosk-model-small-hi-0.22.zip
         rm vosk-model-small-hi-0.22.zip
-        ls -la vosk-model-small-hi-0.22/  # Verify download
 
-    # Run bot
+    - name: Kill old instance (IMPORTANT!)
+      run: |
+        # Kill any existing bot process
+        sudo pkill -f "python.*bot.py" || true
+        sudo pkill -f "python.*main.py" || true
+        sleep 5
+
     - name: Run bot
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -60,14 +54,13 @@ jobs:
         GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
         SHEET_KEY: ${{ secrets.SHEET_KEY }}
         DELETE_PASSWORD: ${{ secrets.DELETE_PASSWORD }}
-        VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22  # ✅ ADDED for offline voice
+        VOSK_MODEL_PATH: ${{ github.workspace }}/vosk-model-small-hi-0.22
       run: |
-        # Check if main.py or bot.py exists
-        if [ -f "main.py" ]; then
-          python main.py
-        elif [ -f "bot.py" ]; then
-          python bot.py
-        else
-          echo "No bot file found!"
-          exit 1
-        fi
+        # Delete webhook (prevents conflict)
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        
+        # Add small delay
+        sleep 3
+        
+        # Run with polling but single instance
+        python bot.py
