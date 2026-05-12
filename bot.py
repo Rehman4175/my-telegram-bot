@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v10:
-  - Voice handler FIXED with multiple transcription methods
-  - Reminder reply mein actual date + time dono show hogi
-  - /start mein current date & time show hogi
+FIXES v11:
+  - REMINDER FIX: Full timestamp support (YYYY-MM-DD HH:MM:SS)
+  - Voice handler integration with proper reminder storage
+  - Reminder reply mein actual date + time dono show hoti hai
+  - /start mein current date & time show hoti hai
   - FIXED: Conflict error - cleanup before starting
   - FIXED: Google Sheets connection handling
 """
@@ -30,7 +31,7 @@ from telegram.ext import (
 )
 
 # ── NEW ADDON IMPORTS ──────────────────────────────
-# Voice handler with multiple transcription methods
+# Voice handler with multiple transcription methods (UPDATED v6)
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
 # ──────────────────────────────────────────────────
@@ -301,7 +302,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/habit Naam — Habit add karo\n"
         "/hdone id — Habit log karo\n\n"
         "⏰ *Reminders:*\n"
-        "/remind 30m Chai — Reminder set karo\n"
+        "/remind 30m Chai — Reminder set karo (relative time)\n"
+        "/remind 15:30 Meeting — Reminder set karo (absolute time)\n"
         "/delremind id — Reminder delete karo\n"
         "/snooze5 id | /snooze10 id | /snooze30 id | /snooze60 id\n\n"
         "📖 *Diary (Password Protected):*\n"
@@ -333,8 +335,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/memory add text — Save a memory\n"
         "/memory search word — Search memories\n"
         "/memory clear — Delete all memories\n\n"
-        "🎙️ *Voice Notes:*\n"
+        "🎙️ *Voice Notes (UPDATED - Fixed Reminders!):*\n"
         "Voice message bhejo — Main transcribe karunga aur action lunga!\n"
+        "✅ Reminders ab sahi time pe bajenge! ⏰\n"
         "/voicenotes — Recent voice notes dekho\n\n"
         "📊 *Other:*\n"
         "/briefing — Daily summary\n"
@@ -559,16 +562,29 @@ async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================================================================
-# REMINDER COMMANDS
+# REMINDER COMMANDS (UPDATED for better time display)
 # ================================================================
 
 async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.args) < 2:
         active = reminders.all_active()
         if active:
-            lines = "\n".join(f"  ⏰ #{r['id']} {r['time']} — {r['text']}" for r in active)
+            lines = []
+            for r in active:
+                due = r.get("due", "")
+                # If due is full timestamp, format nicely
+                if due and len(due) > 5 and ":" in due:
+                    try:
+                        dt = datetime.strptime(due, "%Y-%m-%d %H:%M:%S")
+                        due_display = dt.strftime("%d %b, %I:%M %p")
+                    except:
+                        due_display = due
+                else:
+                    due_display = due
+                lines.append(f"  ⏰ #{r['id']} {due_display} — {r['text']}")
             await update.message.reply_text(
-                f"⏰ *Active Reminders ({len(active)}):*\n\n{lines}\n\n/remind 30m Chai — Naya set karo",
+                f"⏰ *Active Reminders ({len(active)}):*\n\n" + "\n".join(lines) +
+                "\n\n/remind 30m Chai — Naya set karo\n/remind 15:30 Meeting",
                 parse_mode="Markdown"
             )
         else:
@@ -577,28 +593,54 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         return
+    
     time_arg = ctx.args[0].lower()
     text = " ".join(ctx.args[1:])
     now = now_ist()
+    
+    # Parse relative time (e.g., "30m", "2h", "5min")
     if time_arg.endswith("m") and time_arg[:-1].isdigit():
-        remind_at = (now + timedelta(minutes=int(time_arg[:-1]))).strftime("%H:%M")
+        mins = int(time_arg[:-1])
+        remind_dt = now + timedelta(minutes=mins)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        remind_time = remind_dt.strftime("%H:%M")
+        
+    elif time_arg.endswith("h") and time_arg[:-1].isdigit():
+        hours = int(time_arg[:-1])
+        remind_dt = now + timedelta(hours=hours)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        remind_time = remind_dt.strftime("%H:%M")
+        
+    elif time_arg.endswith("min") and time_arg[:-3].isdigit():
+        mins = int(time_arg[:-3])
+        remind_dt = now + timedelta(minutes=mins)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        remind_time = remind_dt.strftime("%H:%M")
+        
     elif ":" in time_arg:
         parts = time_arg.split(":")
-        remind_at = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+        remind_time = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+        # Convert to full timestamp
+        remind_dt = datetime(now.year, now.month, now.day, int(parts[0]), int(parts[1]))
+        if remind_dt < now:
+            remind_dt += timedelta(days=1)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
     else:
         await update.message.reply_text("/remind 30m Chai ya /remind 15:30 Meeting")
         return
-    r = reminders.add(update.effective_chat.id, text, remind_at)
-    _log_action(update.effective_user.first_name or "User", "reminder_set", f"#{r['id']} at {remind_at}: {text}")
+    
+    # Add reminder with full timestamp
+    r = reminders.add(update.effective_chat.id, text, due_timestamp)
+    
+    _log_action(update.effective_user.first_name or "User", "reminder_set", f"#{r['id']} at {due_timestamp}: {text}")
 
-    remind_date = now.date()
-    if remind_at < now.strftime("%H:%M"):
-        remind_date = remind_date + timedelta(days=1)
-    date_display = remind_date.strftime("%d %b %Y")
-    h, m = map(int, remind_at.split(":"))
+    # Format display nicely
+    remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+    date_display = remind_dt.strftime("%d %b %Y")
+    h, m_val = remind_dt.hour, remind_dt.minute
     ampm = "AM" if h < 12 else "PM"
-    h12  = h % 12 or 12
-    time_display = f"{h12}:{m:02d} {ampm}"
+    h12 = h % 12 or 12
+    time_display = f"{h12}:{m_val:02d} {ampm}"
 
     await update.message.reply_text(
         f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n"
@@ -646,11 +688,16 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Reminder #{rid} nahi mila!")
             return
         reminders.acknowledge(rid, f"Snoozed {mins}min")
-        new_time = (now_ist() + timedelta(minutes=mins)).strftime("%H:%M")
-        new_rem = reminders.add(target["chat_id"], f"🔁 {target['text']}", new_time, "once")
-        _log_action(update.effective_user.first_name or "User", "reminder_snooze", f"#{rid} snoozed {mins}min → #{new_rem['id']} at {new_time}")
+        new_dt = now_ist() + timedelta(minutes=mins)
+        new_timestamp = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+        new_rem = reminders.add(target["chat_id"], f"🔁 {target['text']}", new_timestamp, "once")
+        _log_action(update.effective_user.first_name or "User", "reminder_snooze", f"#{rid} snoozed {mins}min → #{new_rem['id']} at {new_timestamp}")
+        
+        new_time_display = new_dt.strftime("%I:%M %p")
+        new_date_display = new_dt.strftime("%d %b")
+        
         await update.message.reply_text(
-            f"😴 *Snooze Ho Gaya!*\n\n{mins} min baad fir yaad dilaaunga.\nNew ID: #{new_rem['id']}",
+            f"😴 *Snooze Ho Gaya!*\n\n{mins} min baad fir yaad dilaaunga.\n🕐 {new_time_display} — 📅 {new_date_display}\nNew ID: #{new_rem['id']}",
             parse_mode="Markdown"
         )
     except Exception:
@@ -1073,11 +1120,12 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================================================================
-# REMINDER JOB
+# REMINDER JOB (UPDATED for full timestamp)
 # ================================================================
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     now = now_ist()
+    now_str_full = now.strftime("%Y-%m-%d %H:%M")
     now_hm = now.strftime("%H:%M")
 
     if now.hour == 0 and now.minute <= 1:
@@ -1118,34 +1166,51 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as ex:
                     log.error(f"Bills reminder failed: {ex}")
 
+    # Check active reminders using FULL TIMESTAMP
     for r in reminders.all_active():
         if r.get("acknowledged", False):
             continue
-        reminder_time = r.get("time", "")
-        if reminder_time == now_hm:
-            if r.get("last_fired_minute") == now_hm:
-                continue
-            fire_count = r.get("fire_count", 0)
-            suffix = f"\n⚠️ {fire_count + 1}vi baar baj raha hai — OK dabao!" if fire_count > 0 else ""
-            alert = (f"🚨 *ALARM!*\n{'━' * 20}\n⏰ *{reminder_time} BAJ GAYE!*\n{'━' * 20}\n\n"
-                     f"🔔 *{r['text'].upper()}*\n{suffix}\n\n"
-                     f"😴 Snooze: /snooze5 {r['id']} | /snooze10 {r['id']}\n"
-                     f"🗑️ Delete: /delremind {r['id']}")
-            try:
-                await context.bot.send_message(
-                    chat_id=int(r["chat_id"]), text=alert,
-                    reply_markup=alarm_keyboard(r["id"]), parse_mode="Markdown"
-                )
-                for item in reminders.store.data["list"]:
-                    if item["id"] == r["id"]:
-                        item["fire_count"] = item.get("fire_count", 0) + 1
-                        item["last_fired_minute"] = now_hm
-                        item["last_fired"] = now_ist().isoformat()
-                        break
-                reminders.store.save()
-                _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
-            except Exception as e:
-                log.error(f"Failed to send alarm: {e}")
+        reminder_due = r.get("due", "")
+        
+        # Skip if no due time
+        if not reminder_due:
+            continue
+            
+        # Check if due timestamp matches current time (minute precision)
+        if len(reminder_due) > 10:  # Full timestamp format
+            due_min = reminder_due[:16]  # "YYYY-MM-DD HH:MM"
+            if due_min == now_str_full:
+                if r.get("last_fired_minute") == now_str_full:
+                    continue
+                fire_count = r.get("fire_count", 0)
+                suffix = f"\n⚠️ {fire_count + 1}vi baar baj raha hai — OK dabao!" if fire_count > 0 else ""
+                
+                # Format due time for display
+                try:
+                    due_dt = datetime.strptime(reminder_due, "%Y-%m-%d %H:%M:%S")
+                    due_time_display = due_dt.strftime("%I:%M %p")
+                except:
+                    due_time_display = reminder_due
+                
+                alert = (f"🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display} BAJ GAYE!*\n{'━' * 20}\n\n"
+                         f"🔔 *{r['text'].upper()}*\n{suffix}\n\n"
+                         f"😴 Snooze: /snooze5 {r['id']} | /snooze10 {r['id']}\n"
+                         f"🗑️ Delete: /delremind {r['id']}")
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(r["chat_id"]), text=alert,
+                        reply_markup=alarm_keyboard(r["id"]), parse_mode="Markdown"
+                    )
+                    for item in reminders.store.data["list"]:
+                        if item["id"] == r["id"]:
+                            item["fire_count"] = item.get("fire_count", 0) + 1
+                            item["last_fired_minute"] = now_str_full
+                            item["last_fired"] = now_ist().isoformat()
+                            break
+                    reminders.store.save()
+                    _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
+                except Exception as e:
+                    log.error(f"Failed to send alarm: {e}")
 
 # ================================================================
 # OK BUTTON
@@ -1180,7 +1245,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error stopping alarm!")
 
 # ================================================================
-# NATURAL LANGUAGE PARSER
+# NATURAL LANGUAGE PARSER (UPDATED for better time detection)
 # ================================================================
 
 def parse_user_message(user_msg: str):
@@ -1251,51 +1316,59 @@ def parse_user_message(user_msg: str):
     if any(w in lower for w in remind_words):
         def _parse_reminder_time(lwr):
             now_t = now_ist()
+            # Relative: X minutes
             mm = _re.search(r'(\d+)\s*(?:min(?:ute)?s?)\b', lwr)
             if mm:
-                return (now_t + timedelta(minutes=int(mm.group(1)))).strftime("%H:%M"), False
-            mm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
-            if mm:
-                h, mi = int(mm.group(1)), int(mm.group(2))
-                return f"{h:02d}:{mi:02d}", ("kal" in lwr or "kl" in lwr or "tomorrow" in lwr)
-            mm = _re.search(r'(\d{1,2})\s*(?:baj[ae]?(?:y)?|am\b|pm\b)', lwr)
-            if mm:
-                h = int(mm.group(1))
-                if _re.search(r'\b(?:pm|sham|shaam|raat|evening|night)\b', lwr):
-                    if h != 12: h += 12
-                    if h >= 24: h -= 12
-                elif _re.search(r'\b(?:am|subha|subah|morning)\b', lwr) and h == 12:
-                    h = 0
-                elif h < 6:
+                return (now_t + timedelta(minutes=int(mm.group(1)))).strftime("%Y-%m-%d %H:%M:%S"), False
+            # Relative: X hours
+            hh = _re.search(r'(\d+)\s*(?:hour|hr|ghanta)\b', lwr)
+            if hh:
+                return (now_t + timedelta(hours=int(hh.group(1)))).strftime("%Y-%m-%d %H:%M:%S"), False
+            # Absolute: HH:MM
+            hm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
+            if hm:
+                h, mi = int(hm.group(1)), int(hm.group(2))
+                remind_dt = datetime(now_t.year, now_t.month, now_t.day, h, mi)
+                is_tomorrow = "kal" in lwr or "kl" in lwr or "tomorrow" in lwr
+                if is_tomorrow:
+                    remind_dt += timedelta(days=1)
+                elif remind_dt < now_t:
+                    remind_dt += timedelta(days=1)
+                return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
+            # Absolute: X AM/PM
+            amp = _re.search(r'(\d{1,2})\s*(?:am|pm)', lwr)
+            if amp:
+                h = int(amp.group(1))
+                is_pm = "pm" in lwr
+                if is_pm and h != 12:
                     h += 12
-                return f"{h:02d}:00", ("kal" in lwr or "kl" in lwr or "tomorrow" in lwr)
-            for word, tstr in {
-                "subha":"08:00","subah":"08:00","morning":"08:00",
-                "dopahar":"13:00","lunch":"13:00",
-                "shaam":"18:00","sham":"18:00","evening":"18:00",
-                "raat":"21:00","night":"21:00","midnight":"00:00",
-            }.items():
-                if word in lwr:
-                    return tstr, ("kal" in lwr or "kl" in lwr or "tomorrow" in lwr)
+                elif not is_pm and h == 12:
+                    h = 0
+                remind_dt = datetime(now_t.year, now_t.month, now_t.day, h, 0)
+                if remind_dt < now_t:
+                    remind_dt += timedelta(days=1)
+                return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
             return None, False
 
-        time_str, is_tomorrow = _parse_reminder_time(lower)
-        if time_str:
+        due_timestamp, _ = _parse_reminder_time(lower)
+        if due_timestamp:
+            # Extract clean text without time words
             stop_words = remind_words + [
                 "kal","kl","aaj","tomorrow","subha","subah","morning",
                 "shaam","sham","raat","night","evening","dopahar",
                 "baje","bajay","baj","pe","par","ko","mein","me",
-                "mujhe","please","plz","zara",
+                "mujhe","please","plz","zara","min","minute","hour","hr"
             ]
             text_clean = lower
+            # Remove time patterns
             text_clean = _re.sub(r'\d+\s*(?:min(?:ute)?s?)\b', '', text_clean)
+            text_clean = _re.sub(r'\d+\s*(?:hour|hr|ghanta)\b', '', text_clean)
             text_clean = _re.sub(r'\d{1,2}:\d{2}', '', text_clean)
-            text_clean = _re.sub(r'\d{1,2}\s*(?:baj[ae]?(?:y)?|am\b|pm\b)', '', text_clean)
+            text_clean = _re.sub(r'\d{1,2}\s*(?:am|pm)', '', text_clean)
             for sw in stop_words:
                 text_clean = _re.sub(r'\b' + _re.escape(sw) + r'\b', ' ', text_clean)
             text_clean = " ".join(text_clean.split()).strip().title() or "Kaam"
-            prefix = "Kal: " if is_tomorrow else ""
-            return ("remind", {"time": time_str, "text": f"{prefix}{text_clean}", "tomorrow": is_tomorrow})
+            return ("remind", {"time": due_timestamp, "text": text_clean})
         return ("chat", {"text": user_msg})
 
     if any(p in lower for p in [
@@ -1457,9 +1530,21 @@ def parse_user_message(user_msg: str):
 async def _send_reminder_list(update: Update):
     active = reminders.all_active()
     if active:
-        lines = "\n".join(f"  ⏰ #{r['id']} {r['time']} — {r['text']}" for r in active)
+        lines = []
+        for r in active:
+            due = r.get("due", "")
+            if due and len(due) > 5 and ":" in due:
+                try:
+                    dt = datetime.strptime(due, "%Y-%m-%d %H:%M:%S")
+                    due_display = dt.strftime("%d %b, %I:%M %p")
+                except:
+                    due_display = due
+            else:
+                due_display = due
+            lines.append(f"  ⏰ #{r['id']} {due_display} — {r['text']}")
+            
         await update.message.reply_text(
-            f"⏰ *Active Reminders ({len(active)}):*\n\n{lines}\n\n"
+            f"⏰ *Active Reminders ({len(active)}):*\n\n" + "\n".join(lines) + "\n\n"
             f"/delremind id — Delete karo\n/snooze5 id — Snooze\n/remind 30m Chai — Naya set karo",
             parse_mode="Markdown"
         )
@@ -1583,29 +1668,29 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _log_action(user_name, "show_calendar", user_msg[:60])
 
     elif action_type == "remind":
-        r = reminders.add(update.effective_chat.id, params.get("text", "Reminder"), params.get("time", ""))
-        remind_time = params.get("time", "")
-        is_tomorrow = params.get("tomorrow", False)
-
-        now_t = now_ist()
-        if is_tomorrow:
-            remind_date = now_t.date() + timedelta(days=1)
-        else:
-            remind_date = now_t.date()
-            if remind_time and remind_time < now_t.strftime("%H:%M"):
-                remind_date = remind_date + timedelta(days=1)
-        date_display = remind_date.strftime("%d %b %Y")
-
-        h, m_val = map(int, remind_time.split(":")) if remind_time else (0, 0)
-        ampm   = "AM" if h < 12 else "PM"
-        h12    = h % 12 or 12
-        time_display = f"{h12}:{m_val:02d} {ampm}"
-
-        _log_action(user_name, "reminder_set", f"#{r['id']} at {remind_time}: {params.get('text')}")
+        due_timestamp = params.get("time", "")
+        text = params.get("text", "Reminder")
+        
+        # Add reminder with full timestamp
+        r = reminders.add(update.effective_chat.id, text, due_timestamp)
+        
+        # Format display nicely
+        try:
+            remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            date_display = remind_dt.strftime("%d %b %Y")
+            h, m_val = remind_dt.hour, remind_dt.minute
+            ampm = "AM" if h < 12 else "PM"
+            h12 = h % 12 or 12
+            time_display = f"{h12}:{m_val:02d} {ampm}"
+        except:
+            date_display = "today"
+            time_display = due_timestamp
+        
+        _log_action(user_name, "reminder_set", f"#{r['id']} at {due_timestamp}: {text}")
         await update.message.reply_text(
             f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n"
             f"🕐 *{time_display}* — 📅 *{date_display}*\n"
-            f"📝 {params.get('text', '')}\n"
+            f"📝 {text}\n"
             f"📌 ID #{r['id']}",
             parse_mode="Markdown"
         )
@@ -1745,7 +1830,7 @@ def main():
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v10 | Voice handler with offline fallback")
+    log.info("Rk Bot v11 | Voice handler with offline fallback | FIXED REMINDERS")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1759,7 +1844,7 @@ def main():
 
     register_memory_handlers(app)
     
-    # Voice handlers with multiple transcription methods
+    # Voice handlers with multiple transcription methods (UPDATED v6)
     register_voice_handlers(app)
 
     app.add_handler(ConversationHandler(
