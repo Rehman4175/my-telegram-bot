@@ -11,3 +11,5 @@ google-auth-oauthlib==1.2.0
 SpeechRecognition==3.10.0
 pydub==0.25.1
 aiohttp>=3.8.0
+vosk==0.3.45
+ffmpeg-python==0.2.0
