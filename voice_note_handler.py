@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIXED v12 (COMPLETE):
-  - FIRST WORD decides category (remind, kharcha, task, etc.)
-  - Gemini transcription + local Vosk fallback
-  - Hindi number support (do=2, teen=3, etc.)
-  - Time parsing for "2 minute baad", "do minute baad"
+FIXED v11 (FIRST WORD PRIORITY):
+  - FIXED: "Reminder" as first word → FORCE REMINDER
+  - FIXED: Time parsing for "2 min baad"
+  - Vosk offline first, Gemini fallback
 """
 
 import os
@@ -360,7 +359,7 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
     """Extract time duration and return FULL TIMESTAMP."""
     import re
     
-    # Clean the text first
+    # Clean the text first - remove "remind", "reminder", etc.
     clean_text = text
     clean_text = re.sub(r'^(remind|reminder|alarm)\s+', '', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'\s+(remind|reminder|alarm)\s+', ' ', clean_text, flags=re.IGNORECASE)
@@ -425,6 +424,7 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         if matched_pattern:
             result_text = re.sub(matched_pattern, '', result_text, flags=re.IGNORECASE)
         
+        # Remove noise words
         noise_words = ['reminder', 'remind', 'lagao', 'laga', 'karo', 'kar', 'kr', 'set', 'add', 
                        'baad', 'mein', 'main', 'after', 'please', 'plz', 'bata', 'dena', 'mujhe', 
                        'yad', 'yaad', 'dila', 'dilao', 'krao', 'krna', 'me', 'ko']
@@ -451,7 +451,7 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
 
 
 # ================================================================
-# CLASSIFICATION - FIRST WORD PRIORITY
+# CLASSIFICATION SYSTEM - FIRST WORD PRIORITY
 # ================================================================
 
 def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, Any]]:
@@ -467,19 +467,18 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
     
     first_word = words[0]
     
-    log.info(f"🔍 CLASSIFY: first_word='{first_word}', text='{text[:80]}'")
+    # Log for debugging
+    log.info(f"🔍 CLASSIFY: first_word='{first_word}', full text='{text[:100]}'")
     
-    # ========== REMINDER (HIGHEST PRIORITY) ==========
-    reminder_words = ['reminder', 'remind', 'alarm', 'remindme', 'remind-me', 'yaad', 'yaad-dilao']
-    if first_word in reminder_words or lower.startswith('remind'):
-        # Extract content after first word
-        if lower.startswith('remind'):
-            content = text[len('remind'):].strip()
-        else:
-            content = ' '.join(words[1:]) if len(words) > 1 else ""
+    # ============================================================
+    # STEP 1: Check if first word is "reminder" or "remind" - FORCE REMINDER
+    # ============================================================
+    if first_word in ['reminder', 'remind', 'remindme', 'alarm']:
+        # Extract everything after first word
+        content = ' '.join(words[1:]) if len(words) > 1 else ""
         
-        # Remove noise phrases
-        noise_phrases = ['yaad dilana', 'yaad dila', 'yaad kara', 'mujhe yaad dilana', 'mujhe']
+        # Remove any "yaad dilana" or similar noise from content
+        noise_phrases = ['yaad dilana', 'yaad dila', 'yaad kara', 'mujhe yaad dilana', 'yaad dilao']
         for phrase in noise_phrases:
             content = content.replace(phrase, '')
         
@@ -490,7 +489,7 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
         clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content)
         clean = clean.strip() or "Reminder"
         
-        log.info(f"🎯 REMINDER | text: '{clean}' | at: {full_timestamp}")
+        log.info(f"🎯 FIRST WORD '{first_word}' → REMINDER | clean text: '{clean}' | at: {full_timestamp}")
         
         return "reminder", {
             "text": clean[:200],
@@ -500,7 +499,40 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
             "chat_id": chat_id,
         }
     
-    # ========== EXPENSE ==========
+    # ============================================================
+    # STEP 2: Check if text starts with "remind" (case insensitive)
+    # ============================================================
+    if lower.startswith('remind'):
+        # Extract everything after "remind"
+        content = text[len('remind'):].strip()
+        
+        # Remove noise phrases
+        noise_phrases = ['yaad dilana', 'yaad dila', 'yaad kara', 'mujhe yaad dilana', 'yaad dilao']
+        for phrase in noise_phrases:
+            content = content.replace(phrase, '')
+        
+        content = content.strip()
+        if not content:
+            content = "Reminder"
+        
+        clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content)
+        clean = clean.strip() or "Reminder"
+        
+        log.info(f"🎯 TEXT STARTS WITH 'remind' → REMINDER | clean text: '{clean}' | at: {full_timestamp}")
+        
+        return "reminder", {
+            "text": clean[:200],
+            "due_timestamp": full_timestamp,
+            "time_value": t_val,
+            "time_unit": t_unit,
+            "chat_id": chat_id,
+        }
+    
+    # ============================================================
+    # STEP 3: Other categories based on first word
+    # ============================================================
+    
+    # Expense words
     if first_word in ['kharcha', 'expense', 'karcha']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
         amount_m = re.search(r'(\d+(?:\.\d+)?)', content)
@@ -508,39 +540,39 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
             amount = float(amount_m.group(1))
             desc = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
             desc = " ".join(desc.split()).strip() or "Expense"
-            log.info(f"🎯 EXPENSE | Rs.{amount} - {desc}")
+            log.info(f"🎯 FIRST WORD '{first_word}' → EXPENSE | Rs.{amount}")
             return "expense", {"amount": amount, "description": desc[:100]}
         return "diary", {"text": f"[Expense note] {content[:500]}"}
     
-    # ========== TASK ==========
+    # Task words
     if first_word in ['task', 'todo', 'kaam']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
-        log.info(f"🎯 TASK | '{content}'")
+        log.info(f"🎯 FIRST WORD '{first_word}' → TASK | '{content}'")
         return "task", {"text": content[:200] or "Task"}
     
-    # ========== HABIT ==========
+    # Habit words
     if first_word in ['habit', 'aadat']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
-        log.info(f"🎯 HABIT | '{content}'")
+        log.info(f"🎯 FIRST WORD '{first_word}' → HABIT | '{content}'")
         return "habit", {"text": content[:150] or "Habit"}
     
-    # ========== WATER ==========
+    # Water words
     if first_word in ['water', 'pani', 'paani']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
         amount_m = re.search(r'(\d+(?:\.\d+)?)', content)
         unit_m = re.search(r'(glass|bottle|liter|litre|ltr|ml)', content.lower(), re.IGNORECASE)
         amount = float(amount_m.group(1)) if amount_m else 1.0
         unit = unit_m.group(1).lower() if unit_m else "glass"
-        log.info(f"🎯 WATER | {amount} {unit}")
+        log.info(f"🎯 FIRST WORD '{first_word}' → WATER | {amount} {unit}")
         return "water", {"amount": amount, "unit": unit}
     
-    # ========== MEMORY ==========
+    # Memory words (but NOT if it's a reminder - already checked above)
     if first_word in ['memory', 'remember']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
-        log.info(f"🎯 MEMORY | '{content}'")
+        log.info(f"🎯 FIRST WORD '{first_word}' → MEMORY | '{content}'")
         return "memory", {"text": content[:200] or "Memory"}
     
-    # ========== BILL ==========
+    # Bill words
     if first_word in ['bill', 'payment']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
         amount_m = re.search(r'(\d+(?:\.\d+)?)', content)
@@ -548,29 +580,32 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
             amount = float(amount_m.group(1))
             desc = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
             desc = " ".join(desc.split()).strip() or "Bill"
-            log.info(f"🎯 BILL | Rs.{amount} - {desc}")
+            log.info(f"🎯 FIRST WORD '{first_word}' → BILL | Rs.{amount}")
             return "bill", {"amount": amount, "description": desc[:100]}
         return "diary", {"text": f"[Bill note] {content[:500]}"}
     
-    # ========== CALENDAR ==========
+    # Calendar words
     if first_word in ['calendar', 'meeting', 'schedule', 'event']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
-        log.info(f"🎯 CALENDAR | '{content}'")
+        log.info(f"🎯 FIRST WORD '{first_word}' → CALENDAR | '{content}'")
         return "calendar", {"text": content[:200] or "Event"}
     
-    # ========== DIARY ==========
+    # Diary words
     if first_word in ['diary', 'dairy']:
         content = ' '.join(words[1:]) if len(words) > 1 else ""
-        log.info(f"🎯 DIARY | '{content}'")
+        log.info(f"🎯 FIRST WORD '{first_word}' → DIARY | '{content}'")
         return "diary", {"text": content[:500] or "Diary entry"}
     
-    # ========== FALLBACK: Check for time (reminder) ==========
+    # ============================================================
+    # STEP 4: Check if text contains time indicators (reminder fallback)
+    # ============================================================
     time_indicators = ['minute', 'min', 'second', 'sec', 'hour', 'ghanta', 'day', 'din', 'baad', 'mein', 'after']
     has_time = any(ti in lower for ti in time_indicators)
     has_number = re.search(r'\d+', lower)
+    contains_remind = 'remind' in lower or 'reminder' in lower
     
-    if has_time and has_number:
-        log.info(f"🎯 TIME DETECTED → REMINDER (fallback)")
+    if contains_remind or (has_time and has_number):
+        log.info(f"🎯 CONTAINS REMINDER KEYWORD or TIME → REMINDER (fallback)")
         clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(text)
         clean = clean.strip() or "Reminder"
         return "reminder", {
@@ -581,7 +616,9 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
             "chat_id": chat_id,
         }
     
-    # ========== DEFAULT ==========
+    # ============================================================
+    # STEP 5: Default to diary
+    # ============================================================
     log.info(f"📖 DIARY default | text: '{text[:60]}'")
     return "diary", {"text": text[:500]}
 
@@ -636,14 +673,14 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     log.info(f"📝 RAW TRANSCRIPT: '{transcript}' | SOURCE: {source}")
 
-    # Clean transcript
+    # Fix common transcription issues
     transcript = transcript.replace('laga0', '')
     transcript = transcript.replace('laga 0', '')
     transcript = transcript.replace('lagao', '')
     transcript = re.sub(r'\b(\d+)\s*baad\b', r'\1 minute baad', transcript, flags=re.IGNORECASE)
     transcript = re.sub(r'\s+', ' ', transcript).strip()
 
-    # Classify
+    # Classify based on first word
     category, data = _classify_transcript(transcript, chat_id)
 
     saved_to = "diary"
@@ -656,7 +693,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     source_emoji = "📴" if source == "offline" else "🌐"
     source_text = "Vosk (Offline)" if source == "offline" else "Gemini"
 
-    log.info(f"🎯 FINAL: Category={category}")
+    log.info(f"🎯 Category: {category} | Data: {data}")
 
     if category == "expense":
         expenses.add(data["amount"], data["description"])
@@ -818,4 +855,4 @@ def register_voice_handlers(app):
     app.add_handler(CommandHandler("voicehelp", cmd_voicehelp))
     app.add_handler(CommandHandler("sheetsdbg", cmd_sheets_debug))
 
-    log.info("✅ Voice handlers registered (v12 - Complete!)")
+    log.info("✅ Voice handlers registered (v11 - First Word Priority!)")
