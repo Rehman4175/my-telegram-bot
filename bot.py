@@ -2113,7 +2113,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Reminder job runs every 60 seconds
+        # Reminder job runs every 60 seconds
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
@@ -2122,7 +2122,7 @@ def main():
         # 🧠 SMART DAILY SUMMARY - Schedule at 4 times
         # ============================================================
         from datetime import time as dt_time
-        from secure_data_manager import IST  # Import IST from secure_data_manager
+        from secure_data_manager import IST
         
         # Morning 9:00 AM
         app.job_queue.run_daily(
@@ -2163,14 +2163,11 @@ def main():
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
-    # Start reminder checker background task
-    try:
-        from reminder_bot import reminder_checker
-        import asyncio
-        asyncio.create_task(reminder_checker(app))
-        log.info("✅ Reminder checker background task started")
-    except Exception as e:
-        log.warning(f"Reminder checker could not start: {e}")
+    # ============================================================
+    # ⚠️ REMINDER CHECKER - NOT NEEDED (already have reminder_job)
+    # The reminder_checker from reminder_bot.py is not required
+    # ============================================================
+    log.info("✅ Reminder system active (using job_queue)")
 
     log.info("✅ Bot ready! Starting polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
