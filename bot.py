@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v14 (FINAL WITH SMART DAILY SUMMARY):
+FIXES v15 (FINAL COMPLETE):
   - FIXED: Hinglish response (Gemini ab Hinglish mein reply karega)
+  - FIXED: FIRST WORD PRIORITY in parse_user_message
   - REMINDER FIX: Full timestamp support (YYYY-MM-DD HH:MM:SS)
   - SMART DAILY SUMMARY: 4 times a day (9AM, 1PM, 6PM, 9PM)
   - Voice handler integration with proper reminder storage
@@ -35,7 +36,7 @@ from telegram.ext import (
 )
 
 # ── NEW ADDON IMPORTS ──────────────────────────────
-# Voice handler with multiple transcription methods (UPDATED v8)
+# Voice handler with multiple transcription methods (UPDATED v12)
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
 # ──────────────────────────────────────────────────
@@ -115,13 +116,11 @@ Always reply in HINGLISH like a friendly Indian Muslim assistant!"""
                 reply = result["candidates"][0]["content"]["parts"][0]["text"].strip()
                 
                 # Post-process: Ensure Hinglish
-                # Remove pure English greetings
                 english_greetings = ["Hello", "Hi", "Hey", "Good morning", "Good evening", "Good afternoon"]
                 for eng in english_greetings:
                     if reply.lower().startswith(eng.lower()):
                         reply = "Assalamualaikum! " + reply[len(eng):].strip()
                 
-                # Add Assalamualaikum if missing
                 if not any(word in reply.lower() for word in ['assalamualaikum', 'alaikum', 'salam', 'alhamdulillah']):
                     reply = "Assalamualaikum! " + reply
                 
@@ -168,7 +167,7 @@ def alarm_keyboard(rid):
 
 
 # ================================================================
-# CLEANUP FUNCTION - FIX CONFLICT ERROR
+# CLEANUP FUNCTION
 # ================================================================
 
 def cleanup_before_start():
@@ -179,18 +178,14 @@ def cleanup_before_start():
     
     try:
         import requests
-        # Delete webhook with drop_pending_updates
         url = f"https://api.telegram.org/bot{token}/deleteWebhook"
         response = requests.post(url, json={"drop_pending_updates": True}, timeout=10)
         log.info(f"Webhook deleted: {response.status_code}")
-        
-        # Also clear getUpdates queue
         url2 = f"https://api.telegram.org/bot{token}/getUpdates"
         requests.post(url2, json={"offset": -1, "timeout": 1}, timeout=5)
-        
-        log.info("✅ Cleanup completed - old connections cleared")
+        log.info("✅ Cleanup completed")
     except Exception as e:
-        log.warning(f"Cleanup warning (non-critical): {e}")
+        log.warning(f"Cleanup warning: {e}")
 
 
 # ================================================================
@@ -320,22 +315,16 @@ def _parse_date_from_text(text):
 
 
 # ================================================================
-# SMART DAILY SUMMARY - Auto Reminders
+# SMART DAILY SUMMARY
 # ================================================================
 
 async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Smart daily summary - sends reminders 4 times a day
-    Times: 9:00 AM, 1:00 PM, 6:00 PM, 9:00 PM IST
-    """
+    """Smart daily summary - sends reminders 4 times a day"""
     from secure_data_manager import now_ist, today_str
     now = now_ist()
     current_time = now.strftime("%H:%M")
     
-    # Get all active chat IDs where bot has been used
     chat_ids = set()
-    
-    # Collect chat_ids from reminders
     for r in reminders.get_all():
         if r.get("chat_id"):
             try:
@@ -343,30 +332,24 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
     
-    # Also add the current context chat if available
     try:
         if context.job and context.job.context:
             chat_ids.add(context.job.context)
     except:
         pass
     
-    # If no chat_ids found, don't send
     if not chat_ids:
         log.info("No active chats found for daily summary")
         return
     
-    # Get current data
     pending_tasks = tasks.pending()
     habits_done, habits_pending = habits.today_status()
     today_expense = expenses.today_total()
     today_water = water.today_total()
     water_goal = water.goal()
     today_events = calendar.today_events()
-    upcoming_events = calendar.upcoming(days=3)
     
-    # Format message based on time
     if current_time == "09:00":
-        # Morning Summary
         msg = f"☀️ *Assalamualaikum! Good Morning!* ☀️\n\n"
         msg += f"📋 *Aaj ke Pending Tasks:* {len(pending_tasks)}\n"
         if pending_tasks:
@@ -390,7 +373,6 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n💡 *InshAllah aaj ka din productive rahega!*"
         
     elif current_time == "13:00":
-        # Afternoon Reminder
         msg = f"🍽️ *Dopahar ho gayi!* 🍽️\n\n"
         msg += f"📋 *Aaj abhi tak pending tasks:* {len(pending_tasks)}\n"
         if pending_tasks:
@@ -407,7 +389,6 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n☕ *Lunch break! InshAllah baaki kaam bhi ho jayega!*"
         
     elif current_time == "18:00":
-        # Evening Summary
         completed_tasks = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str()])
         
         msg = f"🌙 *Shaam ho gayi!* 🌙\n\n"
@@ -421,11 +402,9 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         
         msg += f"\n💸 *Aaj ka kharcha:* Rs.{today_expense}\n"
         msg += f"💧 *Paani:* {today_water}ml/{water_goal}ml\n"
-        
         msg += f"\n🌙 *InshAllah raat tak sab ho jayega!*"
         
     elif current_time == "21:00":
-        # Night Summary + Tomorrow's Events
         completed_tasks = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str()])
         
         msg = f"🌟 *Assalamualaikum! Day Summary* 🌟\n\n"
@@ -438,7 +417,6 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         msg += f"💸 *Aaj ka kharcha:* Rs.{today_expense}\n"
         msg += f"💧 *Paani:* {today_water}ml/{water_goal}ml\n\n"
         
-        # Tomorrow's events
         tomorrow_events = calendar.tomorrow_events()
         if tomorrow_events:
             msg += f"📅 *Kal ke events:*\n"
@@ -448,24 +426,16 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         else:
             msg += f"📅 *Kal koi event nahi hai*\n"
         
-        # Tomorrow's pending tasks count
         msg += f"\n📋 *Kal ke liye pending tasks:* {len(pending_tasks)}\n"
-        
         msg += f"\n💤 *Good night! InshAllah kal phir se shuru karenge!*"
     else:
-        return  # Not the scheduled times
+        return
     
-    # Add footer
     msg += f"\n\n_/briefing - Detailed summary_"
     
-    # Send to all chat_ids
     for chat_id in chat_ids:
         try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg,
-                parse_mode="Markdown"
-            )
+            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
             log.info(f"Daily summary sent to {chat_id} at {current_time}")
         except Exception as e:
             log.error(f"Failed to send daily summary to {chat_id}: {e}")
@@ -601,6 +571,7 @@ async def cmd_checksync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 # ================================================================
 # TASK COMMANDS
 # ================================================================
@@ -674,6 +645,7 @@ async def cmd_deltask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
 
+
 # ================================================================
 # HABIT COMMANDS
 # ================================================================
@@ -725,6 +697,7 @@ async def cmd_hdone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
 
+
 # ================================================================
 # EXPENSE & WATER COMMANDS
 # ================================================================
@@ -767,8 +740,9 @@ async def cmd_water(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 # ================================================================
-# REMINDER COMMANDS (UPDATED for better time display)
+# REMINDER COMMANDS
 # ================================================================
 
 async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -807,17 +781,14 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         mins = int(time_arg[:-1])
         remind_dt = now + timedelta(minutes=mins)
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
     elif time_arg.endswith("h") and time_arg[:-1].isdigit():
         hours = int(time_arg[:-1])
         remind_dt = now + timedelta(hours=hours)
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
     elif time_arg.endswith("min") and time_arg[:-3].isdigit():
         mins = int(time_arg[:-3])
         remind_dt = now + timedelta(minutes=mins)
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
     elif ":" in time_arg:
         parts = time_arg.split(":")
         remind_dt = datetime(now.year, now.month, now.day, int(parts[0]), int(parts[1]))
@@ -829,7 +800,6 @@ async def cmd_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     
     r = reminders.add(update.effective_chat.id, text, due_timestamp)
-    
     _log_action(update.effective_user.first_name or "User", "reminder_set", f"#{r['id']} at {due_timestamp}: {text}")
 
     remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
@@ -902,6 +872,7 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
+
 
 # ================================================================
 # DIARY COMMANDS
@@ -1040,6 +1011,7 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 # ================================================================
 # CALENDAR COMMANDS
 # ================================================================
@@ -1170,6 +1142,7 @@ async def cmd_caldel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
 
+
 # ================================================================
 # BILLS COMMANDS
 # ================================================================
@@ -1282,6 +1255,7 @@ async def cmd_billdel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
 
+
 # ================================================================
 # BRIEFING
 # ================================================================
@@ -1321,7 +1295,7 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# REMINDER JOB (UPDATED for full timestamp - FIXED for ReminderManager)
+# REMINDER JOB
 # ================================================================
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1367,7 +1341,6 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as ex:
                     log.error(f"Bills reminder failed: {ex}")
 
-    # Check active reminders using FULL TIMESTAMP
     active_reminders = reminders.all_active()
     
     for r in active_reminders:
@@ -1402,11 +1375,11 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                         chat_id=int(r["chat_id"]), text=alert,
                         reply_markup=alarm_keyboard(r["id"]), parse_mode="Markdown"
                     )
-                    # Mark as triggered
                     reminders.mark_triggered(r["id"])
                     _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
                 except Exception as e:
                     log.error(f"Failed to send alarm: {e}")
+
 
 # ================================================================
 # OK BUTTON
@@ -1442,7 +1415,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# NATURAL LANGUAGE PARSER (UPDATED for better time detection)
+# NATURAL LANGUAGE PARSER - WITH FIRST WORD PRIORITY
 # ================================================================
 
 def parse_user_message(user_msg: str):
@@ -1450,7 +1423,7 @@ def parse_user_message(user_msg: str):
     words = lower.split()
     
     # ============================================================
-    # STEP 0: FIRST WORD PRIORITY (HIGHEST - ADDED FIX)
+    # STEP 1: FIRST WORD PRIORITY (HIGHEST)
     # ============================================================
     if words:
         first_word = words[0]
@@ -1538,7 +1511,7 @@ def parse_user_message(user_msg: str):
             return ("add_calendar", {"title": text, "date": today_str(), "type": "event"})
     
     # ============================================================
-    # ORIGINAL CODE CONTINUES (NO CHANGES BELOW)
+    # STEP 2: ORIGINAL PARSER (BACKWARD COMPATIBILITY)
     # ============================================================
     
     memory_triggers = [
@@ -2093,7 +2066,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🧠 *Note Save Ho Gaya!* ✅\n\n_{text[:150]}_", parse_mode="Markdown")
 
     else:  # AI chat
-        # Build prompt with strong Hinglish instruction
         prompt = build_system_prompt() + f"""
 
 USER SAID: {user_msg}
@@ -2111,13 +2083,11 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
         if not reply:
             reply = "☪️ Assalamualaikum! Batao kya help chahiye?\nTasks, reminders, kharcha, diary, calendar, bills?"
         
-        # Fix common English responses
         english_greetings = ["Hello", "Hi", "Hey", "Good morning", "Good evening", "Good afternoon"]
         for eng in english_greetings:
             if reply.lower().startswith(eng.lower()):
                 reply = "Assalamualaikum! " + reply[len(eng):].strip()
         
-        # Add Assalamualaikum if missing
         if not any(word in reply.lower() for word in ['assalamualaikum', 'alaikum', 'salam', 'alhamdulillah']):
             reply = "Assalamualaikum! " + reply
         
@@ -2128,15 +2098,14 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
 
 
 # ================================================================
-# MAIN - UPDATED WITH CLEANUP AND SMART DAILY SUMMARY
+# MAIN
 # ================================================================
 
 def main():
-    # CRITICAL: Cleanup before starting (fixes conflict error)
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v14 FINAL | Smart Daily Summary | Voice offline | Fixed Reminders")
+    log.info("Rk Bot v15 FINAL | First Word Priority | Smart Daily Summary")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -2145,14 +2114,13 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # ============================================================
-    # 🔥 SETUP CHANNEL LOGGER - Personal Space
+    # SETUP CHANNEL LOGGER
     # ============================================================
     try:
         from secure_data_manager import channel_logger
         channel_logger.set_bot(app.bot)
         log.info("✅ Channel logger connected to bot")
         
-        # Send startup message using job_queue (no event loop error)
         if channel_logger.enabled:
             async def send_startup_log(context):
                 await channel_logger.log_startup()
@@ -2172,7 +2140,6 @@ def main():
 
     register_memory_handlers(app)
     
-    # Voice handlers with multiple transcription methods (UPDATED v8)
     register_voice_handlers(app)
 
     app.add_handler(ConversationHandler(
@@ -2205,18 +2172,16 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Reminder job runs every 60 seconds
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
         
         # ============================================================
-        # 🧠 SMART DAILY SUMMARY - Schedule at 4 times
+        # SMART DAILY SUMMARY
         # ============================================================
         from datetime import time as dt_time
-        from secure_data_manager import IST  # ← FIXED: Import IST from secure_data_manager
+        from secure_data_manager import IST
         
-        # Morning 9:00 AM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=9, minute=0, tzinfo=IST),
@@ -2225,7 +2190,6 @@ def main():
         )
         log.info("🌅 Morning summary scheduled at 9:00 AM")
         
-        # Afternoon 1:00 PM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=13, minute=0, tzinfo=IST),
@@ -2234,7 +2198,6 @@ def main():
         )
         log.info("🍽️ Afternoon summary scheduled at 1:00 PM")
         
-        # Evening 6:00 PM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=18, minute=0, tzinfo=IST),
@@ -2243,7 +2206,6 @@ def main():
         )
         log.info("🌙 Evening summary scheduled at 6:00 PM")
         
-        # Night 9:00 PM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=21, minute=0, tzinfo=IST),
@@ -2253,7 +2215,7 @@ def main():
         log.info("🌟 Night summary scheduled at 9:00 PM")
         
     else:
-        log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
+        log.warning("⚠️ JobQueue not available")
 
     log.info("✅ Bot ready! Starting polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
