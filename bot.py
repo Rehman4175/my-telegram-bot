@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v13 (FINAL):
+FIXES v14 (FINAL WITH SMART DAILY SUMMARY):
   - FIXED: Hinglish response (Gemini ab Hinglish mein reply karega)
   - REMINDER FIX: Full timestamp support (YYYY-MM-DD HH:MM:SS)
+  - SMART DAILY SUMMARY: 4 times a day (9AM, 1PM, 6PM, 9PM)
   - Voice handler integration with proper reminder storage
-  - Fixed ReminderManager compatibility (no direct store access)
+  - Fixed ReminderManager compatibility
   - Reminder reply mein actual date + time dono show hoti hai
   - /start mein current date & time show hoti hai
   - FIXED: Conflict error - cleanup before starting
@@ -319,6 +320,157 @@ def _parse_date_from_text(text):
 
 
 # ================================================================
+# SMART DAILY SUMMARY - Auto Reminders
+# ================================================================
+
+async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Smart daily summary - sends reminders 4 times a day
+    Times: 9:00 AM, 1:00 PM, 6:00 PM, 9:00 PM IST
+    """
+    now = now_ist()
+    current_time = now.strftime("%H:%M")
+    
+    # Get all active chat IDs where bot has been used
+    chat_ids = set()
+    
+    # Collect chat_ids from reminders
+    for r in reminders.get_all():
+        if r.get("chat_id"):
+            try:
+                chat_ids.add(int(r["chat_id"]))
+            except:
+                pass
+    
+    # Also add the current context chat if available
+    try:
+        if context.job and context.job.context:
+            chat_ids.add(context.job.context)
+    except:
+        pass
+    
+    # If no chat_ids found, don't send
+    if not chat_ids:
+        log.info("No active chats found for daily summary")
+        return
+    
+    # Get current data
+    pending_tasks = tasks.pending()
+    habits_done, habits_pending = habits.today_status()
+    today_expense = expenses.today_total()
+    today_water = water.today_total()
+    water_goal = water.goal()
+    today_events = calendar.today_events()
+    upcoming_events = calendar.upcoming(days=3)
+    
+    # Format message based on time
+    if current_time == "09:00":
+        # Morning Summary
+        msg = f"☀️ *Assalamualaikum! Good Morning!* ☀️\n\n"
+        msg += f"📋 *Aaj ke Pending Tasks:* {len(pending_tasks)}\n"
+        if pending_tasks:
+            task_list = "\n".join([f"   {i+1}. {t['title'][:50]}" for i, t in enumerate(pending_tasks[:5])])
+            msg += f"{task_list}\n"
+            if len(pending_tasks) > 5:
+                msg += f"   ... aur {len(pending_tasks)-5} tasks\n"
+        else:
+            msg += f"   ✅ Koi pending task nahi! Alhamdulillah!\n"
+        
+        msg += f"\n🏃 *Aaj ki Habits:* {len(habits_done)}/{len(habits_done)+len(habits_pending)} done\n"
+        if habits_pending:
+            habit_list = "\n".join([f"   ⬜ {h['name']}" for h in habits_pending[:3]])
+            msg += f"{habit_list}\n"
+        
+        msg += f"\n📅 *Aaj ke Events:* {len(today_events)}\n"
+        if today_events:
+            event_list = "\n".join([f"   📌 {e['title']}" for e in today_events[:3]])
+            msg += f"{event_list}\n"
+        
+        msg += f"\n💡 *InshAllah aaj ka din productive rahega!*"
+        
+    elif current_time == "13:00":
+        # Afternoon Reminder
+        msg = f"🍽️ *Dopahar ho gayi!* 🍽️\n\n"
+        msg += f"📋 *Aaj abhi tak pending tasks:* {len(pending_tasks)}\n"
+        if pending_tasks:
+            task_list = "\n".join([f"   ⏰ {t['title'][:50]}" for t in pending_tasks[:3]])
+            msg += f"{task_list}\n"
+        
+        msg += f"\n💧 *Paani:* {today_water}ml / {water_goal}ml\n"
+        if today_water < water_goal:
+            msg += f"   ⚠️ {water_goal - today_water}ml aur piyo!\n"
+        else:
+            msg += f"   ✅ Goal complete! MashAllah!\n"
+        
+        msg += f"\n🏃 *Habits pending:* {len(habits_pending)}\n"
+        msg += f"\n☕ *Lunch break! InshAllah baaki kaam bhi ho jayega!*"
+        
+    elif current_time == "18:00":
+        # Evening Summary
+        completed_tasks = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str()])
+        
+        msg = f"🌙 *Shaam ho gayi!* 🌙\n\n"
+        msg += f"✅ *Aaj complete kiye:* {completed_tasks} tasks\n"
+        msg += f"📋 *Abhi baki:* {len(pending_tasks)} tasks\n"
+        
+        if pending_tasks:
+            msg += f"\n⚠️ *Baki tasks:*\n"
+            for i, t in enumerate(pending_tasks[:5]):
+                msg += f"   {i+1}. {t['title'][:50]}\n"
+        
+        msg += f"\n💸 *Aaj ka kharcha:* Rs.{today_expense}\n"
+        msg += f"💧 *Paani:* {today_water}ml/{water_goal}ml\n"
+        
+        msg += f"\n🌙 *InshAllah raat tak sab ho jayega!*"
+        
+    elif current_time == "21:00":
+        # Night Summary + Tomorrow's Events
+        completed_tasks = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str()])
+        
+        msg = f"🌟 *Assalamualaikum! Day Summary* 🌟\n\n"
+        msg += f"✅ *Aaj complete kiye:* {completed_tasks} tasks\n"
+        msg += f"📋 *Baki rahe:* {len(pending_tasks)} tasks\n"
+        
+        if habits_done:
+            msg += f"🏃 *Habits done:* {len(habits_done)}/{len(habits_done)+len(habits_pending)}\n"
+        
+        msg += f"💸 *Aaj ka kharcha:* Rs.{today_expense}\n"
+        msg += f"💧 *Paani:* {today_water}ml/{water_goal}ml\n\n"
+        
+        # Tomorrow's events
+        tomorrow_events = calendar.tomorrow_events()
+        if tomorrow_events:
+            msg += f"📅 *Kal ke events:*\n"
+            for e in tomorrow_events:
+                emoji = "🎂" if e.get("type") == "birthday" else "📌"
+                msg += f"   {emoji} {e['title']}\n"
+        else:
+            msg += f"📅 *Kal koi event nahi hai*\n"
+        
+        # Tomorrow's pending tasks count
+        msg += f"\n📋 *Kal ke liye pending tasks:* {len(pending_tasks)}\n"
+        
+        msg += f"\n💤 *Good night! InshAllah kal phir se shuru karenge!*"
+    else:
+        return  # Not the scheduled times
+    
+    # Add footer
+    msg += f"\n\n_/briefing - Detailed summary_"
+    
+    # Send to all chat_ids
+    for chat_id in chat_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                parse_mode="Markdown"
+            )
+            log.info(f"Daily summary sent to {chat_id} at {current_time}")
+        except Exception as e:
+            log.error(f"Failed to send daily summary to {chat_id}: {e}")
+
+
+# ================================================================
 # BASIC COMMANDS
 # ================================================================
 
@@ -357,8 +509,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/habit Naam — Habit add karo\n"
         "/hdone id — Habit log karo\n\n"
         "⏰ *Reminders:*\n"
-        "/remind 30m Chai — Reminder set karo (relative time)\n"
-        "/remind 15:30 Meeting — Reminder set karo (absolute time)\n"
+        "/remind 30m Chai — Reminder set karo\n"
         "/delremind id — Reminder delete karo\n"
         "/snooze5 id | /snooze10 id | /snooze30 id | /snooze60 id\n\n"
         "📖 *Diary (Password Protected):*\n"
@@ -390,9 +541,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/memory add text — Save a memory\n"
         "/memory search word — Search memories\n"
         "/memory clear — Delete all memories\n\n"
-        "🎙️ *Voice Notes (UPDATED - Fixed Reminders!):*\n"
-        "Voice message bhejo — Main transcribe karunga aur action lunga!\n"
-        "✅ Reminders ab sahi time pe bajenge! ⏰\n"
+        "🎙️ *Voice Notes:*\n"
+        "Voice message bhejo — Main transcribe karunga!\n"
         "/voicenotes — Recent voice notes dekho\n\n"
         "📊 *Other:*\n"
         "/briefing — Daily summary\n"
@@ -1168,6 +1318,7 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 # ================================================================
 # REMINDER JOB (UPDATED for full timestamp - FIXED for ReminderManager)
 # ================================================================
@@ -1287,6 +1438,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.error(f"OK button error: {e}")
             await query.edit_message_text("❌ Error stopping alarm!")
+
 
 # ================================================================
 # NATURAL LANGUAGE PARSER (UPDATED for better time detection)
@@ -1882,7 +2034,7 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
 
 
 # ================================================================
-# MAIN - UPDATED WITH CLEANUP
+# MAIN - UPDATED WITH CLEANUP AND SMART DAILY SUMMARY
 # ================================================================
 
 def main():
@@ -1890,7 +2042,7 @@ def main():
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v13 FINAL | Hinglish fixes | Voice offline | Fixed Reminders")
+    log.info("Rk Bot v14 FINAL | Smart Daily Summary | Voice offline | Fixed Reminders")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -1899,7 +2051,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # ============================================================
-    # 🔥 SETUP CHANNEL LOGGER - Personal Space (FIXED)
+    # 🔥 SETUP CHANNEL LOGGER - Personal Space
     # ============================================================
     try:
         from secure_data_manager import channel_logger
@@ -1953,7 +2105,6 @@ def main():
         ("calweek", cmd_calweek), ("caladd", cmd_caladd), ("caldel", cmd_caldel),
         ("bills", cmd_bills), ("billadd", cmd_billadd),
         ("billpaid", cmd_billpaid), ("billdel", cmd_billdel),
-        #("checkchannel", cmd_check_channel),  # Add this if you have the debug command
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
@@ -1964,8 +2115,59 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
+        
+        # ============================================================
+        # 🧠 SMART DAILY SUMMARY - Schedule at 4 times
+        # ============================================================
+        from datetime import time as dt_time
+        
+        # Get current chat IDs from reminders to send summaries
+        chat_ids_for_summary = set()
+        for r in reminders.get_all():
+            if r.get("chat_id"):
+                try:
+                    chat_ids_for_summary.add(int(r["chat_id"]))
+                except:
+                    pass
+        
+        # Morning 9:00 AM
+        app.job_queue.run_daily(
+            smart_daily_summary,
+            time=dt_time(hour=9, minute=0, tzinfo=IST),
+            days=tuple(range(7)),
+            name="morning_summary"
+        )
+        log.info("🌅 Morning summary scheduled at 9:00 AM")
+        
+        # Afternoon 1:00 PM
+        app.job_queue.run_daily(
+            smart_daily_summary,
+            time=dt_time(hour=13, minute=0, tzinfo=IST),
+            days=tuple(range(7)),
+            name="afternoon_summary"
+        )
+        log.info("🍽️ Afternoon summary scheduled at 1:00 PM")
+        
+        # Evening 6:00 PM
+        app.job_queue.run_daily(
+            smart_daily_summary,
+            time=dt_time(hour=18, minute=0, tzinfo=IST),
+            days=tuple(range(7)),
+            name="evening_summary"
+        )
+        log.info("🌙 Evening summary scheduled at 6:00 PM")
+        
+        # Night 9:00 PM
+        app.job_queue.run_daily(
+            smart_daily_summary,
+            time=dt_time(hour=21, minute=0, tzinfo=IST),
+            days=tuple(range(7)),
+            name="night_summary"
+        )
+        log.info("🌟 Night summary scheduled at 9:00 PM")
+        
     else:
-        log.warning("⚠️ JobQueue not available - reminders may not work!")
+        log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
     log.info("✅ Bot ready! Starting polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
