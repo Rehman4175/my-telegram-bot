@@ -1233,9 +1233,92 @@ try:
 except Exception as e:
     log.error(f"Sheets startup: {e}")
 
+# ================================================================
+# TELEGRAM CHANNEL LOGGER - Personal Space (ADD THIS AT THE END)
+# ================================================================
+
+PERSONAL_LOG_CHANNEL = os.environ.get("PERSONAL_LOG_CHANNEL", "")
+
+class TelegramChannelLogger:
+    def __init__(self):
+        self.channel_id = PERSONAL_LOG_CHANNEL
+        self.bot = None
+        self.enabled = bool(self.channel_id)
+        self._pending_logs = []
+        log.info(f"📢 Channel Logger: {'✅ Enabled' if self.enabled else '❌ Disabled'}")
+        
+    def set_bot(self, bot):
+        self.bot = bot
+        if self._pending_logs and self.bot:
+            asyncio.create_task(self._flush_pending())
+    
+    async def _flush_pending(self):
+        for msg, msg_type in self._pending_logs:
+            await self.log(msg, msg_type)
+        self._pending_logs.clear()
+    
+    async def log(self, message: str, msg_type: str = "info"):
+        if not self.enabled:
+            return
+        emoji_map = {
+            "reminder": "⏰", "task": "✅", "expense": "💸", "voice": "🎙️",
+            "diary": "📖", "habit": "🔥", "water": "💧", "memory": "🧠",
+            "bill": "🧾", "info": "📘", "warning": "⚠️", "error": "❌",
+            "alarm": "🚨", "calendar": "📅", "startup": "🤖"
+        }
+        emoji = emoji_map.get(msg_type, "📝")
+        timestamp = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+        if self.bot and self.channel_id:
+            try:
+                await self.bot.send_message(
+                    chat_id=self.channel_id,
+                    text=f"{emoji} `{timestamp}`\n{message}",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                log.error(f"Channel log failed: {e}")
+                self._pending_logs.append((message, msg_type))
+        else:
+            self._pending_logs.append((message, msg_type))
+    
+    async def log_startup(self):
+        await self.log(f"🤖 *Bot Started*\n🕐 {now_ist().strftime('%A, %d %b %Y — %I:%M %p')}", "startup")
+    
+    async def log_reminder(self, reminder_id: int, text: str, due: str, chat_id: int):
+        await self.log(f"⏰ *Reminder #{reminder_id}*\n📌 {text}\n🕐 Due: {due}", "reminder")
+    
+    async def log_alarm_fired(self, reminder_id: int, text: str, chat_id: int):
+        await self.log(f"🚨 *Alarm Fired!*\n⏰ #{reminder_id}\n🔔 {text}", "alarm")
+    
+    async def log_voice(self, transcript: str, category: str, saved_to: str, user: str):
+        await self.log(f"🎙️ *Voice Note*\n👤 {user}\n📝 {transcript[:200]}\n🏷 {category}", "voice")
+    
+    async def log_task(self, task_id: int, title: str):
+        await self.log(f"✅ *Task #{task_id}*\n📌 {title}", "task")
+    
+    async def log_expense(self, amount: float, description: str):
+        await self.log(f"💸 *Expense*\n💰 Rs.{amount}\n📝 {description}", "expense")
+    
+    async def log_diary(self, text: str):
+        await self.log(f"📖 *Diary*\n📝 {text[:200]}", "diary")
+
+# Create channel logger instance
+channel_logger = TelegramChannelLogger()
+
+# Set references in reminder_bot
+try:
+    from reminder_bot import set_sheets_backup, set_channel_logger
+    set_sheets_backup(sheets_backup)
+    set_channel_logger(channel_logger)
+    log.info("✅ References passed to reminder_bot")
+except ImportError:
+    log.warning("reminder_bot functions not found")
+except Exception as e:
+    log.warning(f"Could not set references: {e}")
+
 log.info("=" * 60)
-log.info("SECURE DATA MANAGER READY — v5 with ReminderManager + Sheets Sync")
-log.info(f"  GitHub : {'Connected' if repo_manager.is_connected else 'Local only'}")
-log.info(f"  Sheets : {'Connected' if sheets_backup.connected else 'NOT connected'}")
-log.info(f"  Reminders: {'ReminderManager' if _reminder_manager_instance else 'SimpleReminderStore'}")
+log.info("SECURE DATA MANAGER READY — with Channel Logger")
+log.info(f"  GitHub : {'✅' if repo_manager.is_connected else '⚠️'}")
+log.info(f"  Sheets : {'✅' if sheets_backup.connected else '❌'}")
+log.info(f"  Channel Logger: {'✅ Enabled' if PERSONAL_LOG_CHANNEL else '❌ Disabled'}")
 log.info("=" * 60)
