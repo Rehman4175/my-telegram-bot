@@ -373,7 +373,7 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         'do': '2', 'don': '2', 'doo': '2',
         'teen': '3', 'tin': '3', 'tiin': '3',
         'chaar': '4', 'char': '4',
-        'paanch': '5', 'panch': '5', 'paanch': '5',
+        'paanch': '5', 'panch': '5',
         'chhe': '6', 'che': '6',
         'saat': '7', 'sat': '7',
         'aath': '8', 'ath': '8',
@@ -385,23 +385,13 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         text_lower = text_lower.replace(hindi, digit)
         text = text.replace(hindi, digit)
     
-    # FIRST: Check if this is a reminder command (priority)
-    # If text contains "remind" or "reminder", force reminder category
-    is_reminder = any(w in text_lower for w in ['remind', 'reminder', 'yaad', 'alarm'])
-    
     # Patterns for time extraction - ORDER MATTERS (longest first)
     patterns = [
-        # "2 minute baad", "2 min baad", "2 minutes baad"
         (r'(\d+)\s*(?:minute|min|minutes|mins)\s*(?:baad|mein|main|after|ke baad|bad mein|me)', 'minute'),
-        # "2 minute" (no suffix)
         (r'(\d+)\s*(?:minute|min|minutes|mins)\b', 'minute'),
-        # "2 m" (short form)
         (r'(\d+)\s*m\b', 'minute'),
-        # "2 second baad"
         (r'(\d+)\s*(?:second|sec|seconds|secs)\s*(?:baad|mein|main|after)', 'second'),
-        # "2 hour baad", "2 ghante baad"
         (r'(\d+)\s*(?:hour|hr|hours|hrs|ghanta|ghante)\s*(?:baad|mein|main|after)', 'hour'),
-        # "2 day baad", "2 din baad"
         (r'(\d+)\s*(?:day|days|din)\s*(?:baad|mein|main|after)', 'day'),
     ]
     
@@ -417,7 +407,6 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
             matched_pattern = pattern
             break
     
-    # If pattern found, calculate due time
     if value is not None and unit is not None:
         if unit == 'minute':
             due = now + timedelta(minutes=value)
@@ -431,12 +420,10 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         full_timestamp = due.strftime("%Y-%m-%d %H:%M:%S")
         log.info(f"✅ Parsed: {value} {unit}(s) from now → {full_timestamp}")
         
-        # Clean the text
         clean = text
-        # Remove time pattern
         if matched_pattern:
             clean = re.sub(matched_pattern, '', clean, flags=re.IGNORECASE)
-        # Remove noise words
+        
         noise_words = ['reminder', 'remind', 'lagao', 'laga', 'karo', 'kar', 'kr', 'set', 'add', 
                        'baad', 'mein', 'main', 'after', 'please', 'plz', 'bata', 'dena', 'mujhe', 
                        'yad', 'yaad', 'dila', 'dilao', 'krao', 'krna']
@@ -447,7 +434,7 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         
         return clean, full_timestamp, value, unit
     
-    # If no pattern but text contains number and "minute" separately
+    # If no pattern but text contains number and "minute"
     number_match = re.search(r'(\d+)', text_lower)
     if number_match and ('minute' in text_lower or 'min' in text_lower):
         value = int(number_match.group(1))
@@ -500,4 +487,16 @@ PREFIX_MAP = {
 _ADD_WORDS = {"add", "kr", "karo", "kar", "likho", "likh", "save", "set", "lagao", "laga", "krao"}
 
 
-def _classify_transcript(text: str, chat_id: str = "") -> 
+def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, Any]]:
+    """
+    Main classifier with PRIORITY for reminder keywords.
+    """
+    lower = text.lower().strip()
+    
+    # STEP 1: Check if this is a reminder (HIGHEST PRIORITY)
+    reminder_keywords = ['reminder', 'remind', 'alarm', 'yaad dilao', 'yaad dila', 'bata dena']
+    time_indicators = ['minute', 'min', 'second', 'sec', 'hour', 'ghanta', 'day', 'din', 'baad', 'mein']
+    
+    # If has reminder keyword OR (has time indicator AND has a number)
+    is_reminder = any(kw in lower for kw in reminder_keywords)
+    has_time = any(ti in lower for ti in time_indica
