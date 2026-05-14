@@ -1899,15 +1899,23 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # ============================================================
-    # 🔥 SETUP CHANNEL LOGGER - Personal Space
+    # 🔥 SETUP CHANNEL LOGGER - Personal Space (FIXED)
     # ============================================================
     try:
         from secure_data_manager import channel_logger
         channel_logger.set_bot(app.bot)
         log.info("✅ Channel logger connected to bot")
         
-        # Send startup message to channel
-        asyncio.create_task(channel_logger.log_startup())
+        # Send startup message using job_queue (no event loop error)
+        if channel_logger.enabled:
+            async def send_startup_log(context):
+                await channel_logger.log_startup()
+            
+            if app.job_queue:
+                app.job_queue.run_once(send_startup_log, 3)
+                log.info("📢 Startup log scheduled (will send in 3 seconds)")
+            else:
+                log.warning("JobQueue not available")
     except Exception as e:
         log.warning(f"Channel logger setup failed: {e}")
     # ============================================================
@@ -1945,6 +1953,7 @@ def main():
         ("calweek", cmd_calweek), ("caladd", cmd_caladd), ("caldel", cmd_caldel),
         ("bills", cmd_bills), ("billadd", cmd_billadd),
         ("billpaid", cmd_billpaid), ("billdel", cmd_billdel),
+        ("checkchannel", cmd_check_channel),  # Add this if you have the debug command
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
