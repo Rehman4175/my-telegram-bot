@@ -23,7 +23,6 @@ from secure_data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders,
     water, bills, calendar, chat_hist, now_ist, today_str, now_str,
     sheets_backup, DATA_DIR, repo_manager
-    sheets_backup, DATA_DIR, repo_manager, channel_logger 
 )
 
 ssl._create_default_https_context = ssl._create_unverified_context
