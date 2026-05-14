@@ -17,11 +17,13 @@ import os, json, logging, time
 import urllib.request, urllib.error, ssl
 from datetime import datetime, date, timedelta, timezone
 import re as _re
+import asyncio
 
 from secure_data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders,
     water, bills, calendar, chat_hist, now_ist, today_str, now_str,
     sheets_backup, DATA_DIR, repo_manager
+    sheets_backup, DATA_DIR, repo_manager, channel_logger 
 )
 
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -1896,6 +1898,20 @@ def main():
     log.info("=" * 60)
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # ============================================================
+    # 🔥 SETUP CHANNEL LOGGER - Personal Space
+    # ============================================================
+    try:
+        from secure_data_manager import channel_logger
+        channel_logger.set_bot(app.bot)
+        log.info("✅ Channel logger connected to bot")
+        
+        # Send startup message to channel
+        asyncio.create_task(channel_logger.log_startup())
+    except Exception as e:
+        log.warning(f"Channel logger setup failed: {e}")
+    # ============================================================
 
     # Register handlers
     from delete_manager import register_delete_handlers
