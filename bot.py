@@ -328,6 +328,7 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
     Smart daily summary - sends reminders 4 times a day
     Times: 9:00 AM, 1:00 PM, 6:00 PM, 9:00 PM IST
     """
+    from secure_data_manager import now_ist, today_str
     now = now_ist()
     current_time = now.strftime("%H:%M")
     
@@ -2120,15 +2121,7 @@ def main():
         # 🧠 SMART DAILY SUMMARY - Schedule at 4 times
         # ============================================================
         from datetime import time as dt_time
-        
-        # Get current chat IDs from reminders to send summaries
-        chat_ids_for_summary = set()
-        for r in reminders.get_all():
-            if r.get("chat_id"):
-                try:
-                    chat_ids_for_summary.add(int(r["chat_id"]))
-                except:
-                    pass
+        from secure_data_manager import IST  # ← FIXED: Import IST from secure_data_manager
         
         # Morning 9:00 AM
         app.job_queue.run_daily(
