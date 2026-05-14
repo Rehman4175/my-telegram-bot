@@ -1953,7 +1953,7 @@ def main():
         ("calweek", cmd_calweek), ("caladd", cmd_caladd), ("caldel", cmd_caldel),
         ("bills", cmd_bills), ("billadd", cmd_billadd),
         ("billpaid", cmd_billpaid), ("billdel", cmd_billdel),
-        ("checkchannel", cmd_check_channel),  # Add this if you have the debug command
+        #("checkchannel", cmd_check_channel),  # Add this if you have the debug command
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
