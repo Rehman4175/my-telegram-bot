@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER — FIXED v5
+SECURE DATA MANAGER — FIXED v6
 - ID columns added to all sheets
 - Fixed reminder store integrated with reminder_bot.py
 - Google Sheets sync working for reminders
+- Added tomorrow_events() method for CalendarStore
 - All features working
 """
 
@@ -1132,6 +1133,7 @@ class CalendarStore:
         return [e for e in self.store.data.get("events", []) if e["date"] == today_str()]
 
     def tomorrow_events(self):
+        """Get tomorrow's events - for daily summary"""
         tomorrow = (now_ist().date() + timedelta(days=1)).strftime("%Y-%m-%d")
         return [e for e in self.store.data.get("events", []) if e["date"] == tomorrow]
 
@@ -1234,7 +1236,7 @@ except Exception as e:
     log.error(f"Sheets startup: {e}")
 
 # ================================================================
-# TELEGRAM CHANNEL LOGGER - Personal Space (ADD THIS AT THE END)
+# TELEGRAM CHANNEL LOGGER - Personal Space
 # ================================================================
 
 PERSONAL_LOG_CHANNEL = os.environ.get("PERSONAL_LOG_CHANNEL", "")
@@ -1250,6 +1252,7 @@ class TelegramChannelLogger:
     def set_bot(self, bot):
         self.bot = bot
         if self._pending_logs and self.bot:
+            import asyncio
             asyncio.create_task(self._flush_pending())
     
     async def _flush_pending(self):
