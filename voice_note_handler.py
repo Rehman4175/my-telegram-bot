@@ -499,4 +499,325 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
     
     # If has reminder keyword OR (has time indicator AND has a number)
     is_reminder = any(kw in lower for kw in reminder_keywords)
-    has_time = any(ti in lower for ti in time_indica
+    has_time = any(ti in lower for ti in time_indicators)
+    has_number = re.search(r'\d+', lower)
+    
+    if is_reminder or (has_time and has_number):
+        # This is likely a reminder
+        content = text
+        for kw in reminder_keywords:
+            content = re.sub(r'\b' + re.escape(kw) + r'\b', '', content, flags=re.IGNORECASE)
+        content = content.strip()
+        if not content:
+            content = "Reminder"
+        
+        clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content)
+        clean = clean.strip() or "Reminder"
+        
+        log.info(f"🎯 CLASSIFIED as REMINDER | text: '{clean}' at {full_timestamp}")
+        
+        return "reminder", {
+            "text": clean[:200],
+            "due_timestamp": full_timestamp,
+            "time_value": t_val,
+            "time_unit": t_unit,
+            "chat_id": chat_id,
+        }
+    
+    # STEP 2: Try prefix match
+    for prefix in sorted(PREFIX_MAP.keys(), key=len, reverse=True):
+        if lower.startswith(prefix):
+            category = PREFIX_MAP[prefix]
+            rest = lower[len(prefix):].strip()
+            words = rest.split()
+            if words and words[0] in _ADD_WORDS:
+                rest = " ".join(words[1:]).strip()
+            content = rest or text
+            
+            if category == "reminder":
+                clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content)
+                clean = clean.strip() or "Reminder"
+                return "reminder", {
+                    "text": clean[:200],
+                    "due_timestamp": full_timestamp,
+                    "time_value": t_val,
+                    "time_unit": t_unit,
+                    "chat_id": chat_id,
+                }
+            elif category == "expense":
+                amount_m = re.search(r'(\d+(?:\.\d+)?)', content.lower())
+                if amount_m:
+                    amount = float(amount_m.group(1))
+                    desc = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
+                    desc = " ".join(desc.split()).strip() or "Expense"
+                    return "expense", {"amount": amount, "description": desc[:100]}
+                return "diary", {"text": f"[Expense note] {content[:500]}"}
+            elif category == "water":
+                amount_m = re.search(r'(\d+(?:\.\d+)?)', content.lower())
+                unit_m = re.search(r'(glass|bottle|liter|litre|ltr|ml)', content.lower(), re.IGNORECASE)
+                amount = float(amount_m.group(1)) if amount_m else 1.0
+                unit = unit_m.group(1).lower() if unit_m else "glass"
+                return "water", {"amount": amount, "unit": unit}
+            elif category == "task":
+                return "task", {"text": content[:200]}
+            elif category == "habit":
+                return "habit", {"text": content[:150]}
+            elif category == "memory":
+                return "memory", {"text": content[:200]}
+            elif category == "bill":
+                amount_m = re.search(r'(\d+(?:\.\d+)?)', content.lower())
+                if amount_m:
+                    amount = float(amount_m.group(1))
+                    desc = re.sub(r'\d+(?:\.\d+)?', '', content).strip()
+                    desc = " ".join(desc.split()).strip() or "Bill"
+                    return "bill", {"amount": amount, "description": desc[:100]}
+                return "diary", {"text": f"[Bill note] {content[:500]}"}
+            elif category == "calendar":
+                return "calendar", {"text": content[:200]}
+            else:
+                return "diary", {"text": content[:500]}
+    
+    # STEP 3: Default to diary
+    log.info(f"📖 DIARY default | text: '{text[:60]}'")
+    return "diary", {"text": text[:500]}
+
+
+# ================================================================
+# MAIN VOICE MESSAGE HANDLER
+# ================================================================
+
+async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _SDM_AVAILABLE:
+        await update.message.reply_text("❌ Voice feature unavailable")
+        return
+
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        return
+
+    duration = getattr(voice, "duration", 0)
+    user_name = update.effective_user.first_name or "User"
+    chat_id = str(update.effective_chat.id)
+
+    status_msg = await update.message.reply_text(
+        f"🎙️ *Voice note mila!* ({duration}s)\n\n⏳ Processing...",
+        parse_mode="Markdown"
+    )
+
+    try:
+        file_obj = await ctx.bot.get_file(voice.file_id)
+        audio_bytes = bytes(await file_obj.download_as_bytearray())
+        log.info(f"Downloaded: {len(audio_bytes)} bytes")
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Download failed: {e}")
+        return
+
+    await status_msg.edit_text(
+        f"🎙️ *Voice note* ({duration}s, {len(audio_bytes)//1024}KB)\n\n🤖 Transcribing...",
+        parse_mode="Markdown"
+    )
+
+    transcript, error, source = await transcribe_audio(audio_bytes)
+
+    if not transcript:
+        vosk_status = "✅" if offline_recognizer.available else "❌"
+        await status_msg.edit_text(
+            f"❌ *Transcription failed!*\n\nError: {error}\n\n"
+            f"Gemini: {'✅' if GEMINI_API_KEY else '❌'} | Vosk: {vosk_status}",
+            parse_mode="Markdown"
+        )
+        if voice_store:
+            voice_store.add(f"[FAIL] {error[:60]}", "none", "failed", duration, "Failed")
+        return
+
+    log.info(f"📝 RAW TRANSCRIPT: '{transcript}' | SOURCE: {source}")
+
+    # Fix common transcription issues
+    transcript = transcript.replace('laga0', '')
+    transcript = transcript.replace('laga 0', '')
+    transcript = transcript.replace('lagao', '')
+    transcript = re.sub(r'\b(\d+)\s*baad\b', r'\1 minute baad', transcript, flags=re.IGNORECASE)
+    transcript = re.sub(r'\s+', ' ', transcript).strip()
+
+    # Classify (priority based)
+    category, data = _classify_transcript(transcript, chat_id)
+
+    saved_to = "diary"
+    extra_info = ""
+    emoji_map = {
+        "expense": "💸", "reminder": "⏰", "habit": "🔥", "water": "💧",
+        "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"
+    }
+    emoji = emoji_map.get(category, "📝")
+    source_emoji = "📴" if source == "offline" else "🌐"
+    source_text = "Vosk (Offline)" if source == "offline" else "Gemini"
+
+    log.info(f"🎯 Category: {category} | Data: {data}")
+
+    if category == "expense":
+        expenses.add(data["amount"], data["description"])
+        saved_to = "expenses"
+        extra_info = f"💸 Rs.{data['amount']} added!\n📝 {data['description'][:50]}"
+
+    elif category == "reminder" and reminders:
+        due_timestamp = data.get("due_timestamp", "")
+        rem_text = data.get("text", "Reminder")
+        r_chat_id = int(data.get("chat_id") or chat_id)
+        
+        r = reminders.add(r_chat_id, rem_text, due_timestamp, "once")
+        saved_to = f"reminder #{r['id']}"
+        t_val = data.get('time_value', 0)
+        t_unit = data.get('time_unit', '')
+        time_info = f" — {t_val} {t_unit}" if t_val else ""
+        
+        try:
+            dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            display_time = dt.strftime("%I:%M %p, %d %b")
+        except:
+            display_time = due_timestamp
+        
+        extra_info = f"⏰ Reminder #{r['id']} set!{time_info}\n📌 *{rem_text[:60]}*\n🕐 Will trigger at: *{display_time}*"
+
+    elif category == "task":
+        t = tasks.add(data["text"])
+        saved_to = f"task #{t['id']}"
+        extra_info = f"✅ Task #{t['id']} added!\n📌 {data['text'][:60]}"
+
+    elif category == "habit":
+        h = habits.add(data["text"])
+        saved_to = f"habit #{h['id']}"
+        extra_info = f"🔥 Habit #{h['id']} added!\n📌 {data['text'][:60]}"
+
+    elif category == "water" and water:
+        unit = data.get("unit", "glass")
+        amount = data.get("amount", 1.0)
+        unit_ml = {"glass": 250, "bottle": 500, "liter": 1000, "ltr": 1000}.get(unit.lower(), 250)
+        ml = int(amount * unit_ml)
+        total = water.add(ml)
+        goal_ml = water.goal()
+        saved_to = "water"
+        extra_info = f"💧 {amount} {unit} ({ml}ml) logged!\n🚰 Total today: {total}ml / {goal_ml}ml"
+
+    elif category == "memory":
+        memory.add(data["text"])
+        saved_to = "memory"
+        extra_info = f"🧠 Memory saved!\n📝 {data['text'][:60]}"
+
+    elif category == "bill":
+        b = bills.add(data["description"], data["amount"], 0)
+        saved_to = f"bill #{b['id']}"
+        extra_info = f"🧾 Bill Rs.{data['amount']} added!\n📝 {data['description'][:50]}"
+
+    elif category == "calendar" and calendar:
+        e = calendar.add(data["text"], today_str(), "")
+        saved_to = f"calendar #{e['id']}"
+        extra_info = f"📅 Event #{e['id']} added!\n📌 {data['text'][:50]}"
+
+    else:
+        diary.add(f"[Voice] {data['text']}")
+        saved_to = "diary"
+        extra_info = "📖 Saved to diary!"
+
+    if voice_store:
+        voice_store.add(transcript, saved_to, category, duration, "Success")
+
+    try:
+        if sheets_backup and hasattr(sheets_backup, 'log_event'):
+            sheets_backup.log_event("voice_note", user_name, f"[{category}] {transcript[:80]}")
+    except Exception as e:
+        log.debug(f"Misc log error: {e}")
+
+    if channel_logger:
+        try:
+            await channel_logger.log_voice(transcript, category, saved_to, user_name)
+        except Exception as e:
+            log.debug(f"Channel log error: {e}")
+
+    await status_msg.edit_text(
+        f"{emoji} *Ho gaya!* ✅\n\n"
+        f"📝 *Tumne kaha:*\n_{transcript[:400]}_\n\n"
+        f"{'─' * 20}\n"
+        f"💾 {extra_info}\n\n"
+        f"🎤 Category: *{category.upper()}*\n"
+        f"{source_emoji} Source: *{source_text}*\n"
+        f"/voicenotes — Purane notes dekho",
+        parse_mode="Markdown"
+    )
+
+
+# ================================================================
+# COMMANDS
+# ================================================================
+
+async def cmd_voicenotes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not voice_store:
+        await update.message.reply_text("❌ Voice store unavailable")
+        return
+
+    recent = voice_store.get_recent(10)
+    if not recent:
+        await update.message.reply_text(
+            "🎙️ *No voice notes yet*\n\nSend a voice message!",
+            parse_mode="Markdown"
+        )
+        return
+
+    emoji_map = {"expense": "💸", "reminder": "⏰", "habit": "🔥", "water": "💧", "task": "✅", "memory": "🧠", "bill": "🧾", "calendar": "📅", "diary": "📖"}
+    lines = []
+    for v in reversed(recent):
+        category = v.get("category", "diary")
+        emoji = emoji_map.get(category, "📝")
+        status = "✅" if v.get("status") == "Success" else "❌"
+        lines.append(f"{status} {emoji} *#{v['id']}* {v['date']} {v['time']}\n   💾 *{v['saved_to']}* | ⏱ {v.get('duration', 0)}s\n   📝 _{v['transcript'][:100]}_")
+    await update.message.reply_text("🎙️ *Recent Voice Notes:*\n\n" + "\n\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_voicehelp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎙️ *Voice Commands Guide*\n\n"
+        "⏰ *Reminder (Priority)*\n"
+        "• `2 minute baad pani piyo`\n"
+        "• `do minute baad meeting`\n"
+        "• `reminder 5 minute mein chai`\n\n"
+        "💸 *Expense*\n"
+        "• `kharcha 500 chai pe`\n\n"
+        "💧 *Water*\n"
+        "• `pani 2 glass`\n\n"
+        "✅ *Task*\n"
+        "• `task report submit karna hai`\n\n"
+        "📖 *Diary*\n"
+        "• `diary aaj acha din tha`\n\n"
+        "/voicenotes — View recent notes",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_sheets_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    lines = ["📊 *Google Sheets Debug:*\n"]
+    try:
+        if not _SDM_AVAILABLE:
+            lines.append("❌ secure_data_manager not loaded")
+        else:
+            lines.append("✅ secure_data_manager loaded")
+        if not sheets_backup:
+            lines.append("❌ sheets_backup is None")
+        else:
+            connected = getattr(sheets_backup, 'connected', 'unknown')
+            lines.append(f"{'✅' if connected else '❌'} connected: `{connected}`")
+        if voice_store:
+            lines.append("✅ voice_store initialized")
+            lines.append(f"📝 Total voice notes: `{len(voice_store.store.data.get('list', []))}`")
+        else:
+            lines.append("❌ voice_store is None")
+    except Exception as e:
+        lines.append(f"❌ Debug error: `{e}`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+def register_voice_handlers(app):
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
+    app.add_handler(CommandHandler("voicenotes", cmd_voicenotes))
+    app.add_handler(CommandHandler("voicehelp", cmd_voicehelp))
+    app.add_handler(CommandHandler("sheetsdbg", cmd_sheets_debug))
+
+    log.info("✅ Voice handlers registered (v10 - Fixed!)")
