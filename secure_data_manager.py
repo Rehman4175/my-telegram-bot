@@ -6,6 +6,7 @@ SECURE DATA MANAGER — FIXED v6
 - Fixed reminder store integrated with reminder_bot.py
 - Google Sheets sync working for reminders
 - Added tomorrow_events() method for CalendarStore
+- Channel logger for personal space
 - All features working
 """
 
@@ -14,6 +15,7 @@ import json
 import logging
 import subprocess
 import time
+import asyncio
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -1213,29 +1215,6 @@ class VoiceNoteStore:
 
 
 # ================================================================
-# INITIALIZE ALL STORES
-# ================================================================
-memory    = MemoryStore()
-tasks     = TaskStore()
-diary     = DiaryStore()
-habits    = HabitStore()
-expenses  = ExpenseStore()
-goals     = GoalStore()
-water     = WaterStore()
-bills     = BillStore()
-calendar  = CalendarStore()
-chat_hist = ChatHistoryStore()
-voice_note_store = VoiceNoteStore()
-
-# Reminders is already created above using get_reminder_manager()
-
-try:
-    sheets_backup.test_connection()
-    log.info("Sheets PASSED")
-except Exception as e:
-    log.error(f"Sheets startup: {e}")
-
-# ================================================================
 # TELEGRAM CHANNEL LOGGER - Personal Space
 # ================================================================
 
@@ -1252,7 +1231,6 @@ class TelegramChannelLogger:
     def set_bot(self, bot):
         self.bot = bot
         if self._pending_logs and self.bot:
-            import asyncio
             asyncio.create_task(self._flush_pending())
     
     async def _flush_pending(self):
@@ -1305,6 +1283,22 @@ class TelegramChannelLogger:
     async def log_diary(self, text: str):
         await self.log(f"📖 *Diary*\n📝 {text[:200]}", "diary")
 
+
+# ================================================================
+# INITIALIZE ALL STORES
+# ================================================================
+memory    = MemoryStore()
+tasks     = TaskStore()
+diary     = DiaryStore()
+habits    = HabitStore()
+expenses  = ExpenseStore()
+goals     = GoalStore()
+water     = WaterStore()
+bills     = BillStore()
+calendar  = CalendarStore()
+chat_hist = ChatHistoryStore()
+voice_note_store = VoiceNoteStore()
+
 # Create channel logger instance
 channel_logger = TelegramChannelLogger()
 
@@ -1318,6 +1312,12 @@ except ImportError:
     log.warning("reminder_bot functions not found")
 except Exception as e:
     log.warning(f"Could not set references: {e}")
+
+try:
+    sheets_backup.test_connection()
+    log.info("Sheets PASSED")
+except Exception as e:
+    log.error(f"Sheets startup: {e}")
 
 log.info("=" * 60)
 log.info("SECURE DATA MANAGER READY — with Channel Logger")
