@@ -60,5 +60,6 @@ jobs:
           GB_TOKEN: ${{ secrets.GB_TOKEN }}
           DIARY_PASSWORD:    ${{ secrets.DIARY_PASSWORD }}
           DELETE_PASSWORD:   ${{ secrets.DELETE_PASSWORD }}
+          PERSONAL_LOG_CHANNEL:   ${{ secrets.PERSONAL_LOG_CHANNEL }}
           PRIVATE_REPO_URL: "https://github.com/Rehman4175/my-bot-data.git"
         run: python bot.py
