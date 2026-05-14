@@ -1447,7 +1447,100 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def parse_user_message(user_msg: str):
     lower = user_msg.lower().strip()
-
+    words = lower.split()
+    
+    # ============================================================
+    # STEP 0: FIRST WORD PRIORITY (HIGHEST - ADDED FIX)
+    # ============================================================
+    if words:
+        first_word = words[0]
+        
+        # REMINDER COMMANDS
+        if first_word in ["remind", "reminder", "alarm"]:
+            time_arg = None
+            text_parts = []
+            for i, word in enumerate(words[1:], 1):
+                if word.endswith("m") and word[:-1].isdigit():
+                    time_arg = word
+                    text_parts = words[i+1:]
+                    break
+                elif word.endswith("min") and word[:-3].isdigit():
+                    time_arg = word
+                    text_parts = words[i+1:]
+                    break
+                elif word in ["minute", "min"] and i > 0 and words[i-1].isdigit():
+                    time_arg = words[i-1] + word
+                    text_parts = words[i+1:]
+                    break
+                elif ":" in word:
+                    time_arg = word
+                    text_parts = words[i+1:]
+                    break
+                else:
+                    text_parts.append(word)
+            
+            if time_arg:
+                text = " ".join(text_parts).strip() or "Reminder"
+                return ("remind", {"time": time_arg, "text": text})
+            else:
+                text = " ".join(words[1:]).strip() or "Reminder"
+                return ("remind", {"time": "5m", "text": text})
+        
+        # TASK COMMANDS
+        if first_word in ["task", "todo", "kaam"]:
+            text = " ".join(words[1:]).strip() or "Task"
+            return ("add_task", {"title": text})
+        
+        # HABIT COMMANDS
+        if first_word in ["habit", "aadat"]:
+            text = " ".join(words[1:]).strip() or "Habit"
+            return ("add_habit", {"name": text})
+        
+        # EXPENSE COMMANDS
+        if first_word in ["kharcha", "expense", "karcha"]:
+            amount_match = re.search(r'(\d+)', user_msg)
+            if amount_match:
+                amount = int(amount_match.group(1))
+                desc = re.sub(r'kharcha|expense|karcha|\d+', '', user_msg, flags=re.IGNORECASE).strip()
+                desc = desc or "Expense"
+                return ("expense", {"amount": amount, "desc": desc})
+            return ("chat", {"text": user_msg})
+        
+        # WATER COMMANDS
+        if first_word in ["water", "pani", "paani"]:
+            glass_match = re.search(r'(\d+)\s*(?:glass|bottle)?', lower)
+            glasses = int(glass_match.group(1)) if glass_match else 1
+            return ("water", {"ml": glasses * 250})
+        
+        # DIARY COMMANDS
+        if first_word in ["diary", "dairy"]:
+            text = " ".join(words[1:]).strip() or "Diary entry"
+            return ("diary", {"text": text})
+        
+        # MEMORY COMMANDS
+        if first_word in ["memory", "remember"]:
+            text = " ".join(words[1:]).strip() or "Memory"
+            return ("memory_save", {"text": text})
+        
+        # BILL COMMANDS
+        if first_word in ["bill", "payment"]:
+            amount_match = re.search(r'(\d+)', user_msg)
+            if amount_match:
+                amount = int(amount_match.group(1))
+                name = re.sub(r'bill|payment|\d+', '', user_msg, flags=re.IGNORECASE).strip()
+                name = name or "Bill"
+                return ("add_bill", {"name": name, "amount": amount, "due_day": 0})
+            return ("chat", {"text": user_msg})
+        
+        # CALENDAR COMMANDS
+        if first_word in ["calendar", "cal", "event", "meeting"]:
+            text = " ".join(words[1:]).strip() or "Event"
+            return ("add_calendar", {"title": text, "date": today_str(), "type": "event"})
+    
+    # ============================================================
+    # ORIGINAL CODE CONTINUES (NO CHANGES BELOW)
+    # ============================================================
+    
     memory_triggers = [
         "yaad rakhna", "yaad rakh", "memory mein save", "memory me save",
         "note karlo", "yaad karo", "remember", "dimaag mein rakh",
