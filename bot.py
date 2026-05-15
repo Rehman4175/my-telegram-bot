@@ -1593,6 +1593,7 @@ def parse_user_message(user_msg: str):
         def _parse_reminder_time(lwr):
             now_t = now_ist()
             
+            # Pattern for "2 min", "2 minute", "2 minutes", "2m"
             mm = _re.search(r'(\d+)\s*(?:min(?:ute)?s?|m)\b', lwr, re.IGNORECASE)
             if mm:
                 mins = int(mm.group(1))
@@ -1600,6 +1601,7 @@ def parse_user_message(user_msg: str):
                 log.info(f"⏰ Parsed {mins} minutes from now -> {remind_dt.strftime('%H:%M:%S')}")
                 return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
             
+            # Pattern for "2 hour", "2 hours", "2h"
             hh = _re.search(r'(\d+)\s*(?:hour|hr|hours|hrs|ghanta)\b', lwr, re.IGNORECASE)
             if hh:
                 hours = int(hh.group(1))
@@ -1607,6 +1609,7 @@ def parse_user_message(user_msg: str):
                 log.info(f"⏰ Parsed {hours} hours from now -> {remind_dt.strftime('%H:%M:%S')}")
                 return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
             
+            # Pattern for "2 second", "2 seconds", "2s"
             ss = _re.search(r'(\d+)\s*(?:second|sec|seconds|secs|s)\b', lwr, re.IGNORECASE)
             if ss:
                 secs = int(ss.group(1))
@@ -1614,6 +1617,7 @@ def parse_user_message(user_msg: str):
                 log.info(f"⏰ Parsed {secs} seconds from now -> {remind_dt.strftime('%H:%M:%S')}")
                 return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
             
+            # Pattern for "2 day", "2 days", "2d"
             dd = _re.search(r'(\d+)\s*(?:day|days|din)\b', lwr, re.IGNORECASE)
             if dd:
                 days = int(dd.group(1))
@@ -1621,6 +1625,7 @@ def parse_user_message(user_msg: str):
                 log.info(f"⏰ Parsed {days} days from now -> {remind_dt.strftime('%Y-%m-%d')}")
                 return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
             
+            # Pattern for absolute time "15:30"
             hm = _re.search(r'(\d{1,2}):(\d{2})', lwr)
             if hm:
                 h, mi = int(hm.group(1)), int(hm.group(2))
@@ -1632,6 +1637,7 @@ def parse_user_message(user_msg: str):
                     remind_dt += timedelta(days=1)
                 return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
             
+            # Pattern for "9 am", "9 pm", "9 baje"
             amp = _re.search(r'(\d{1,2})\s*(?:am|pm|baje|bajay|subah|shaam|raat)', lwr, re.IGNORECASE)
             if amp:
                 h = int(amp.group(1))
@@ -1816,6 +1822,7 @@ def parse_user_message(user_msg: str):
         return ("memory_save", {"text": " ".join(text.split()).strip() or user_msg})
 
     return ("chat", {"text": user_msg})
+
 
 # ================================================================
 # SHOW HELPERS
