@@ -1434,7 +1434,7 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"📊 Sheets mein bhi backup ho gaya!",
                 parse_mode="Markdown"
             )
-            # Auto delete success message after 5 seconds (content hidden)
+            # Auto delete success message after 5 seconds
             await asyncio.sleep(5)
             try:
                 await msg.delete()
@@ -2596,13 +2596,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
     
-    # Check if we are in diary conversation mode - don't process as AI chat
-    if ctx.user_data.get("diary_mode") and ctx.user_data.get("diary_chat_id") == update.effective_chat.id:
-        # Let conversation handler handle it
-        return
-    
     user_msg = update.message.text.strip()
     user_name = update.effective_user.first_name or "User"
+    
+    # Skip commands
     if user_msg.startswith("/"):
         return
 
