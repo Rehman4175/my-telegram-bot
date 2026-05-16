@@ -212,45 +212,92 @@ class ReminderManager:
 
 
 async def reminder_checker(application):
+    """
+    Background task that checks for due reminders every 30 seconds
+    This runs in the main bot event loop
+    """
     log.info("🕐 Reminder checker started - checking every 30 seconds")
     
     while True:
         try:
             from secure_data_manager import reminders
+            from smart_reminder import smart_reminder
             
+            # Get regular pending reminders
             pending = reminders.get_pending()
             
-            for reminder in pending:
+            # Get smart pending reminders
+            smart_pending = smart_reminder.get_pending_smart()
+            
+            # Combine both
+            all_pending = pending + smart_pending
+            
+            for reminder in all_pending:
                 try:
+                    # Format the due time nicely
                     due_dt = datetime.strptime(reminder["due"], "%Y-%m-%d %H:%M:%S")
                     due_time_display = due_dt.strftime("%I:%M %p")
                     due_date_display = due_dt.strftime("%d %b %Y")
                     
-                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                    keyboard = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("✅ OK — Alarm Band Karo", callback_data=f"ok_{reminder['id']}")
-                    ]])
+                    # Get priority prefix for message
+                    priority = reminder.get("priority", "MEDIUM")
+                    priority_config = {
+                        "HIGH": "🔴 *URGENT!* ",
+                        "MEDIUM": "🟠 *Reminder!* ",
+                        "LOW": "🔵 "
+                    }
+                    priority_prefix = priority_config.get(priority, "⏰ ")
                     
+                    # Create inline keyboard with extra options for smart reminders
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    
+                    if reminder.get("repeat") in ["smart", "smart_followup"]:
+                        buttons = [
+                            InlineKeyboardButton("✅ Complete - Stop Reminding", callback_data=f"smart_complete_{reminder['id']}"),
+                            InlineKeyboardButton("⏰ Snooze 5min", callback_data=f"smart_snooze5_{reminder['id']}"),
+                            InlineKeyboardButton("🔁 Remind Again", callback_data=f"smart_again_{reminder['id']}"),
+                        ]
+                        keyboard = InlineKeyboardMarkup([buttons])
+                        
+                        # Add progress info
+                        current_repeat = reminder.get("current_repeat", 0)
+                        max_repeats = reminder.get("max_repeats", 6)
+                        progress = f"\n\n📊 *Progress:* Attempt {current_repeat + 1}/{max_repeats}"
+                    else:
+                        keyboard = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("✅ OK — Alarm Band Karo", callback_data=f"ok_{reminder['id']}")
+                        ]])
+                        progress = ""
+                    
+                    # Send reminder message
                     await application.bot.send_message(
                         chat_id=reminder["chat_id"],
-                        text=f"🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display}* ({due_date_display})\n{'━' * 20}\n\n"
-                             f"🔔 *{reminder['text'].upper()}*\n\n"
+                        text=f"{priority_prefix}🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display}* ({due_date_display})\n{'━' * 20}\n\n"
+                             f"🔔 *{reminder['text'].upper()}*\n{progress}\n\n"
                              f"😴 Snooze: /snooze5 {reminder['id']} | /snooze10 {reminder['id']}\n"
                              f"🗑️ Delete: /delremind {reminder['id']}",
                         reply_markup=keyboard,
                         parse_mode="Markdown"
                     )
                     
+                    # Mark as triggered
                     reminders.mark_triggered(reminder["id"])
-                    log.info(f"🔔 Reminder #{reminder['id']} sent")
+                    
+                    # For smart reminders, schedule follow-up
+                    if reminder.get("repeat") in ["smart", "smart_followup"]:
+                        smart_reminder.process_smart_reminder(reminder)
+                    
+                    log.info(f"🔔 Reminder #{reminder['id']} sent to {reminder['chat_id']}")
                     
                 except Exception as e:
-                    log.error(f"Failed to send reminder: {e}")
+                    log.error(f"Failed to send reminder #{reminder['id']}: {e}")
             
+            # Clean old triggered reminders every hour
             if datetime.now().minute == 0:
                 reminders.clear_triggered()
                 
         except Exception as e:
             log.error(f"Reminder checker error: {e}")
         
+        # Wait 30 seconds before next check
         await asyncio.sleep(30)
