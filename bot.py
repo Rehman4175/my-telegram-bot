@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 PERSONAL AI ASSISTANT — RK BOT
-FIXES v16 (FULLY FIXED - REMINDER WORKING):
+FIXES v17 (WITH SMART REMINDER INTELLIGENCE):
   - FIXED: "Reminder add" natural language command
   - FIXED: "Remind kal subha 9 baje" working
   - FIXED: All reminder formats working
   - Hinglish response fixed
   - Smart daily summary working
+  - NEW: Smart Reminder Intelligence (follow-up, priority, repeat until done)
 """
 
 import os, json, logging, time
@@ -541,7 +542,10 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "⏰ *Reminders:*\n"
         "/remind 30m Chai — Reminder set karo\n"
         "/delremind id — Reminder delete karo\n"
-        "/snooze5 id | /snooze10 id | /snooze30 id | /snooze60 id\n\n"
+        "/snooze5 id | /snooze10 id | /snooze30 id | /snooze60 id\n"
+        "/smartremind HIGH 5m Doctor — Smart reminder with priority\n"
+        "/smartlist — List smart reminders\n"
+        "/smartcomplete id — Complete smart reminder\n\n"
         "📖 *Diary (Password Protected):*\n"
         "/diary — Aaj ki entries dekho\n"
         "/diary write — Naya entry likho\n"
@@ -931,6 +935,331 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
+
+
+# ================================================================
+# 🧠 SMART REMINDER INTELLIGENCE - NEW COMMANDS
+# ================================================================
+
+# Priority configuration
+SMART_PRIORITY_CONFIG = {
+    "HIGH": {"repeat_interval": 5, "max_repeats": 12, "emoji": "🔴", "prefix": "🔴 *URGENT!* "},
+    "MEDIUM": {"repeat_interval": 15, "max_repeats": 8, "emoji": "🟠", "prefix": "🟠 *Reminder!* "},
+    "LOW": {"repeat_interval": 30, "max_repeats": 4, "emoji": "🔵", "prefix": "🔵 "},
+}
+
+def _get_next_smart_id():
+    """Get next ID for smart reminder"""
+    from secure_data_manager import reminders
+    reminders.store.data["counter"] = reminders.store.data.get("counter", 0) + 1
+    return reminders.store.data["counter"]
+
+def _add_smart_reminder(chat_id: int, text: str, due_timestamp: str, priority: str = "MEDIUM", repeat_until_done: bool = False):
+    """Add a smart reminder to the existing reminder store"""
+    from secure_data_manager import reminders, sheets_backup
+    
+    config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+    
+    smart_reminder = {
+        "id": _get_next_smart_id(),
+        "chat_id": chat_id,
+        "text": text,
+        "due": due_timestamp,
+        "repeat": "smart",
+        "priority": priority,
+        "repeat_until_done": repeat_until_done,
+        "repeat_interval": config["repeat_interval"],
+        "max_repeats": config["max_repeats"],
+        "current_repeat": 0,
+        "triggered": False,
+        "acknowledged": False,
+        "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_fired": "",
+        "is_smart": True
+    }
+    
+    reminders.store.data["list"].append(smart_reminder)
+    reminders.store.save()
+    
+    # Sync to sheets
+    try:
+        row = [
+            smart_reminder.get("id", ""),
+            smart_reminder.get("due", ""),
+            smart_reminder.get("text", ""),
+            f"Smart-{priority}",
+            "Active",
+            smart_reminder.get("created_at", ""),
+            smart_reminder.get("chat_id", ""),
+            "",
+            "False",
+            f"Repeat:{config['repeat_interval']}min"
+        ]
+        sheets_backup._append("Reminders", row)
+    except Exception as e:
+        log.debug(f"Sheet sync error: {e}")
+    
+    return smart_reminder
+
+def _process_smart_followup(reminder):
+    """Create follow-up reminder for smart reminder"""
+    from secure_data_manager import reminders, sheets_backup
+    
+    if reminder.get("acknowledged", False):
+        return None
+    
+    priority = reminder.get("priority", "MEDIUM")
+    config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+    current_repeat = reminder.get("current_repeat", 0)
+    max_repeats = reminder.get("max_repeats", config["max_repeats"])
+    repeat_until_done = reminder.get("repeat_until_done", False)
+    
+    if not repeat_until_done and current_repeat >= max_repeats:
+        log.info(f"Smart reminder #{reminder['id']} reached max repeats")
+        return None
+    
+    next_interval = reminder.get("repeat_interval", config["repeat_interval"])
+    next_due = now_ist() + timedelta(minutes=next_interval)
+    next_timestamp = next_due.strftime("%Y-%m-%d %H:%M:%S")
+    
+    followup_text = f"🔁 {reminder['text']}"
+    if current_repeat >= 1:
+        followup_text = f"⚠️ Reminder #{reminder['id']} (Attempt {current_repeat + 1}/{max_repeats}): {reminder['text']}"
+    
+    new_id = _get_next_smart_id()
+    followup = {
+        "id": new_id,
+        "chat_id": reminder["chat_id"],
+        "text": followup_text,
+        "due": next_timestamp,
+        "repeat": "smart_followup",
+        "priority": priority,
+        "repeat_until_done": repeat_until_done,
+        "repeat_interval": next_interval,
+        "max_repeats": max_repeats,
+        "current_repeat": current_repeat + 1,
+        "triggered": False,
+        "acknowledged": False,
+        "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
+        "parent_id": reminder["id"],
+        "is_smart": True
+    }
+    
+    reminders.store.data["list"].append(followup)
+    reminders.store.save()
+    
+    # Sync to sheets
+    try:
+        row = [
+            followup.get("id", ""),
+            followup.get("due", ""),
+            followup.get("text", ""),
+            f"SmartFollowup-{priority}",
+            "Active",
+            followup.get("created_at", ""),
+            followup.get("chat_id", ""),
+            "",
+            "False",
+            f"Followup of #{reminder['id']}"
+        ]
+        sheets_backup._append("Reminders", row)
+    except Exception as e:
+        log.debug(f"Sheet sync error: {e}")
+    
+    log.info(f"🔄 Smart follow-up #{new_id} scheduled for {next_timestamp}")
+    return followup
+
+def _acknowledge_smart_chain(reminder_id: int):
+    """Acknowledge a smart reminder and all its follow-ups"""
+    from secure_data_manager import reminders
+    
+    # Find parent
+    target = reminders.get_by_id(reminder_id)
+    if not target:
+        return 0
+    
+    parent_id = target.get("parent_id", reminder_id)
+    
+    count = 0
+    for r in reminders.store.data.get("list", []):
+        if r.get("id") == parent_id or r.get("parent_id") == parent_id or r.get("id") == reminder_id:
+            if not r.get("acknowledged", False):
+                r["acknowledged"] = True
+                r["acknowledged_at"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+                count += 1
+    
+    if count > 0:
+        reminders.store.save()
+        log.info(f"✅ Acknowledged {count} smart reminders (parent: {parent_id})")
+    
+    return count
+
+
+async def cmd_smart_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Smart reminder with priority and repeat options
+    Usage: /smartremind [HIGH/MEDIUM/LOW] [repeat] [time] [message]
+    """
+    if len(ctx.args) < 2:
+        await update.message.reply_text(
+            "📌 *Smart Reminder Help*\n\n"
+            "*Priority Levels:*\n"
+            "🔴 `HIGH` - Urgent (repeats every 5 min, max 12 times)\n"
+            "🟠 `MEDIUM` - Normal (repeats every 15 min, max 8 times)\n"
+            "🔵 `LOW` - Low priority (repeats every 30 min, max 4 times)\n\n"
+            "*Usage:*\n"
+            "`/smartremind HIGH 5m Doctor appointment`\n"
+            "`/smartremind MEDIUM repeat 30m Take medicine`\n"
+            "`/smartremind LOW tomorrow 9am Meeting`\n\n"
+            "*Commands:*\n"
+            "/smartlist - List smart reminders\n"
+            "/smartcomplete id - Mark as complete",
+            parse_mode="Markdown"
+        )
+        return
+    
+    args = list(ctx.args)
+    now = now_ist()
+    
+    # Parse priority
+    priority = "MEDIUM"
+    if args and args[0].upper() in ["HIGH", "MEDIUM", "LOW"]:
+        priority = args[0].upper()
+        args = args[1:]
+    
+    # Parse repeat option
+    repeat_until_done = False
+    if args and args[0].lower() in ["repeat", "r", "until"]:
+        repeat_until_done = True
+        args = args[1:]
+    
+    if len(args) < 2:
+        await update.message.reply_text("❌ Please specify time and message!\nExample: `/smartremind HIGH 5m Doctor appointment`", parse_mode="Markdown")
+        return
+    
+    time_arg = args[0].lower()
+    text = " ".join(args[1:])
+    
+    # Parse time
+    if time_arg.endswith("m") and time_arg[:-1].isdigit():
+        mins = int(time_arg[:-1])
+        remind_dt = now + timedelta(minutes=mins)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+    elif time_arg.endswith("h") and time_arg[:-1].isdigit():
+        hours = int(time_arg[:-1])
+        remind_dt = now + timedelta(hours=hours)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+    elif ":" in time_arg:
+        parts = time_arg.split(":")
+        remind_dt = datetime(now.year, now.month, now.day, int(parts[0]), int(parts[1]))
+        if remind_dt < now:
+            remind_dt += timedelta(days=1)
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+    elif "tomorrow" in time_arg or "kal" in time_arg:
+        time_match = _re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', time_arg)
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2)) if time_match.group(2) else 0
+            is_pm = time_match.group(3) == "pm" if time_match.group(3) else False
+            if is_pm and hour != 12:
+                hour += 12
+            remind_dt = datetime(now.year, now.month, now.day, hour, minute) + timedelta(days=1)
+            due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            remind_dt = now + timedelta(days=1)
+            due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        await update.message.reply_text("❌ Invalid time format!\nExamples: `5m`, `1h`, `15:30`, `tomorrow 9am`", parse_mode="Markdown")
+        return
+    
+    # Create smart reminder
+    config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+    r = _add_smart_reminder(
+        chat_id=update.effective_chat.id,
+        text=text,
+        due_timestamp=due_timestamp,
+        priority=priority,
+        repeat_until_done=repeat_until_done
+    )
+    
+    remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+    date_display = remind_dt.strftime("%d %b %Y")
+    time_display = remind_dt.strftime("%I:%M %p")
+    
+    repeat_info = " (will repeat until completed)" if repeat_until_done else f" (max {config['max_repeats']} times)"
+    
+    await update.message.reply_text(
+        f"{config['emoji']} *Smart Reminder Set!* {config['emoji']}\n\n"
+        f"🕐 *{time_display}* — 📅 *{date_display}*\n"
+        f"📝 {text}\n"
+        f"🎯 Priority: *{priority}*{repeat_info}\n"
+        f"⏰ Repeat every: *{config['repeat_interval']} minutes*\n"
+        f"📌 ID #{r['id']}\n\n"
+        f"_/smartcomplete {r['id']} - Mark as complete_",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_smart_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """List all active smart reminders"""
+    from secure_data_manager import reminders
+    
+    active = []
+    for r in reminders.get_all():
+        if r.get("is_smart") and not r.get("acknowledged", False) and not r.get("triggered", False):
+            if r.get("chat_id") == update.effective_chat.id:
+                active.append(r)
+    
+    if not active:
+        await update.message.reply_text(
+            "📭 *No active smart reminders*\n\n"
+            "Create one: `/smartremind HIGH 5m Doctor appointment`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    lines = ["📌 *Smart Reminders:*\n"]
+    
+    for r in active[:15]:
+        due = r.get("due", "")
+        try:
+            dt = datetime.strptime(due, "%Y-%m-%d %H:%M:%S")
+            due_display = dt.strftime("%d %b, %I:%M %p")
+        except:
+            due_display = due
+        
+        priority = r.get("priority", "MEDIUM")
+        config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+        emoji = config["emoji"]
+        current = r.get("current_repeat", 0)
+        max_r = r.get("max_repeats", config["max_repeats"])
+        
+        lines.append(f"{emoji} #{r['id']} *{r['text'][:40]}*\n   🕐 {due_display} | 🔁 {current}/{max_r}")
+    
+    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_smart_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Mark a smart reminder as complete (stops all repeats)"""
+    if not ctx.args:
+        await update.message.reply_text("/smartcomplete reminder_id", parse_mode="Markdown")
+        return
+    
+    try:
+        rid = int(ctx.args[0])
+        count = _acknowledge_smart_chain(rid)
+        
+        if count > 0:
+            await update.message.reply_text(
+                f"✅ *Smart Reminder Completed!* 🎉\n\n"
+                f"Stopped {count} reminder(s). Alhamdulillah!",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ Reminder #{rid} not found or already completed.", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}", parse_mode="Markdown")
+
 
 # ================================================================
 # DIARY COMMANDS
@@ -1422,10 +1751,20 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 except:
                     due_time_display = reminder_due
                 
-                alert = (f"🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display} BAJ GAYE!*\n{'━' * 20}\n\n"
+                # Check if this is a smart reminder
+                is_smart = r.get("is_smart", False)
+                priority = r.get("priority", "MEDIUM")
+                config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+                prefix = config["prefix"] if is_smart else ""
+                
+                alert = (f"{prefix}🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display} BAJ GAYE!*\n{'━' * 20}\n\n"
                          f"🔔 *{r['text'].upper()}*\n{suffix}\n\n"
                          f"😴 Snooze: /snooze5 {r['id']} | /snooze10 {r['id']}\n"
                          f"🗑️ Delete: /delremind {r['id']}")
+                
+                if is_smart:
+                    alert += f"\n✅ Complete: /smartcomplete {r['id']}"
+                
                 try:
                     await context.bot.send_message(
                         chat_id=int(r["chat_id"]), text=alert,
@@ -1433,6 +1772,11 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     )
                     # Mark as triggered
                     reminders.mark_triggered(r["id"])
+                    
+                    # Schedule follow-up for smart reminders
+                    if is_smart and not r.get("acknowledged", False):
+                        _process_smart_followup(r)
+                    
                     _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
                 except Exception as e:
                     log.error(f"Failed to send alarm: {e}")
@@ -1454,6 +1798,11 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reminder_text = target.get("text", "")
             count = reminders.acknowledge_all_by_text(reminder_text)
             reminders.acknowledge(rid, "User pressed OK")
+            
+            # If it's a smart reminder, acknowledge entire chain
+            if target.get("is_smart", False):
+                _acknowledge_smart_chain(rid)
+            
             _log_action("User", "alarm_acknowledged", f"Alarm #{rid} OK: {reminder_text} ({count} dismissed)")
             if count > 1:
                 await query.edit_message_text(
@@ -1850,16 +2199,23 @@ async def _send_reminder_list(update: Update):
                     due_display = due
             else:
                 due_display = due
-            lines.append(f"  ⏰ #{r['id']} {due_display} — {r['text']}")
+            # Mark smart reminders
+            if r.get("is_smart", False):
+                priority = r.get("priority", "MEDIUM")
+                config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+                lines.append(f"  {config['emoji']} #{r['id']} {due_display} — {r['text']} (Smart-{priority})")
+            else:
+                lines.append(f"  ⏰ #{r['id']} {due_display} — {r['text']}")
             
         await update.message.reply_text(
             f"⏰ *Active Reminders ({len(active)}):*\n\n" + "\n".join(lines) + "\n\n"
-            f"/delremind id — Delete karo\n/snooze5 id — Snooze\n/remind 30m Chai — Naya set karo",
+            f"/delremind id — Delete karo\n/snooze5 id — Snooze\n/remind 30m Chai — Naya set karo\n"
+            f"/smartlist — Smart reminders",
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text(
-            "⏰ Koi active reminder nahi hai.\n\n/remind 30m Chai — Naya set karo",
+            "⏰ Koi active reminder nahi hai.\n\n/remind 30m Chai — Naya set karo\n/smartremind HIGH 5m — Smart reminder",
             parse_mode="Markdown"
         )
 
@@ -2161,7 +2517,7 @@ def main():
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v16 FINAL | Smart Daily Summary | Voice offline | Fixed Reminders")
+    log.info("Rk Bot v17 FINAL | Smart Reminder Intelligence | Voice offline | Fixed Reminders")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -2224,6 +2580,10 @@ def main():
         ("calweek", cmd_calweek), ("caladd", cmd_caladd), ("caldel", cmd_caldel),
         ("bills", cmd_bills), ("billadd", cmd_billadd),
         ("billpaid", cmd_billpaid), ("billdel", cmd_billdel),
+        # Smart Reminder Commands
+        ("smartremind", cmd_smart_remind),
+        ("smartlist", cmd_smart_list),
+        ("smartcomplete", cmd_smart_complete),
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
