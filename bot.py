@@ -1506,8 +1506,22 @@ def parse_user_message(user_msg: str):
             if remind_dt < now and due_date == now.date():
                 remind_dt += timedelta(days=1)
         else:
-            # Default to 30 minutes from now if no time specified
-            remind_dt = now + timedelta(minutes=30)
+            # Check if text contains "min" or "minute" or "baad"
+            if 'min' in lower or 'minute' in lower or 'baad' in lower:
+                # Try to extract number from text
+                num_match = _re.search(r'(\d+)', lower)
+                if num_match:
+                    mins = int(num_match.group(1))
+                    remind_dt = now + timedelta(minutes=mins)
+                    log.info(f"⏰ Extracted {mins} minutes from text")
+                else:
+                    # Default to 5 minutes instead of 30
+                    remind_dt = now + timedelta(minutes=5)
+                    log.info(f"⏰ No number found, defaulting to 5 minutes")
+            else:
+                # Default to 5 minutes
+                remind_dt = now + timedelta(minutes=5)
+                log.info(f"⏰ Defaulting to 5 minutes")
         
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
         
