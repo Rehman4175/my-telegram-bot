@@ -527,14 +527,18 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "💬 *Seedha bolo (natural Hinglish):*\n"
         "• `30 min mein chai yaad dilana`\n"
         "• `chai pe 50 rupees laga`\n"
-        "• `diary mein likho aaj ka din acha tha`\n"
         "• `gym habit ho gayi`\n"
         "• `simran ki birthday 9 sep 2000 hai`\n"
         "• `bill add netflix 499`\n"
         "• `karcha 200 petrol`\n"
         "• `saare task dikhao / task list`\n"
-        "• `diary dikhao / show diary`\n"
         "• `memory mein save karo...`\n\n"
+        "📖 *Diary (Password Protected) - Use Commands:*\n"
+        "`/diary` — Aaj ki entries dekho\n"
+        "`/diary write` — Naya entry likho\n"
+        "`/diary week` — Is hafte ki entries\n"
+        "`/diary all` — Sab entries\n"
+        "`/save text` — Quick diary save\n\n"
         "✅ *Tasks:*\n"
         "/task Naam — Task add karo\n"
         "/done id — Task complete karo\n"
@@ -549,12 +553,6 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/smartremind HIGH 5m Doctor — Smart reminder with priority\n"
         "/smartlist — List smart reminders\n"
         "/smartcomplete id — Complete smart reminder\n\n"
-        "📖 *Diary (Password Protected):*\n"
-        "/diary — Aaj ki entries dekho\n"
-        "/diary write — Naya entry likho\n"
-        "/diary week — Is hafte ki entries\n"
-        "/diary all — Sab entries\n"
-        "/save text — Quick diary save\n\n"
         "📅 *Calendar:*\n"
         "/cal — Upcoming events dekho\n"
         "/caltoday — Aaj ke events\n"
@@ -1265,14 +1263,12 @@ async def cmd_smart_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# DIARY COMMANDS — FIXED PASSWORD FLOW
+# DIARY COMMANDS
 # ================================================================
 
 async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Diary command with password protection for ALL operations"""
+    """Diary command with password for ALL operations"""
     args = ctx.args or []
-    
-    # Determine mode
     if not args:
         ctx.user_data["diary_mode"] = "view_today"
     else:
@@ -1284,51 +1280,44 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif first == "all":
             ctx.user_data["diary_mode"] = "view_all"
         else:
-            # If args provided but not a keyword, treat as direct write
             ctx.user_data["diary_mode"] = "write"
             ctx.user_data["diary_pending_text"] = " ".join(args)
     
     # Store chat id for conversation
     ctx.user_data["diary_chat_id"] = update.effective_chat.id
     
-    # Send password prompt
+    # Password required for ALL diary operations
     msg = await update.message.reply_text(
         "🔒 *Diary Access - Password Chahiye!*\n\n"
         "Password daalo:\n\n"
         "*(/cancel se bahar aana)*",
         parse_mode="Markdown"
     )
-    
     # Store message id to delete later
     ctx.user_data["diary_prompt_msg_id"] = msg.message_id
-    
     return DIARY_AWAIT_PASS
 
-
 async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Check password and route to correct action — FIXED"""
+    """Check password and perform diary operation - messages auto delete"""
     if not update.message:
         return ConversationHandler.END
     
     entered = update.message.text.strip()
-    chat_id = update.effective_chat.id
-    user_name = update.effective_user.first_name or "User"
     
-    # Delete the password message immediately (hide password)
+    # Delete the password message immediately
     try:
         await update.message.delete()
-    except Exception as e:
-        log.warning(f"Could not delete password message: {e}")
+    except Exception:
+        pass
     
     # Delete the prompt message if exists
     prompt_msg_id = ctx.user_data.get("diary_prompt_msg_id")
     if prompt_msg_id:
         try:
             await update.effective_chat.delete_message(prompt_msg_id)
-        except Exception as e:
-            log.warning(f"Could not delete prompt message: {e}")
+        except Exception:
+            pass
     
-    # Check password
     if entered != DIARY_PASSWORD:
         error_msg = await update.effective_chat.send_message(
             "❌ *Galat Password!*\n\n"
@@ -1344,8 +1333,8 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         return ConversationHandler.END
     
-    # Password correct — proceed based on mode
     mode = ctx.user_data.get("diary_mode", "view_today")
+    user_name = update.effective_user.first_name or "User"
     
     # --- VIEW TODAY ---
     if mode == "view_today":
@@ -1435,14 +1424,11 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif mode == "write":
         pending_text = ctx.user_data.get("diary_pending_text", "")
         if pending_text:
-            # Direct write (from /save or inline text)
             diary.add(pending_text)
             _log_action(user_name, "diary_write", f"Entry saved")
-            
-            # Send success message WITHOUT content (CONTENT HIDDEN)
             msg = await update.effective_chat.send_message(
                 f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n"
-                f"📌 Entry saved successfully!\n\n"
+                f"📌 Entry ID: #{len(diary.get_all_entries())}\n\n"
                 f"📊 Sheets mein bhi backup ho gaya!",
                 parse_mode="Markdown"
             )
@@ -1452,16 +1438,14 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await msg.delete()
             except:
                 pass
-            
             ctx.user_data.clear()
             return ConversationHandler.END
         else:
-            # Ask for text input
             prompt_msg = await update.effective_chat.send_message(
                 "✅ *Password Sahi Hai!* 🎉\n\n"
                 "Ab apni diary entry likho:\n"
                 "*(/cancel se bahar aana)*\n\n"
-                "💡 *Note:* Aapka likha hua content sirf database mein save hoga!",
+                "💡 *Note:* Aapka likha hua content sirf database mein save hoga, yahan nahi dikhega!",
                 parse_mode="Markdown"
             )
             # Store prompt message id to delete later
@@ -1471,42 +1455,36 @@ async def diary_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     return ConversationHandler.END
 
-
 async def diary_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle diary text input — content hidden, auto-delete"""
+    """Handle diary text input - auto delete after save, content hidden"""
     if not update.message:
         return ConversationHandler.END
     
     text = update.message.text.strip()
-    chat_id = update.effective_chat.id
-    user_name = update.effective_user.first_name or "User"
     
     # Delete the diary entry message immediately (hide content)
     try:
         await update.message.delete()
-    except Exception as e:
-        log.warning(f"Could not delete diary entry message: {e}")
+    except Exception:
+        pass
     
     # Delete the prompt message if exists
     prompt_id = ctx.user_data.get("diary_write_prompt_id")
     if prompt_id:
         try:
             await update.effective_chat.delete_message(prompt_id)
-        except Exception as e:
-            log.warning(f"Could not delete write prompt: {e}")
+        except Exception:
+            pass
     
-    # Save to diary
     diary.add(text)
-    _log_action(user_name, "diary_write", f"Entry saved")
+    _log_action(update.effective_user.first_name or "User", "diary_write", f"Entry saved")
     
-    # Send success message WITHOUT showing content (CONTENT HIDDEN)
     msg = await update.effective_chat.send_message(
         f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n"
-        f"📌 Entry saved successfully!\n\n"
+        f"📌 Entry ID: #{len(diary.get_all_entries())}\n\n"
         f"📊 Sheets mein bhi backup ho gaya!",
         parse_mode="Markdown"
     )
-    
     # Auto delete success message after 5 seconds
     await asyncio.sleep(5)
     try:
@@ -1517,9 +1495,8 @@ async def diary_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     return ConversationHandler.END
 
-
 async def diary_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Cancel diary operation and cleanup"""
+    """Cancel diary operation and delete messages"""
     ctx.user_data.clear()
     
     # Delete the cancel command message
@@ -1528,10 +1505,7 @@ async def diary_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     
-    msg = await update.effective_chat.send_message(
-        "❌ Diary cancelled.",
-        parse_mode="Markdown"
-    )
+    msg = await update.effective_chat.send_message("❌ Diary cancelled.", parse_mode="Markdown")
     await asyncio.sleep(3)
     try:
         await msg.delete()
@@ -1539,9 +1513,8 @@ async def diary_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
     return ConversationHandler.END
 
-
 async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Quick save to diary with password protection — FIXED FLOW"""
+    """Quick save to diary with password protection"""
     if not ctx.args:
         await update.message.reply_text(
             "📖 *Quick Diary Save*\n\n"
@@ -1551,12 +1524,11 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Set up for direct write after password
+    # Password check for save command too
     ctx.user_data["diary_mode"] = "write"
     ctx.user_data["diary_pending_text"] = " ".join(ctx.args)
     ctx.user_data["diary_chat_id"] = update.effective_chat.id
     
-    # Send password prompt
     msg = await update.message.reply_text(
         "🔒 *Diary Save - Password Chahiye!*\n\n"
         "Password daalo save karne ke liye:\n"
@@ -1564,8 +1536,8 @@ async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     ctx.user_data["diary_prompt_msg_id"] = msg.message_id
-    
     return DIARY_AWAIT_PASS
+
 
 # ================================================================
 # CALENDAR COMMANDS
@@ -2576,15 +2548,17 @@ async def _send_habit_list(update: Update):
         await update.message.reply_text("🏃 Koi habit nahi.\n\n/habit Naam — Naya add karo", parse_mode="Markdown")
 
 async def _send_diary_today(update: Update):
-    entries = diary.get(today_str())
-    if not entries:
-        await update.message.reply_text(
-            "📖 Aaj ki koi diary entry nahi hai.\n\n/diary write — Likhna shuru karo!\nYa bolo: *diary mein likho [text]*",
-            parse_mode="Markdown"
-        )
-    else:
-        lines = "\n\n".join(f"🕐 {e['time']}\n{e['text']}" for e in entries)
-        await update.message.reply_text(f"📖 *Aaj ki Diary ({today_str()}):*\n\n{lines}", parse_mode="Markdown")
+    # This is kept for compatibility but not used directly - use /diary command instead
+    await update.message.reply_text(
+        "📖 *Diary dekhne ke liye `/diary` command use karo!*\n\n"
+        "Example:\n"
+        "`/diary` - Aaj ki diary\n"
+        "`/diary week` - Is hafte ki diary\n"
+        "`/diary all` - Saari diary\n"
+        "`/diary write` - Naya entry likho\n\n"
+        "🔒 *Password required!*",
+        parse_mode="Markdown"
+    )
 
 async def _send_calendar_list(update: Update):
     events = calendar.upcoming(days=30)
@@ -2652,9 +2626,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _log_action(user_name, "show_habits", user_msg[:60])
 
     elif action_type == "show_diary":
-        # Password required for viewing diary via natural language
-        await cmd_diary_entry(update, ctx)
-        return
+        # Use command instead of direct access
+        await _send_diary_today(update)
+        _log_action(user_name, "show_diary", user_msg[:60])
 
     elif action_type == "show_memory":
         await _send_memory_list(update)
@@ -2760,8 +2734,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action_type == "diary":
-        # Password required for natural language diary save
-        await cmd_diary_entry(update, ctx)
+        # Redirect to command for password protection
+        await update.message.reply_text(
+            "📖 *Diary save karne ke liye `/diary write` command use karo!*\n\n"
+            "Example: `/diary write Aaj ka din acha tha`\n\n"
+            "🔒 *Password required!*",
+            parse_mode="Markdown"
+        )
         return
 
     elif action_type == "add_habit":
@@ -2924,7 +2903,7 @@ def main():
     # Voice handlers with multiple transcription methods (UPDATED v11)
     register_voice_handlers(app)
 
-        # Diary conversation handler - MUST BE BEFORE message handler
+    # Diary conversation handler
     diary_handler = ConversationHandler(
         entry_points=[
             CommandHandler("diary", cmd_diary_entry),
@@ -2962,7 +2941,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
     
-    # Message handler - MUST BE AFTER conversation handler
+    # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Reminder job runs every 60 seconds
@@ -3015,11 +2994,7 @@ def main():
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
-    # ============================================================
-    # ⚠️ REMINDER CHECKER - NOT NEEDED (already have reminder_job)
-    # ============================================================
     log.info("✅ Reminder system active (using job_queue)")
-
     log.info("✅ Bot ready! Starting polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
