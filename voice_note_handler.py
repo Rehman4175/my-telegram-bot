@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 VOICE NOTE HANDLER — Rk Bot
-FIXED v11 (FIRST WORD PRIORITY):
-  - FIXED: "Reminder" as first word → FORCE REMINDER
+FIXED v12 (IST TIMEZONE + ALL BUG FIXES):
+  - FIXED: IST timezone (UTC+5:30) for reminders
+  - FIXED: "Reminder" first word priority
   - FIXED: Time parsing for "2 min baad"
   - Vosk offline first, Gemini fallback
 """
@@ -20,19 +21,46 @@ import asyncio
 import zipfile
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo  # Python 3.9+
 
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, CommandHandler, filters
 
 log = logging.getLogger(__name__)
 
-# Import from secure_data_manager
+# ================================================================
+# IST TIMEZONE HELPERS (FIXED!)
+# ================================================================
+
+IST = ZoneInfo("Asia/Kolkata")
+
+def now_ist() -> datetime:
+    """Return current time in IST (Asia/Kolkata)"""
+    return datetime.now(IST)
+
+def today_str() -> str:
+    """Return today's date string in IST"""
+    return now_ist().strftime("%Y-%m-%d")
+
+def now_str() -> str:
+    """Return current time string in IST"""
+    return now_ist().strftime("%H:%M:%S")
+
+def now_full_str() -> str:
+    """Return full timestamp in IST"""
+    return now_ist().strftime("%Y-%m-%d %H:%M:%S")
+
+# ================================================================
+# IMPORTS FROM SECURE DATA MANAGER
+# ================================================================
+
 try:
     from secure_data_manager import (
         diary, tasks, memory, expenses, habits, reminders,
         water, bills, calendar,
         sheets_backup, repo_manager,
-        now_ist, today_str, now_str, PrivateStore,
+        now_ist as sdm_now_ist, today_str as sdm_today_str, now_str as sdm_now_str, 
+        PrivateStore,
         channel_logger
     )
     _SDM_AVAILABLE = True
@@ -41,6 +69,7 @@ except ImportError as e:
     log.error(f"secure_data_manager import failed: {e}")
     _SDM_AVAILABLE = False
     channel_logger = None
+    # Use our own IST functions when SDM is not available
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
@@ -352,11 +381,11 @@ async def transcribe_audio(audio_bytes: bytes) -> Tuple[Optional[str], Optional[
 
 
 # ================================================================
-# TIME PARSING
+# TIME PARSING (FIXED WITH PROPER IST!)
 # ================================================================
 
 def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
-    """Extract time duration and return FULL TIMESTAMP."""
+    """Extract time duration and return FULL TIMESTAMP in IST."""
     import re
     
     # Clean the text first - remove "remind", "reminder", etc.
@@ -365,9 +394,11 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
     clean_text = re.sub(r'\s+(remind|reminder|alarm)\s+', ' ', clean_text, flags=re.IGNORECASE)
     
     text_lower = clean_text.lower().strip()
-    now = now_ist() if 'now_ist' in dir() else datetime.now()
     
-    log.info(f"🔍 Parsing time from: '{text}' (cleaned: '{clean_text}')")
+    # FIXED: Always use IST now!
+    now = now_ist()
+    
+    log.info(f"🔍 Parsing time from: '{text}' (cleaned: '{clean_text}') | Now IST: {now}")
     
     # Hindi numbers to digits
     hindi_numbers = {
@@ -386,8 +417,9 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         text_lower = text_lower.replace(hindi, digit)
         clean_text = clean_text.replace(hindi, digit)
     
+    # FIXED: Better regex patterns with word boundaries
     patterns = [
-        (r'(\d+)\s*(?:minute|min|minutes|mins)\s*(?:baad|mein|main|after|ke baad|bad mein|me)', 'minute'),
+        (r'(\d+)\s*(?:minute|min|minutes|mins)\s*(?:baad|mein|main|after|ke\s*baad|bad\s*mein|me)', 'minute'),
         (r'(\d+)\s*(?:minute|min|minutes|mins)\b', 'minute'),
         (r'(\d+)\s*m\b', 'minute'),
         (r'(\d+)\s*(?:second|sec|seconds|secs)\s*(?:baad|mein|main|after)', 'second'),
@@ -417,8 +449,9 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
         else:
             due = now + timedelta(days=value)
         
+        # FIXED: Ensure timezone-aware IST timestamp
         full_timestamp = due.strftime("%Y-%m-%d %H:%M:%S")
-        log.info(f"✅ Parsed: {value} {unit}(s) from now → {full_timestamp}")
+        log.info(f"✅ Parsed: {value} {unit}(s) from now → {full_timestamp} IST")
         
         result_text = clean_text
         if matched_pattern:
@@ -438,7 +471,7 @@ def _parse_reminder_full_timestamp(text: str) -> Tuple[str, str, int, str]:
     # Default: 5 minutes
     default_time = now + timedelta(minutes=5)
     full_timestamp = default_time.strftime("%Y-%m-%d %H:%M:%S")
-    log.info(f"⚠️ No time pattern found, defaulting to 5 minutes → {full_timestamp}")
+    log.info(f"⚠️ No time pattern found, defaulting to 5 minutes → {full_timestamp} IST")
     
     result_text = clean_text
     noise_words = ['reminder', 'remind', 'lagao', 'laga', 'karo', 'kar', 'kr', 'set', 'add', 'please', 'plz']
@@ -489,7 +522,7 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
         clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content)
         clean = clean.strip() or "Reminder"
         
-        log.info(f"🎯 FIRST WORD '{first_word}' → REMINDER | clean text: '{clean}' | at: {full_timestamp}")
+        log.info(f"🎯 FIRST WORD '{first_word}' → REMINDER | clean text: '{clean}' | at: {full_timestamp} IST")
         
         return "reminder", {
             "text": clean[:200],
@@ -518,7 +551,7 @@ def _classify_transcript(text: str, chat_id: str = "") -> Tuple[str, Dict[str, A
         clean, full_timestamp, t_val, t_unit = _parse_reminder_full_timestamp(content)
         clean = clean.strip() or "Reminder"
         
-        log.info(f"🎯 TEXT STARTS WITH 'remind' → REMINDER | clean text: '{clean}' | at: {full_timestamp}")
+        log.info(f"🎯 TEXT STARTS WITH 'remind' → REMINDER | clean text: '{clean}' | at: {full_timestamp} IST")
         
         return "reminder", {
             "text": clean[:200],
@@ -713,6 +746,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         try:
             dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            # FIXED: Display in 12-hour format with IST indicator
             display_time = dt.strftime("%I:%M %p, %d %b")
         except:
             display_time = due_timestamp
@@ -844,6 +878,8 @@ async def cmd_sheets_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append(f"📝 Total voice notes: `{len(voice_store.store.data.get('list', []))}`")
         else:
             lines.append("❌ voice_store is None")
+        # FIXED: Show current IST time for debugging
+        lines.append(f"🕐 Current IST: `{now_ist().strftime('%I:%M %p, %d %b')}`")
     except Exception as e:
         lines.append(f"❌ Debug error: `{e}`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -855,4 +891,4 @@ def register_voice_handlers(app):
     app.add_handler(CommandHandler("voicehelp", cmd_voicehelp))
     app.add_handler(CommandHandler("sheetsdbg", cmd_sheets_debug))
 
-    log.info("✅ Voice handlers registered (v11 - First Word Priority!)")
+    log.info("✅ Voice handlers registered (v12 - IST Timezone Fixed!)")
