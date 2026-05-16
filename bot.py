@@ -533,7 +533,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `karcha 200 petrol`\n"
         "• `saare task dikhao / task list`\n"
         "• `memory mein save karo...`\n\n"
-        "📖 *Diary (Password Protected) - Use Commands:*\n"
+        "📖 *Diary (Password Protected):*\n"
         "`/diary` — Aaj ki entries dekho\n"
         "`/diary write` — Naya entry likho\n"
         "`/diary week` — Is hafte ki entries\n"
@@ -1263,7 +1263,7 @@ async def cmd_smart_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# DIARY COMMANDS
+# DIARY COMMANDS - FIXED WITH PASSWORD PROTECTION
 # ================================================================
 
 async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1275,11 +1275,14 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         first = args[0].lower()
         if first == "write":
             ctx.user_data["diary_mode"] = "write"
+            if len(args) > 1:
+                ctx.user_data["diary_pending_text"] = " ".join(args[1:])
         elif first == "week":
             ctx.user_data["diary_mode"] = "view_week"
         elif first == "all":
             ctx.user_data["diary_mode"] = "view_all"
         else:
+            # If first word is not a command, treat as write with that text
             ctx.user_data["diary_mode"] = "write"
             ctx.user_data["diary_pending_text"] = " ".join(args)
     
@@ -1961,7 +1964,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# NATURAL LANGUAGE PARSER (UPDATED for better time detection)
+# NATURAL LANGUAGE PARSER
 # ================================================================
 
 def parse_user_message(user_msg: str):
@@ -2548,7 +2551,7 @@ async def _send_habit_list(update: Update):
         await update.message.reply_text("🏃 Koi habit nahi.\n\n/habit Naam — Naya add karo", parse_mode="Markdown")
 
 async def _send_diary_today(update: Update):
-    # This is kept for compatibility but not used directly - use /diary command instead
+    # Show instruction to use /diary command
     await update.message.reply_text(
         "📖 *Diary dekhne ke liye `/diary` command use karo!*\n\n"
         "Example:\n"
@@ -2626,7 +2629,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _log_action(user_name, "show_habits", user_msg[:60])
 
     elif action_type == "show_diary":
-        # Use command instead of direct access
         await _send_diary_today(update)
         _log_action(user_name, "show_diary", user_msg[:60])
 
