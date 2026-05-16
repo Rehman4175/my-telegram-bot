@@ -533,7 +533,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• `karcha 200 petrol`\n"
         "• `saare task dikhao / task list`\n"
         "• `memory mein save karo...`\n\n"
-        "📖 *Diary (Password Protected):*\n"
+        "📖 *Diary (Password Protected) - Use Commands:*\n"
         "`/diary` — Aaj ki entries dekho\n"
         "`/diary write` — Naya entry likho\n"
         "`/diary week` — Is hafte ki entries\n"
@@ -1263,7 +1263,7 @@ async def cmd_smart_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# DIARY COMMANDS - FIXED WITH PASSWORD PROTECTION
+# DIARY COMMANDS
 # ================================================================
 
 async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1282,7 +1282,6 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif first == "all":
             ctx.user_data["diary_mode"] = "view_all"
         else:
-            # If first word is not a command, treat as write with that text
             ctx.user_data["diary_mode"] = "write"
             ctx.user_data["diary_pending_text"] = " ".join(args)
     
@@ -1974,11 +1973,9 @@ def parse_user_message(user_msg: str):
     # 🧠 SMART REMINDER - HINGLISH COMMANDS (HIGHEST PRIORITY)
     # ============================================================
     
-    # Pattern 1: "2 min baad urgent doctor reminder lagao" → HIGH priority
     smart_match = _re.search(r'(urgent|jaldi|important|high|high priority|jaruri|जरूरी|high priority)\s*(?:reminder|remind|yaad dilao|yaad dila|bata dena)', lower)
     if smart_match:
         priority = "HIGH"
-        # Extract time and text
         time_match = _re.search(r'(\d+)\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)', lower)
         if time_match:
             value = int(time_match.group(1))
@@ -1994,7 +1991,6 @@ def parse_user_message(user_msg: str):
             remind_dt = now_ist() + timedelta(minutes=mins)
             due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
             
-            # Extract text
             text = user_msg
             for kw in ['urgent', 'jaldi', 'important', 'high priority', 'jaruri', 'reminder', 'remind', 'yaad dilao', 'yaad dila', 'bata dena']:
                 text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
@@ -2003,7 +1999,6 @@ def parse_user_message(user_msg: str):
             if not text:
                 text = "Urgent Reminder"
             
-            # Return data for smart reminder (will be created in handle_message)
             config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
             return ("smart_remind", {
                 "priority": priority, 
@@ -2013,13 +2008,11 @@ def parse_user_message(user_msg: str):
                 "interval": config['repeat_interval']
             })
     
-    # Pattern 2: "kal 9 baje tak yaad dilate rehna" → repeat until done
     repeat_match = _re.search(r'(tak|until|jab tak|tab tak|repeat|bar bar|baar baar|lagatar|rehna|करते रहना)\s*(?:yaad dilate rehna|remind karte rehna|bata te rehna)', lower)
     if repeat_match:
         priority = "MEDIUM"
         repeat_until_done = True
         
-        # Parse date/time
         date_str, remaining = _parse_date_from_text(user_msg)
         time_str = _parse_time_from_text(remaining)
         
@@ -2039,7 +2032,6 @@ def parse_user_message(user_msg: str):
         
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Extract text
         text = user_msg
         for kw in ['yaad dilate rehna', 'remind karte rehna', 'bata te rehna', 'tak', 'until', 'jab tak', 'tab tak', 'repeat', 'bar bar', 'baar baar', 'lagatar', 'rehna']:
             text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
@@ -2057,12 +2049,10 @@ def parse_user_message(user_msg: str):
             "interval": config['repeat_interval']
         })
     
-    # Pattern 3: "low priority reminder 1 hour baad meeting" → LOW priority
     low_match = _re.search(r'(low|normal|simple|easy|basic|normal priority|simple reminder|normal reminder|aam|साधारण|low priority)', lower)
     if low_match and ('remind' in lower or 'reminder' in lower or 'yaad' in lower):
         priority = "LOW"
         
-        # Parse time
         time_match = _re.search(r'(\d+)\s*(?:min|minute|m|hour|hr|ghanta)\s*(?:baad|mein|main|after)', lower)
         if time_match:
             value = int(time_match.group(1))
@@ -2077,7 +2067,6 @@ def parse_user_message(user_msg: str):
             remind_dt = now_ist() + timedelta(minutes=30)
             due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Extract text
         text = user_msg
         for kw in ['low', 'normal', 'simple', 'easy', 'basic', 'normal priority', 'simple reminder', 'normal reminder', 'aam', 'reminder', 'remind', 'yaad']:
             text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
@@ -2095,12 +2084,9 @@ def parse_user_message(user_msg: str):
             "interval": config['repeat_interval']
         })
     
-    # Pattern 4: "2 min baad pani peena yaad dilana" (default smart reminder)
     if ('remind' in lower or 'reminder' in lower or 'yaad dilana' in lower or 'yaad dila' in lower):
-        # Check if it has time and is not a regular reminder
         time_match = _re.search(r'(\d+)\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)', lower)
         if time_match:
-            # If user wants a simple reminder (no priority word), use MEDIUM priority
             priority = "MEDIUM"
             value = int(time_match.group(1))
             unit = time_match.group(2) if len(time_match.groups()) > 1 else "min"
@@ -2111,7 +2097,6 @@ def parse_user_message(user_msg: str):
             remind_dt = now_ist() + timedelta(minutes=mins)
             due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
             
-            # Extract text
             text = user_msg
             for kw in ['reminder', 'remind', 'yaad dilana', 'yaad dila', 'bata dena']:
                 text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
@@ -2136,54 +2121,42 @@ def parse_user_message(user_msg: str):
                          'yaad dilana', 'bata dena', 'alarm', 'remindme']
     
     if any(kw in lower for kw in reminder_keywords):
-        # Parse date (kal, aaj, parso)
         date_str, remaining = _parse_date_from_text(user_msg)
-        
-        # Parse time (9 baje, 9 am, 9:00, subah 9 baje)
         time_str = _parse_time_from_text(remaining)
         
         now = now_ist()
         
-        # Determine date
         if date_str:
             due_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         else:
             due_date = now.date()
         
-        # Determine time
         if time_str:
             hour, minute = map(int, time_str.split(':'))
             remind_dt = datetime(due_date.year, due_date.month, due_date.day, hour, minute)
-            # If time already passed today, schedule for tomorrow
             if remind_dt < now and due_date == now.date():
                 remind_dt += timedelta(days=1)
         else:
-            # Check if text contains "min" or "minute" or "baad"
             if 'min' in lower or 'minute' in lower or 'baad' in lower:
-                # Try to extract number from text
                 num_match = _re.search(r'(\d+)', lower)
                 if num_match:
                     mins = int(num_match.group(1))
                     remind_dt = now + timedelta(minutes=mins)
                     log.info(f"⏰ Extracted {mins} minutes from text")
                 else:
-                    # Default to 5 minutes instead of 30
                     remind_dt = now + timedelta(minutes=5)
                     log.info(f"⏰ No number found, defaulting to 5 minutes")
             else:
-                # Default to 5 minutes
                 remind_dt = now + timedelta(minutes=5)
                 log.info(f"⏰ Defaulting to 5 minutes")
         
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Extract reminder text (remove date/time words)
         text = user_msg
         remove_words = reminder_keywords + ['kal', 'kl', 'aaj', 'parso', 'subha', 'subah', 
                     'shaam', 'raat', 'baje', 'bajay', 'am', 'pm', 'mein', 'me', 'ko', 'pe']
         for rw in remove_words:
             text = _re.sub(r'\b' + _re.escape(rw) + r'\b', '', text, flags=_re.IGNORECASE)
-        # Remove time patterns
         text = _re.sub(r'\d{1,2}[:]\d{2}', '', text)
         text = _re.sub(r'\d{1,2}\s*(?:baje|bajay|am|pm)', '', text)
         text = text.strip()
@@ -2502,7 +2475,6 @@ async def _send_reminder_list(update: Update):
                     due_display = due
             else:
                 due_display = due
-            # Mark smart reminders
             if r.get("is_smart", False):
                 priority = r.get("priority", "MEDIUM")
                 config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
@@ -2551,7 +2523,6 @@ async def _send_habit_list(update: Update):
         await update.message.reply_text("🏃 Koi habit nahi.\n\n/habit Naam — Naya add karo", parse_mode="Markdown")
 
 async def _send_diary_today(update: Update):
-    # Show instruction to use /diary command
     await update.message.reply_text(
         "📖 *Diary dekhne ke liye `/diary` command use karo!*\n\n"
         "Example:\n"
@@ -2592,7 +2563,7 @@ async def _send_memory_list(update: Update):
 
 
 # ================================================================
-# MESSAGE HANDLER
+# MESSAGE HANDLER - FIXED WITH DIARY CONVERSATION CHECK
 # ================================================================
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2601,6 +2572,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     user_msg = update.message.text.strip()
     user_name = update.effective_user.first_name or "User"
+    
+    # ============================================================
+    # 🔥 CRITICAL: Check if we are in diary conversation mode
+    # If yes, let conversation handler handle it - DO NOT process here
+    # ============================================================
+    if ctx.user_data.get("diary_mode") and ctx.user_data.get("diary_chat_id") == update.effective_chat.id:
+        return
     
     # Skip commands
     if user_msg.startswith("/"):
@@ -2673,7 +2651,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         repeat_until_done = params.get("repeat_until_done", False)
         interval = params.get("interval", 15)
         
-        # Create the smart reminder
         r = _add_smart_reminder(
             chat_id=update.effective_chat.id,
             text=text,
@@ -2736,7 +2713,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action_type == "diary":
-        # Redirect to command for password protection
         await update.message.reply_text(
             "📖 *Diary save karne ke liye `/diary write` command use karo!*\n\n"
             "Example: `/diary write Aaj ka din acha tha`\n\n"
@@ -2822,8 +2798,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _log_action(user_name, "memory_save_fallback", f"Saved as diary: {text[:80]}")
             await update.message.reply_text(f"🧠 *Note Save Ho Gaya!* ✅\n\n_{text[:150]}_", parse_mode="Markdown")
 
-    else:  # AI chat
-        # Build prompt with strong Hinglish instruction
+    else:
         prompt = build_system_prompt() + f"""
 
 USER SAID: {user_msg}
@@ -2841,13 +2816,11 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
         if not reply:
             reply = "☪️ Assalamualaikum! Batao kya help chahiye?\nTasks, reminders, kharcha, diary, calendar, bills?"
         
-        # Fix common English responses
         english_greetings = ["Hello", "Hi", "Hey", "Good morning", "Good evening", "Good afternoon"]
         for eng in english_greetings:
             if reply.lower().startswith(eng.lower()):
                 reply = "Assalamualaikum! " + reply[len(eng):].strip()
         
-        # Add Assalamualaikum if missing
         if not any(word in reply.lower() for word in ['assalamualaikum', 'alaikum', 'salam', 'alhamdulillah']):
             reply = "Assalamualaikum! " + reply
         
@@ -2858,11 +2831,10 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
 
 
 # ================================================================
-# MAIN - UPDATED WITH CLEANUP AND SMART DAILY SUMMARY
+# MAIN
 # ================================================================
 
 def main():
-    # CRITICAL: Cleanup before starting (fixes conflict error)
     cleanup_before_start()
     
     log.info("=" * 60)
@@ -2874,15 +2846,11 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # ============================================================
-    # 🔥 SETUP CHANNEL LOGGER - Personal Space
-    # ============================================================
     try:
         from secure_data_manager import channel_logger
         channel_logger.set_bot(app.bot)
         log.info("✅ Channel logger connected to bot")
         
-        # Send startup message using job_queue (no event loop error)
         if channel_logger.enabled:
             async def send_startup_log(context):
                 await channel_logger.log_startup()
@@ -2894,18 +2862,13 @@ def main():
                 log.warning("JobQueue not available")
     except Exception as e:
         log.warning(f"Channel logger setup failed: {e}")
-    # ============================================================
 
-    # Register handlers
     from delete_manager import register_delete_handlers
     register_delete_handlers(app)
 
     register_memory_handlers(app)
-    
-    # Voice handlers with multiple transcription methods (UPDATED v11)
     register_voice_handlers(app)
 
-    # Diary conversation handler
     diary_handler = ConversationHandler(
         entry_points=[
             CommandHandler("diary", cmd_diary_entry),
@@ -2934,7 +2897,6 @@ def main():
         ("calweek", cmd_calweek), ("caladd", cmd_caladd), ("caldel", cmd_caldel),
         ("bills", cmd_bills), ("billadd", cmd_billadd),
         ("billpaid", cmd_billpaid), ("billdel", cmd_billdel),
-        # Smart Reminder Commands
         ("smartremind", cmd_smart_remind),
         ("smartlist", cmd_smart_list),
         ("smartcomplete", cmd_smart_complete),
@@ -2942,22 +2904,15 @@ def main():
         app.add_handler(CommandHandler(cmd, handler))
 
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
-    
-    # Message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Reminder job runs every 60 seconds
     if app.job_queue:
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
         
-        # ============================================================
-        # 🧠 SMART DAILY SUMMARY - Schedule at 4 times
-        # ============================================================
         from datetime import time as dt_time
         from secure_data_manager import IST
         
-        # Morning 9:00 AM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=9, minute=0, tzinfo=IST),
@@ -2966,7 +2921,6 @@ def main():
         )
         log.info("🌅 Morning summary scheduled at 9:00 AM")
         
-        # Afternoon 1:00 PM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=13, minute=0, tzinfo=IST),
@@ -2975,7 +2929,6 @@ def main():
         )
         log.info("🍽️ Afternoon summary scheduled at 1:00 PM")
         
-        # Evening 6:00 PM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=18, minute=0, tzinfo=IST),
@@ -2984,7 +2937,6 @@ def main():
         )
         log.info("🌙 Evening summary scheduled at 6:00 PM")
         
-        # Night 9:00 PM
         app.job_queue.run_daily(
             smart_daily_summary,
             time=dt_time(hour=21, minute=0, tzinfo=IST),
