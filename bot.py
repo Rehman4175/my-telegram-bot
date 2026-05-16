@@ -15,6 +15,7 @@ import os, json, logging, time
 import urllib.request, urllib.error, ssl
 from datetime import datetime, date, timedelta, timezone
 import re as _re
+import re
 import asyncio
 
 from secure_data_manager import (
@@ -1827,6 +1828,165 @@ def parse_user_message(user_msg: str):
     lower = user_msg.lower().strip()
     
     # ============================================================
+    # 🧠 SMART REMINDER - HINGLISH COMMANDS (HIGHEST PRIORITY)
+    # ============================================================
+    
+    # Pattern 1: "2 min baad urgent doctor reminder lagao" → HIGH priority
+    smart_match = _re.search(r'(urgent|jaldi|important|high|high priority|jaruri|जरूरी|high priority)\s*(?:reminder|remind|yaad dilao|yaad dila|bata dena)', lower)
+    if smart_match:
+        priority = "HIGH"
+        # Extract time and text
+        time_match = _re.search(r'(\d+)\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)', lower)
+        if time_match:
+            value = int(time_match.group(1))
+            unit = time_match.group(2) if len(time_match.groups()) > 1 else "min"
+            if 'min' in unit or 'm' == unit:
+                mins = value
+            elif 'hour' in unit or 'hr' in unit or 'ghanta' in unit:
+                mins = value * 60
+            elif 'second' in unit or 'sec' in unit:
+                mins = max(1, value // 60)
+            else:
+                mins = value
+            remind_dt = now_ist() + timedelta(minutes=mins)
+            due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Extract text
+            text = user_msg
+            for kw in ['urgent', 'jaldi', 'important', 'high priority', 'jaruri', 'reminder', 'remind', 'yaad dilao', 'yaad dila', 'bata dena']:
+                text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
+            text = _re.sub(r'\d+\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)', '', text)
+            text = text.strip()
+            if not text:
+                text = "Urgent Reminder"
+            
+            # Return data for smart reminder (will be created in handle_message)
+            config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+            return ("smart_remind", {
+                "priority": priority, 
+                "text": text, 
+                "due": due_timestamp,
+                "repeat_until_done": False,
+                "interval": config['repeat_interval']
+            })
+    
+    # Pattern 2: "kal 9 baje tak yaad dilate rehna" → repeat until done
+    repeat_match = _re.search(r'(tak|until|jab tak|tab tak|repeat|bar bar|baar baar|lagatar|rehna|करते रहना)\s*(?:yaad dilate rehna|remind karte rehna|bata te rehna)', lower)
+    if repeat_match:
+        priority = "MEDIUM"
+        repeat_until_done = True
+        
+        # Parse date/time
+        date_str, remaining = _parse_date_from_text(user_msg)
+        time_str = _parse_time_from_text(remaining)
+        
+        now = now_ist()
+        if date_str:
+            due_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        else:
+            due_date = now.date()
+        
+        if time_str:
+            hour, minute = map(int, time_str.split(':'))
+            remind_dt = datetime(due_date.year, due_date.month, due_date.day, hour, minute)
+            if remind_dt < now:
+                remind_dt += timedelta(days=1)
+        else:
+            remind_dt = now + timedelta(minutes=30)
+        
+        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Extract text
+        text = user_msg
+        for kw in ['yaad dilate rehna', 'remind karte rehna', 'bata te rehna', 'tak', 'until', 'jab tak', 'tab tak', 'repeat', 'bar bar', 'baar baar', 'lagatar', 'rehna']:
+            text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
+        text = re.sub(r'\d+\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)?', '', text)
+        text = text.strip()
+        if not text:
+            text = "Repeating Reminder"
+        
+        config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+        return ("smart_remind", {
+            "priority": priority, 
+            "text": text, 
+            "due": due_timestamp,
+            "repeat_until_done": repeat_until_done,
+            "interval": config['repeat_interval']
+        })
+    
+    # Pattern 3: "low priority reminder 1 hour baad meeting" → LOW priority
+    low_match = _re.search(r'(low|normal|simple|easy|basic|normal priority|simple reminder|normal reminder|aam|साधारण|low priority)', lower)
+    if low_match and ('remind' in lower or 'reminder' in lower or 'yaad' in lower):
+        priority = "LOW"
+        
+        # Parse time
+        time_match = _re.search(r'(\d+)\s*(?:min|minute|m|hour|hr|ghanta)\s*(?:baad|mein|main|after)', lower)
+        if time_match:
+            value = int(time_match.group(1))
+            unit = time_match.group(2) if len(time_match.groups()) > 1 else "min"
+            if 'hour' in unit or 'hr' in unit or 'ghanta' in unit:
+                mins = value * 60
+            else:
+                mins = value
+            remind_dt = now_ist() + timedelta(minutes=mins)
+            due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            remind_dt = now_ist() + timedelta(minutes=30)
+            due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Extract text
+        text = user_msg
+        for kw in ['low', 'normal', 'simple', 'easy', 'basic', 'normal priority', 'simple reminder', 'normal reminder', 'aam', 'reminder', 'remind', 'yaad']:
+            text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
+        text = re.sub(r'\d+\s*(?:min|minute|m|hour|hr|ghanta)\s*(?:baad|mein|main|after)?', '', text)
+        text = text.strip()
+        if not text:
+            text = "Reminder"
+        
+        config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+        return ("smart_remind", {
+            "priority": priority, 
+            "text": text, 
+            "due": due_timestamp,
+            "repeat_until_done": False,
+            "interval": config['repeat_interval']
+        })
+    
+    # Pattern 4: "2 min baad pani peena yaad dilana" (default smart reminder)
+    if ('remind' in lower or 'reminder' in lower or 'yaad dilana' in lower or 'yaad dila' in lower):
+        # Check if it has time and is not a regular reminder
+        time_match = _re.search(r'(\d+)\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)', lower)
+        if time_match:
+            # If user wants a simple reminder (no priority word), use MEDIUM priority
+            priority = "MEDIUM"
+            value = int(time_match.group(1))
+            unit = time_match.group(2) if len(time_match.groups()) > 1 else "min"
+            if 'hour' in unit or 'hr' in unit or 'ghanta' in unit:
+                mins = value * 60
+            else:
+                mins = value
+            remind_dt = now_ist() + timedelta(minutes=mins)
+            due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Extract text
+            text = user_msg
+            for kw in ['reminder', 'remind', 'yaad dilana', 'yaad dila', 'bata dena']:
+                text = _re.sub(r'\b' + _re.escape(kw) + r'\b', '', text, flags=_re.IGNORECASE)
+            text = re.sub(r'\d+\s*(?:min|minute|m|second|sec|hour|hr|ghanta)\s*(?:baad|mein|main|after)?', '', text)
+            text = text.strip()
+            if not text:
+                text = "Reminder"
+            
+            config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+            return ("smart_remind", {
+                "priority": priority, 
+                "text": text, 
+                "due": due_timestamp,
+                "repeat_until_done": False,
+                "interval": config['repeat_interval']
+            })
+          
+    # ============================================================
     # HIGHEST PRIORITY: Reminder detection
     # ============================================================
     reminder_keywords = ['remind', 'reminder', 'reminder add', 'remind me', 
@@ -2357,7 +2517,46 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📌 ID #{r['id']}",
             parse_mode="Markdown"
         )
-
+    
+    elif action_type == "smart_remind":
+        priority = params.get("priority", "MEDIUM")
+        text = params.get("text", "Reminder")
+        due_timestamp = params.get("due", "")
+        repeat_until_done = params.get("repeat_until_done", False)
+        interval = params.get("interval", 15)
+        
+        # Create the smart reminder
+        r = _add_smart_reminder(
+            chat_id=update.effective_chat.id,
+            text=text,
+            due_timestamp=due_timestamp,
+            priority=priority,
+            repeat_until_done=repeat_until_done
+        )
+        
+        config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+        
+        try:
+            remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            date_display = remind_dt.strftime("%d %b %Y")
+            time_display = remind_dt.strftime("%I:%M %p")
+        except:
+            date_display = "today"
+            time_display = due_timestamp
+        
+        repeat_info = " (will repeat until completed)" if repeat_until_done else f" (max {config['max_repeats']} times, every {interval} min)"
+        
+        await update.message.reply_text(
+            f"{config['emoji']} *Smart Reminder Set!* {config['emoji']}\n\n"
+            f"🕐 *{time_display}* — 📅 *{date_display}*\n"
+            f"📝 {text}\n"
+            f"🎯 Priority: *{priority}*{repeat_info}\n"
+            f"⏰ Will remind you every *{interval} minutes* until done\n"
+            f"📌 ID #{r['id']}\n\n"
+            f"_To stop: /smartcomplete {r['id']}_",
+            parse_mode="Markdown"
+        )
+  
     elif action_type == "add_task":
         t = tasks.add(params.get("title", ""))
         _log_action(user_name, "task_add", f"#{t['id']}: {t['title']}")
