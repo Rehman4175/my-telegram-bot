@@ -1027,7 +1027,7 @@ async def cmd_checksync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════
 
 async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show today's complete progress - "Kya kiya aaj?""""
+    """Show today's complete progress - 'Kya kiya aaj?'"""
     now = now_ist()
     today_str_val = get_today_str()
     
