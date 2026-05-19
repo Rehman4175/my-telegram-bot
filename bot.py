@@ -2459,6 +2459,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reminder_text = target.get("text", "")
             count = reminders.acknowledge_all_by_text(reminder_text)
             reminders.acknowledge(rid, "User pressed OK")
+            reminders.store.save()
             
             if target.get("is_smart", False):
                 _acknowledge_smart_chain(rid)
