@@ -739,6 +739,10 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         r_chat_id = int(data.get("chat_id") or chat_id)
         
         r = reminders.add(r_chat_id, rem_text, due_timestamp, "once")
+        # FIXED: Force save to persist reminder immediately
+        if r:
+            reminders.store.save()
+        
         saved_to = f"reminder #{r['id']}"
         t_val = data.get('time_value', 0)
         t_unit = data.get('time_unit', '')
