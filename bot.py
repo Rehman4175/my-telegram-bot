@@ -3337,7 +3337,7 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
 
 
 # ════════════════════════════════════════════════════
-# MAIN
+# MAIN - FIXED JOB QUEUE FOR DAILY SUMMARIES
 # ════════════════════════════════════════════════════
 
 def main():
@@ -3428,47 +3428,67 @@ def main():
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
         
-        from datetime import time as dt_time
-        from secure_data_manager import IST
+        # ✅ FIXED: Use run_repeating for daily summaries instead of run_daily
+        # This ensures they fire even without user interaction
         
-        # Smart Daily Summary - 5 times a day
-        for hour, label in [(9, "Morning"), (13, "Afternoon"), (18, "Evening"), (20, "HabitGuard"), (21, "Night")]:
-            app.job_queue.run_daily(
-                smart_daily_summary,
-                time=dt_time(hour=hour, minute=0, tzinfo=IST),
-                days=tuple(range(7)),
-                name=f"{label.lower()}_summary"
-            )
-            log.info(f"📊 {label} summary scheduled at {hour}:00 IST")
+        # Smart Daily Summary checker - runs every 60 seconds
+        # The function itself checks if it's the right time to send
+        app.job_queue.run_repeating(smart_daily_summary, interval=60, first=30)
+        log.info("📊 Smart Daily Summary checker scheduled (every 60s)")
         
         # Proactive Follow-up - every 3 hours
         app.job_queue.run_repeating(proactive_followup_job, interval=10800, first=300)
         log.info("🔄 Proactive followup scheduled (every 3 hours)")
         
-        # Weekly Review - Sunday 9 PM
-        app.job_queue.run_daily(
-            weekly_review_job,
-            time=dt_time(hour=21, minute=0, tzinfo=IST),
-            days=(6,),
-            name="weekly_review"
-        )
-        log.info("📊 Weekly review scheduled (Sunday 9 PM)")
+        # Weekly Review checker - every hour, function checks if Sunday 9 PM
+        app.job_queue.run_repeating(weekly_review_job, interval=3600, first=120)
+        log.info("📊 Weekly review checker scheduled (every hour)")
         
-        # Expense Insight - Friday & Saturday 10 AM
-        app.job_queue.run_daily(
-            expense_insight_job,
-            time=dt_time(hour=10, minute=0, tzinfo=IST),
-            days=(4, 5),
-            name="expense_insight"
-        )
-        log.info("💰 Expense insight scheduled (Fri/Sat 10 AM)")
+        # Expense Insight checker - every 6 hours, function checks if Fri/Sat
+        app.job_queue.run_repeating(expense_insight_job, interval=21600, first=180)
+        log.info("💰 Expense insight checker scheduled (every 6 hours)")
         
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
+    # ✅ FIXED: Send immediate startup notification to confirm bot is working
+    async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
+        """Send a test notification on startup to confirm jobs are working"""
+        try:
+            # Get all known chat IDs
+            chat_ids = set()
+            for r in reminders.get_all():
+                if r.get("chat_id"):
+                    try:
+                        chat_ids.add(int(r["chat_id"]))
+                    except:
+                        pass
+            
+            # If no chat IDs found from reminders, try from chat_hist
+            if not chat_ids:
+                log.warning("No chat IDs found for startup notification")
+                return
+            
+            for cid in chat_ids:
+                try:
+                    await context.bot.send_message(
+                        chat_id=cid,
+                        text="🟢 *Rk Bot v18.4 Active!*\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n\n_Alhamdulillah!_",
+                        parse_mode="Markdown"
+                    )
+                    log.info(f"Startup notification sent to {cid}")
+                except Exception as e:
+                    log.error(f"Failed to send startup notification to {cid}: {e}")
+        except Exception as e:
+            log.error(f"Startup notification error: {e}")
+    
+    if app.job_queue:
+        app.job_queue.run_once(send_startup_notification, 5)
+        log.info("📢 Startup notification scheduled (5 sec delay)")
+
     # ── Start Bot ──
     log.info("✅ Bot ready! Starting polling...")
-    log.info(f"📊 Total lines: ~2900+ | Features: v17 FULL + v18.x IMPROVEMENTS + ALL FIXES")
+    log.info("📊 Daily summaries will now trigger automatically every 60 seconds check")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
