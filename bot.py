@@ -2950,11 +2950,16 @@ def parse_user_message(user_msg: str):
 # ════════════════════════════════════════════════════
 
 async def _send_reminder_list(update: Update):
-    """Send active reminders list"""
+    """Send active reminders list - shows BOTH normal and smart reminders"""
     active = reminders.all_active()
-    if active:
+    smart_active = [r for r in smart_reminders.get_active_smart() 
+                    if str(r.get("chat_id", "")) == str(update.effective_chat.id)]
+    
+    all_active = active + smart_active
+    
+    if all_active:
         lines = []
-        for r in active:
+        for r in all_active:
             due = r.get("due", "")
             if due and len(due) > 5 and ":" in due:
                 try:
@@ -2964,17 +2969,26 @@ async def _send_reminder_list(update: Update):
                     due_display = due
             else:
                 due_display = due
+            
             if r.get("is_smart", False):
                 priority = r.get("priority", "MEDIUM")
                 config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
                 lines.append(f"  {config['emoji']} #{r['id']} {due_display} — {r['text']} (Smart-{priority})")
             else:
                 lines.append(f"  ⏰ #{r['id']} {due_display} — {r['text']}")
-            
+        
+        normal_count = len(active)
+        smart_count = len(smart_active)
+        total_count = len(all_active)
+        
+        header = f"⏰ *Active Reminders ({total_count}):*"
+        if smart_count > 0:
+            header += f"\n_Normal: {normal_count} | Smart: {smart_count}_"
+        
         await update.message.reply_text(
-            f"⏰ *Active Reminders ({len(active)}):*\n\n" + "\n".join(lines) + "\n\n"
+            f"{header}\n\n" + "\n".join(lines) + "\n\n"
             f"/delremind id — Delete karo\n/snooze5 id — Snooze\n/remind 30m Chai — Naya set karo\n"
-            f"/smartlist — Smart reminders",
+            f"/smartlist — Smart reminders detail\n/smartcomplete id — Smart reminder band karo",
             parse_mode="Markdown"
         )
     else:
