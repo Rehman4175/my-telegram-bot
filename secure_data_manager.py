@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER — FIXED v7
+SECURE DATA MANAGER — FIXED v7 (COMPLETE)
 - ID columns added to all sheets
 - Fixed reminder store integrated with reminder_bot.py
 - Google Sheets sync working for reminders
 - Added tomorrow_events() method for CalendarStore
 - Channel logger for personal space
 - MemoryStore.add() fixed with category parameter
-- Smart reminder counter separated from normal reminders
+- Smart reminder counter separate from normal reminders
+- Added get_active_smart(), find_root_parent(), acknowledge_chain(), process_followup() methods
 - All features working
 """
 
@@ -922,7 +923,8 @@ class SmartReminderStore:
             "acknowledged": False,
             "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
             "last_fired": "",
-            "is_smart": True
+            "is_smart": True,
+            "parent_id": None
         }
         
         self.store.data["list"].append(reminder)
@@ -953,6 +955,7 @@ class SmartReminderStore:
                 and r.get("due", "") <= now]
 
     def get_active_smart(self):
+        """Get all active (non-acknowledged, non-triggered) smart reminders"""
         return [r for r in self.get_all() 
                 if not r.get("triggered", False) 
                 and not r.get("acknowledged", False)]
@@ -984,18 +987,91 @@ class SmartReminderStore:
                 return True
         return False
 
-    def acknowledge_chain(self, root_id: int) -> int:
-        """Acknowledge all reminders in a chain"""
+    def find_root_parent(self, reminder_id: int) -> int:
+        """Recursively find the root parent of a smart reminder chain"""
+        visited = set()
+        current_id = reminder_id
+        
+        for _ in range(50):
+            if current_id in visited:
+                break
+            visited.add(current_id)
+            
+            found = False
+            for r in self.store.data.get("list", []):
+                if r.get("id") == current_id:
+                    parent = r.get("parent_id")
+                    if parent and parent != current_id and parent is not None:
+                        current_id = parent
+                        found = True
+                        break
+            if not found:
+                break
+        
+        return current_id
+
+    def acknowledge_chain(self, reminder_id: int) -> int:
+        """Acknowledge entire smart reminder chain from root"""
+        root_id = self.find_root_parent(reminder_id)
         count = 0
-        for r in self.store.data["list"]:
-            if r.get("parent_id") == root_id or r["id"] == root_id:
+        
+        for r in self.store.data.get("list", []):
+            r_id = r.get("id")
+            r_parent = r.get("parent_id")
+            
+            if r_id == root_id or (r_parent and r_parent == root_id) or r_id == reminder_id:
                 if not r.get("acknowledged", False):
                     r["acknowledged"] = True
                     r["acknowledged_at"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
                     count += 1
+        
         if count > 0:
             self.store.save()
+            log.info(f"✅ Acknowledged {count} smart reminders (root: {root_id})")
+        
         return count
+
+    def process_followup(self, reminder: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Create follow-up reminder for smart reminder chain"""
+        if reminder.get("acknowledged", False):
+            return None
+        
+        priority = reminder.get("priority", "MEDIUM")
+        current_repeat = reminder.get("current_repeat", 0)
+        max_repeats = reminder.get("max_repeats", 6)
+        repeat_until_done = reminder.get("repeat_until_done", False)
+        
+        if not repeat_until_done and current_repeat >= max_repeats:
+            log.info(f"Smart reminder #{reminder['id']} reached max repeats")
+            return None
+        
+        next_interval = reminder.get("repeat_interval", 15)
+        next_due = now_ist() + timedelta(minutes=next_interval)
+        next_timestamp = next_due.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Prepare follow-up text with attempt info
+        if current_repeat >= 1:
+            followup_text = f"⚠️ Reminder #{reminder['id']} (Attempt {current_repeat + 1}/{max_repeats}): {reminder['text']}"
+        else:
+            followup_text = f"🔁 {reminder['text']}"
+        
+        followup = self.add(
+            chat_id=reminder["chat_id"],
+            text=followup_text,
+            due_timestamp=next_timestamp,
+            priority=priority,
+            repeat_until_done=repeat_until_done,
+            repeat_interval=next_interval,
+            max_repeats=max_repeats
+        )
+        
+        # Set parent ID for chain tracking
+        followup["parent_id"] = reminder.get("parent_id", reminder["id"])
+        followup["current_repeat"] = current_repeat + 1
+        self.store.save()
+        
+        log.info(f"🔄 Smart follow-up #{followup['id']} scheduled for {next_timestamp}")
+        return followup
 
     def delete(self, rid):
         self.store.data["list"] = [r for r in self.get_all() if r["id"] != rid]
@@ -1010,7 +1086,8 @@ class SmartReminderStore:
         self.store.data["list"] = [r for r in self.get_all() if not r.get("triggered", False)]
         after = len(self.store.data["list"])
         self.store.save()
-        log.info(f"🧹 Cleaned {before - after} triggered smart reminders")
+        if before - after > 0:
+            log.info(f"🧹 Cleaned {before - after} triggered smart reminders")
         return before - after
 
 
@@ -1472,4 +1549,5 @@ log.info(f"  GitHub : {'✅' if repo_manager.is_connected else '⚠️'}")
 log.info(f"  Sheets : {'✅' if sheets_backup.connected else '❌'}")
 log.info(f"  Channel Logger: {'✅ Enabled' if PERSONAL_LOG_CHANNEL else '❌ Disabled'}")
 log.info(f"  Smart Reminders: Separate smart_counter configured")
+log.info(f"  Smart Reminder Methods: get_active_smart(), find_root_parent(), acknowledge_chain(), process_followup()")
 log.info("=" * 60)
