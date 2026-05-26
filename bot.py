@@ -34,6 +34,7 @@ ALL v17 FEATURES RESTORED + ALL v18.x FIXES:
   ✅ kaam_soft patterns restored
   ✅ Smart reminders use separate smart_counter (secure_data_manager)
   ✅ No ID conflict between normal and smart reminders
+  ✅ reminder_job checks BOTH normal AND smart reminders
 """
 
 import os, json, logging, time
@@ -1628,7 +1629,7 @@ async def cmd_smart_complete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ════════════════════════════════════════════════════
-# DIARY COMMANDS (NO PASSWORD)
+# DIARY COMMANDS (NO PASSWORD) - FULL VERSION
 # ════════════════════════════════════════════════════
 
 async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2159,7 +2160,7 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ════════════════════════════════════════════════════
-# REMINDER JOB (with persistent deduplication)
+# REMINDER JOB - CHECKS BOTH NORMAL AND SMART REMINDERS
 # ════════════════════════════════════════════════════
 
 FIRED_TRACKER_FILE = os.path.join(DATA_DIR, "fired_reminders.json")
@@ -2244,6 +2245,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     fired_tracker = _load_fired_tracker()
     today_key = now.strftime("%Y-%m-%d")
     
+    # ── CHECK NORMAL REMINDERS (reminders store) ──
     active_reminders = reminders.all_active()
     
     for r in active_reminders:
@@ -2259,7 +2261,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             if due_min == now_str_full:
                 # Deduplication check
                 rid = str(r.get("id", ""))
-                fire_key = f"{rid}_{due_min}"
+                fire_key = f"normal_{rid}_{due_min}"
                 
                 if fire_key in fired_tracker and fired_tracker[fire_key].get("fired"):
                     continue
@@ -2303,6 +2305,71 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     _log_action("Bot", "alarm_fired", f"Alarm #{r['id']} at {now_hm}: {r['text']}")
                 except Exception as e:
                     log.error(f"Failed to send alarm: {e}")
+    
+    # ── CHECK SMART REMINDERS (smart_reminders store) ──
+    smart_active = smart_reminders.get_active_smart()
+    
+    for r in smart_active:
+        if r.get("acknowledged", False):
+            continue
+        reminder_due = r.get("due", "")
+        
+        if not reminder_due:
+            continue
+            
+        if len(reminder_due) > 10:
+            due_min = reminder_due[:16]
+            if due_min == now_str_full:
+                # Deduplication check
+                rid = str(r.get("id", ""))
+                fire_key = f"smart_{rid}_{due_min}"
+                
+                if fire_key in fired_tracker and fired_tracker[fire_key].get("fired"):
+                    continue
+                
+                fired_tracker[fire_key] = {"fired": True, "date": today_key, "time": now_hm}
+                _save_fired_tracker(fired_tracker)
+                
+                try:
+                    due_dt = datetime.strptime(reminder_due, "%Y-%m-%d %H:%M:%S")
+                    due_time_display = due_dt.strftime("%I:%M %p")
+                except:
+                    due_time_display = reminder_due
+                
+                priority = r.get("priority", "MEDIUM")
+                config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
+                prefix = config["prefix"]
+                current_repeat = r.get("current_repeat", 0)
+                max_repeats = r.get("max_repeats", config["max_repeats"])
+                progress = f"\n\n📊 *Progress:* Attempt {current_repeat + 1}/{max_repeats}"
+                
+                alert = (f"{prefix}🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display} BAJ GAYE!*\n{'━' * 20}\n\n"
+                         f"🔔 *{r['text'].upper()}*{progress}\n\n"
+                         f"😴 Snooze: /snooze5 {r['id']} | /snooze10 {r['id']}\n"
+                         f"🗑️ Delete: /delremind {r['id']}\n"
+                         f"✅ Complete: /smartcomplete {r['id']}")
+                
+                buttons = [
+                    InlineKeyboardButton("✅ Complete - Stop Reminding", callback_data=f"smart_complete_{r['id']}"),
+                    InlineKeyboardButton("⏰ Snooze 5min", callback_data=f"smart_snooze5_{r['id']}"),
+                    InlineKeyboardButton("🔁 Remind Again", callback_data=f"smart_again_{r['id']}"),
+                ]
+                keyboard = InlineKeyboardMarkup([buttons])
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(r["chat_id"]), text=alert,
+                        reply_markup=keyboard, parse_mode="Markdown"
+                    )
+                    smart_reminders.mark_triggered(r["id"])
+                    
+                    # Schedule follow-up
+                    if not r.get("acknowledged", False):
+                        _process_smart_followup(r)
+                    
+                    _log_action("Bot", "alarm_fired", f"Smart Alarm #{r['id']} at {now_hm}: {r['text']}")
+                except Exception as e:
+                    log.error(f"Failed to send smart alarm: {e}")
 
 
 # ════════════════════════════════════════════════════
@@ -2310,9 +2377,10 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════
 
 async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle alarm OK button press"""
+    """Handle alarm OK button press for both normal and smart reminders"""
     query = update.callback_query
     await query.answer("✅ Alarm band!")
+    
     if query.data.startswith("ok_"):
         try:
             rid = int(query.data.split("_")[1])
@@ -2342,6 +2410,58 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.error(f"OK button error: {e}")
             await query.edit_message_text("❌ Error stopping alarm!")
+    
+    elif query.data.startswith("smart_complete_"):
+        try:
+            rid = int(query.data.split("_")[2])
+            count = _acknowledge_smart_chain(rid)
+            await query.edit_message_text(
+                f"✅ *Smart Reminder Completed!* 🎉\n\nStopped {count} reminder(s). Alhamdulillah!",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            log.error(f"Smart complete error: {e}")
+            await query.edit_message_text("❌ Error!")
+    
+    elif query.data.startswith("smart_snooze5_"):
+        try:
+            rid = int(query.data.split("_")[2])
+            target = smart_reminders.get_by_id(rid)
+            if target:
+                smart_reminders.acknowledge(rid, "Snoozed 5min")
+                new_dt = now_ist() + timedelta(minutes=5)
+                _add_smart_reminder(
+                    target["chat_id"], target["text"], 
+                    new_dt.strftime("%Y-%m-%d %H:%M:%S"), 
+                    target.get("priority", "MEDIUM"), 
+                    target.get("repeat_until_done", False)
+                )
+                await query.edit_message_text(f"😴 *Snoozed 5 minutes!*", parse_mode="Markdown")
+            else:
+                await query.edit_message_text("❌ Reminder not found!")
+        except Exception as e:
+            log.error(f"Smart snooze error: {e}")
+            await query.edit_message_text("❌ Error!")
+    
+    elif query.data.startswith("smart_again_"):
+        try:
+            rid = int(query.data.split("_")[2])
+            target = smart_reminders.get_by_id(rid)
+            if target:
+                smart_reminders.acknowledge(rid, "Remind again")
+                new_dt = now_ist() + timedelta(minutes=target.get("repeat_interval", 15))
+                _add_smart_reminder(
+                    target["chat_id"], target["text"], 
+                    new_dt.strftime("%Y-%m-%d %H:%M:%S"), 
+                    target.get("priority", "MEDIUM"), 
+                    target.get("repeat_until_done", False)
+                )
+                await query.edit_message_text(f"🔁 *Will remind again!*", parse_mode="Markdown")
+            else:
+                await query.edit_message_text("❌ Reminder not found!")
+        except Exception as e:
+            log.error(f"Smart again error: {e}")
+            await query.edit_message_text("❌ Error!")
 
 
 # ════════════════════════════════════════════════════
@@ -3281,7 +3401,7 @@ def main():
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
-    app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^ok_"))
+    app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^(ok_|smart_complete_|smart_snooze5_|smart_again_)"))
     
     # Natural language message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -3290,7 +3410,7 @@ def main():
     if app.job_queue:
         # Main reminder checker - every 60 seconds
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
-        log.info("⏰ Reminder job scheduled (every 60s)")
+        log.info("⏰ Reminder job scheduled (every 60s) - checks BOTH normal AND smart reminders")
         
         # Smart Daily Summary checker - runs every 60 seconds
         app.job_queue.run_repeating(smart_daily_summary, interval=60, first=30)
@@ -3330,7 +3450,7 @@ def main():
                 try:
                     await context.bot.send_message(
                         chat_id=cid,
-                        text="🟢 *Rk Bot v18.5 Active!*\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n\n_Alhamdulillah!_",
+                        text="🟢 *Rk Bot v18.5 Active!*\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n✅ reminder_job checks BOTH stores\n\n_Alhamdulillah!_",
                         parse_mode="Markdown"
                     )
                     log.info(f"Startup notification sent to {cid}")
@@ -3346,6 +3466,7 @@ def main():
     # ── Start Bot ──
     log.info("✅ Bot ready! Starting polling...")
     log.info("📊 Daily summaries will now trigger automatically every 60 seconds check")
+    log.info("📌 reminder_job checks BOTH reminders (normal) AND smart_reminders stores")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
