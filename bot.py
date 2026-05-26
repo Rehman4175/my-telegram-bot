@@ -2764,17 +2764,19 @@ def parse_user_message(user_msg: str):
         due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
         
         text = user_msg
-        remove_words = reminder_keywords + ['kal', 'kl', 'aaj', 'parso', 'subha', 'subah', 
-                    'shaam', 'raat', 'baje', 'bajay', 'am', 'pm', 'mein', 'me', 'ko', 'pe']
-        for rw in remove_words:
-            text = _re.sub(r'\b' + _re.escape(rw) + r'\b', '', text, flags=_re.IGNORECASE)
-        text = _re.sub(r'\d{1,2}[:]\d{2}', '', text)
-        text = _re.sub(r'\d{1,2}\s*(?:baje|bajay|am|pm)', '', text)
-        text = text.strip()
-        if not text or len(text) < 2:
-            text = "Reminder"
-        
-        return ("remind", {"time": due_timestamp, "text": text})
+    remove_words = reminder_keywords + ['kal', 'kl', 'aaj', 'parso', 'subha', 'subah',
+                'shaam', 'raat', 'baje', 'bajay', 'am', 'pm', 'mein', 'me', 'ko', 'pe',
+                'add', 'kro', 'karo', 'reminder', 'set']  # ← 'add', 'kro', 'karo' add karo
+    for rw in remove_words:
+        text = _re.sub(r'\b' + _re.escape(rw) + r'\b', '', text, flags=_re.IGNORECASE)
+    # Date bhi text se hatao
+    if date_str:
+        text = _re.sub(r'\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*', '', text, flags=_re.IGNORECASE)
+    text = text.strip()
+    if not text or len(text) < 2:
+        text = "Reminder"
+    
+    return ("remind", {"time": remind_dt.strftime("%Y-%m-%d %H:%M:%S"), "text": text})
     
     # ── MEMORY TRIGGERS ──
     memory_triggers = ["yaad rakhna", "memory mein save", "memory me save", 
