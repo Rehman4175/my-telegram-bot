@@ -1787,8 +1787,8 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         else:
             lines = []
-            for e in entries:
-                lines.append(f"🕐 *{e['time']}*\n{e['text']}")
+            for idx, e in enumerate(entries, 1):
+                lines.append(f"📌 *#{idx}* 🕐 *{e['time']}*\n{e['text']}")
             await update.message.reply_text(
                 f"📖 *Aaj ki Diary ({get_today_str()}):*\n\n" + "\n\n".join(lines) +
                 f"\n\n📚 _Purani entries: /diary all_",
@@ -1826,7 +1826,7 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for i in range(7):
             date_key = (today_d - timedelta(days=i)).strftime("%Y-%m-%d")
             for e in all_entries.get(date_key, []):
-                week_entries.append(f"📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text']}")
+                week_entries.append(f"📌 *#{len(week_entries)+1}* 📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text']}")
         
         _log_action(user_name, "diary_view", f"Viewed week ({len(week_entries)} entries)")
         if not week_entries:
@@ -1846,7 +1846,7 @@ async def cmd_diary_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         preview = []
         for date_key in dates[:10]:
             for e in all_entries[date_key][:2]:
-                preview.append(f"📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text'][:150]}")
+                      preview.append(f"📌 *#{len(preview)+1}* 📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text'][:150]}")
         
         _log_action(user_name, "diary_view", f"Viewed all ({total_count} total entries)")
         
@@ -1933,7 +1933,7 @@ async def _send_diary_week(update_or_msg, user_name="User"):
     for i in range(7):
         date_key = (today_d - timedelta(days=i)).strftime("%Y-%m-%d")
         for e in all_entries.get(date_key, []):
-            week_entries.append(f"📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text']}")
+              week_entries.append(f"📌 *#{len(week_entries)+1}* 📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text']}")
     
     _log_action(user_name, "diary_view", f"Viewed week ({len(week_entries)} entries)")
     
@@ -1965,7 +1965,7 @@ async def _send_diary_all(update_or_msg, user_name="User"):
         preview = []
         for date_key in dates[:10]:
             for e in all_entries[date_key][:2]:
-                preview.append(f"📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text'][:200]}")
+                  preview.append(f"📌 *#{len(preview)+1}* 📅 *{date_key}* 🕐 {e.get('time','')}\n{e['text'][:200]}")
         
         msg_text = f"📖 *Total {total_count} Diary Entries*\n\n"
         msg_text += "*Latest Entries:*\n\n"
@@ -1994,7 +1994,7 @@ async def _send_diary_today(update: Update):
             parse_mode="Markdown"
         )
     else:
-        lines = "\n\n".join(f"🕐 {e['time']}\n{e['text']}" for e in entries)
+            lines = "\n\n".join(f"📌 *#{i+1}* 🕐 {e['time']}\n{e['text']}" for i, e in enumerate(entries))
         await update.message.reply_text(
             f"📖 *Aaj ki Diary ({today_str_val}):*\n\n{lines}\n\n"
             f"📚 _Purani entries: /diary all_",
