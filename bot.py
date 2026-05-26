@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PERSONAL AI ASSISTANT — RK BOT v18.4 COMPLETE
+PERSONAL AI ASSISTANT — RK BOT v18.5 COMPLETE
 ===============================================
 ALL v17 FEATURES RESTORED + ALL v18.x FIXES:
   ✅ Smart Reminder time parsing bug fixed
@@ -32,6 +32,8 @@ ALL v17 FEATURES RESTORED + ALL v18.x FIXES:
   ✅ show_all_diary handler restored
   ✅ add_bill/add_calendar handlers restored
   ✅ kaam_soft patterns restored
+  ✅ Smart reminders use separate smart_counter (secure_data_manager)
+  ✅ No ID conflict between normal and smart reminders
 """
 
 import os, json, logging, time
@@ -42,7 +44,7 @@ import re
 import asyncio
 
 from secure_data_manager import (
-    memory, tasks, diary, habits, expenses, goals, reminders,
+    memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
     water, bills, calendar, chat_hist, now_ist, today_str, now_str,
     sheets_backup, DATA_DIR, repo_manager
 )
@@ -891,7 +893,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Complete help message with all commands"""
     await update.message.reply_text(
-        "📖 *COMMANDS — Rk Bot v18.4*\n\n"
+        "📖 *COMMANDS — Rk Bot v18.5*\n\n"
         "💬 *Quick Commands (One-line):*\n"
         "• `done 3` — Task #3 complete karo\n"
         "• `add chai 20` — Expense add karo\n"
@@ -982,6 +984,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"💸 Expenses: {len(_get_expenses_list())}\n"
         f"🏃 Habits: {len(habits.all())}\n"
         f"⏰ Reminders: {len(reminders.get_all())}\n"
+        f"🧠 Smart Reminders: {len(smart_reminders.get_all())}\n"
         f"📅 Calendar: {len(all_events)} events\n"
         f"💳 Bills: {len(bills.all_active())} active\n"
         f"💧 Water: {water.today_total()}/{water.goal()}ml today\n"
@@ -1429,7 +1432,7 @@ async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ════════════════════════════════════════════════════
-# SMART REMINDER INTELLIGENCE
+# SMART REMINDER INTELLIGENCE (UPDATED - uses smart_reminders)
 # ════════════════════════════════════════════════════
 
 SMART_PRIORITY_CONFIG = {
@@ -1439,180 +1442,43 @@ SMART_PRIORITY_CONFIG = {
 }
 
 def _get_next_smart_id():
-    """Get next unique ID for smart reminder"""
-    from secure_data_manager import reminders
-    reminders.store.data["counter"] = reminders.store.data.get("counter", 0) + 1
-    return reminders.store.data["counter"]
+    """Get next unique ID for smart reminder using smart_reminders store"""
+    from secure_data_manager import smart_reminders
+    smart_reminders.store.data["smart_counter"] = smart_reminders.store.data.get("smart_counter", 0) + 1
+    return smart_reminders.store.data["smart_counter"]
 
 def _add_smart_reminder(chat_id: int, text: str, due_timestamp: str, priority: str = "MEDIUM", repeat_until_done: bool = False):
-    """Add a smart reminder with priority and repeat logic"""
-    from secure_data_manager import reminders, sheets_backup
+    """Add a smart reminder with priority and repeat logic - uses smart_reminders store"""
+    from secure_data_manager import smart_reminders, sheets_backup
     
     config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
     
-    smart_reminder = {
-        "id": _get_next_smart_id(),
-        "chat_id": chat_id,
-        "text": text,
-        "due": due_timestamp,
-        "repeat": "smart",
-        "priority": priority,
-        "repeat_until_done": repeat_until_done,
-        "repeat_interval": config["repeat_interval"],
-        "max_repeats": config["max_repeats"],
-        "current_repeat": 0,
-        "triggered": False,
-        "acknowledged": False,
-        "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
-        "last_fired": "",
-        "last_fired_minute": "",
-        "is_smart": True
-    }
+    reminder = smart_reminders.add(
+        chat_id=chat_id,
+        text=text,
+        due_timestamp=due_timestamp,
+        priority=priority,
+        repeat_until_done=repeat_until_done,
+        repeat_interval=config["repeat_interval"],
+        max_repeats=config["max_repeats"]
+    )
     
-    reminders.store.data["list"].append(smart_reminder)
-    reminders.store.save()
-    
-    try:
-        row = [
-            smart_reminder.get("id", ""),
-            smart_reminder.get("due", ""),
-            smart_reminder.get("text", ""),
-            f"Smart-{priority}",
-            "Active",
-            smart_reminder.get("created_at", ""),
-            smart_reminder.get("chat_id", ""),
-            "",
-            "False",
-            f"Repeat:{config['repeat_interval']}min"
-        ]
-        sheets_backup._append("Reminders", row)
-    except Exception as e:
-        log.debug(f"Sheet sync error: {e}")
-    
-    return smart_reminder
+    return reminder
 
 def _process_smart_followup(reminder):
-    """Create follow-up reminder for smart reminder chain"""
-    from secure_data_manager import reminders, sheets_backup
-    
-    if reminder.get("acknowledged", False):
-        return None
-    
-    priority = reminder.get("priority", "MEDIUM")
-    config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
-    current_repeat = reminder.get("current_repeat", 0)
-    max_repeats = reminder.get("max_repeats", config["max_repeats"])
-    repeat_until_done = reminder.get("repeat_until_done", False)
-    
-    if not repeat_until_done and current_repeat >= max_repeats:
-        log.info(f"Smart reminder #{reminder['id']} reached max repeats")
-        return None
-    
-    next_interval = reminder.get("repeat_interval", config["repeat_interval"])
-    next_due = now_ist() + timedelta(minutes=next_interval)
-    next_timestamp = next_due.strftime("%Y-%m-%d %H:%M:%S")
-    
-    followup_text = f"🔁 {reminder['text']}"
-    if current_repeat >= 1:
-        followup_text = f"⚠️ Reminder #{reminder['id']} (Attempt {current_repeat + 1}/{max_repeats}): {reminder['text']}"
-    
-    new_id = _get_next_smart_id()
-    followup = {
-        "id": new_id,
-        "chat_id": reminder["chat_id"],
-        "text": followup_text,
-        "due": next_timestamp,
-        "repeat": "smart_followup",
-        "priority": priority,
-        "repeat_until_done": repeat_until_done,
-        "repeat_interval": next_interval,
-        "max_repeats": max_repeats,
-        "current_repeat": current_repeat + 1,
-        "triggered": False,
-        "acknowledged": False,
-        "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
-        "parent_id": reminder.get("parent_id", reminder["id"]),
-        "last_fired_minute": "",
-        "is_smart": True
-    }
-    
-    reminders.store.data["list"].append(followup)
-    reminders.store.save()
-    
-    try:
-        row = [
-            followup.get("id", ""),
-            followup.get("due", ""),
-            followup.get("text", ""),
-            f"SmartFollowup-{priority}",
-            "Active",
-            followup.get("created_at", ""),
-            followup.get("chat_id", ""),
-            "",
-            "False",
-            f"Followup of #{reminder['id']}"
-        ]
-        sheets_backup._append("Reminders", row)
-    except Exception as e:
-        log.debug(f"Sheet sync error: {e}")
-    
-    log.info(f"🔄 Smart follow-up #{new_id} scheduled for {next_timestamp}")
-    return followup
+    """Create follow-up reminder for smart reminder chain - uses smart_reminders"""
+    from secure_data_manager import smart_reminders
+    return smart_reminders.process_followup(reminder)
 
-def _find_root_parent(reminder_id, reminders_store):
-    """Recursively find the root parent of a smart reminder chain"""
-    if not reminders_store or not hasattr(reminders_store, 'data'):
-        return reminder_id
-    
-    data = reminders_store.data
-    if not data or "list" not in data:
-        return reminder_id
-    
-    visited = set()
-    current_id = reminder_id
-    max_iterations = 50
-    
-    for _ in range(max_iterations):
-        if current_id in visited:
-            break
-        visited.add(current_id)
-        found = False
-        for r in data.get("list", []):
-            if r and r.get("id") == current_id:
-                parent = r.get("parent_id")
-                if parent and parent != current_id and parent is not None:
-                    current_id = parent
-                    found = True
-                    break
-        if not found:
-            break
-    
-    return current_id
+def _find_root_parent(reminder_id, reminders_store=None):
+    """Recursively find the root parent of a smart reminder chain - uses smart_reminders"""
+    from secure_data_manager import smart_reminders
+    return smart_reminders.find_root_parent(reminder_id)
 
 def _acknowledge_smart_chain(reminder_id: int):
-    """Acknowledge entire smart reminder chain from root"""
-    from secure_data_manager import reminders
-    
-    root_id = _find_root_parent(reminder_id, reminders)
-    
-    count = 0
-    for r in reminders.store.data.get("list", []):
-        if not r:
-            continue
-        r_id = r.get("id")
-        r_parent = r.get("parent_id")
-        
-        if r_id == root_id or (r_parent and r_parent == root_id) or r_id == reminder_id:
-            if not r.get("acknowledged", False):
-                r["acknowledged"] = True
-                r["acknowledged_at"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
-                count += 1
-    
-    if count > 0:
-        reminders.store.save()
-        log.info(f"✅ Acknowledged {count} smart reminders (root: {root_id})")
-    
-    return count
+    """Acknowledge entire smart reminder chain from root - uses smart_reminders"""
+    from secure_data_manager import smart_reminders
+    return smart_reminders.acknowledge_chain(reminder_id)
 
 
 async def cmd_smart_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1702,14 +1568,12 @@ async def cmd_smart_remind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_smart_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """List all active smart reminders"""
-    from secure_data_manager import reminders
+    """List all active smart reminders - uses smart_reminders"""
+    from secure_data_manager import smart_reminders
     
-    active = []
-    for r in reminders.get_all():
-        if r.get("is_smart") and not r.get("acknowledged", False):
-            if r.get("chat_id") == update.effective_chat.id:
-                active.append(r)
+    active = smart_reminders.get_active_smart()
+    # Filter by chat_id
+    active = [r for r in active if r.get("chat_id") == update.effective_chat.id]
     
     if not active:
         await update.message.reply_text(
@@ -3345,7 +3209,7 @@ def main():
     cleanup_before_start()
     
     log.info("=" * 60)
-    log.info("Rk Bot v18.4 COMPLETE | ALL v17 Features + ALL v18.x Improvements + ALL Fixes")
+    log.info("Rk Bot v18.5 COMPLETE | ALL v17 Features + ALL v18.x Improvements + ALL Fixes")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info(f"Sheets: {'Yes' if sheets_backup.connected else 'No'}")
     log.info(f"GitHub: {'Yes' if repo_manager.is_connected else 'No'}")
@@ -3428,11 +3292,7 @@ def main():
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s)")
         
-        # ✅ FIXED: Use run_repeating for daily summaries instead of run_daily
-        # This ensures they fire even without user interaction
-        
         # Smart Daily Summary checker - runs every 60 seconds
-        # The function itself checks if it's the right time to send
         app.job_queue.run_repeating(smart_daily_summary, interval=60, first=30)
         log.info("📊 Smart Daily Summary checker scheduled (every 60s)")
         
@@ -3440,22 +3300,20 @@ def main():
         app.job_queue.run_repeating(proactive_followup_job, interval=10800, first=300)
         log.info("🔄 Proactive followup scheduled (every 3 hours)")
         
-        # Weekly Review checker - every hour, function checks if Sunday 9 PM
+        # Weekly Review checker - every hour
         app.job_queue.run_repeating(weekly_review_job, interval=3600, first=120)
         log.info("📊 Weekly review checker scheduled (every hour)")
         
-        # Expense Insight checker - every 6 hours, function checks if Fri/Sat
+        # Expense Insight checker - every 6 hours
         app.job_queue.run_repeating(expense_insight_job, interval=21600, first=180)
         log.info("💰 Expense insight checker scheduled (every 6 hours)")
         
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
-    # ✅ FIXED: Send immediate startup notification to confirm bot is working
+    # Send immediate startup notification
     async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
-        """Send a test notification on startup to confirm jobs are working"""
         try:
-            # Get all known chat IDs
             chat_ids = set()
             for r in reminders.get_all():
                 if r.get("chat_id"):
@@ -3464,7 +3322,6 @@ def main():
                     except:
                         pass
             
-            # If no chat IDs found from reminders, try from chat_hist
             if not chat_ids:
                 log.warning("No chat IDs found for startup notification")
                 return
@@ -3473,7 +3330,7 @@ def main():
                 try:
                     await context.bot.send_message(
                         chat_id=cid,
-                        text="🟢 *Rk Bot v18.4 Active!*\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n\n_Alhamdulillah!_",
+                        text="🟢 *Rk Bot v18.5 Active!*\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n\n_Alhamdulillah!_",
                         parse_mode="Markdown"
                     )
                     log.info(f"Startup notification sent to {cid}")
