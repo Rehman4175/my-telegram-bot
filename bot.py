@@ -3418,7 +3418,39 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
 
 
 # ════════════════════════════════════════════════════
-# MAIN - FIXED JOB QUEUE FOR DAILY SUMMARIES
+# STARTUP NOTIFICATION FUNCTION (main se BAHAR)
+# ════════════════════════════════════════════════════
+
+async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
+    """Send startup message to all known chat IDs"""
+    try:
+        chat_ids = set()
+        for r in reminders.get_all():
+            if r.get("chat_id"):
+                try:
+                    chat_ids.add(int(r["chat_id"]))
+                except:
+                    pass
+
+        if not chat_ids:
+            log.warning("No chat IDs found for startup notification")
+            return
+
+        for cid in chat_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=cid,
+                    text="🟢 Rk Bot v18.5 Active!\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n✅ reminder job checks BOTH stores\n\nAlhamdulillah!"
+                )
+                log.info(f"Startup notification sent to {cid}")
+            except Exception as e:
+                log.error(f"Failed to send startup notification to {cid}: {e}")
+    except Exception as e:
+        log.error(f"Startup notification error: {e}")
+
+
+# ════════════════════════════════════════════════════
+# MAIN
 # ════════════════════════════════════════════════════
 
 def main():
@@ -3520,44 +3552,11 @@ def main():
         app.job_queue.run_repeating(expense_insight_job, interval=21600, first=180)
         log.info("💰 Expense insight checker scheduled (every 6 hours)")
 
-        # Startup notification - 5 second delay
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
-
-    # Send immediate startup notification
-async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
-    """Send startup message to all known chat IDs"""
-    try:
-        chat_ids = set()
-        for r in reminders.get_all():
-            if r.get("chat_id"):
-                try:
-                    chat_ids.add(int(r["chat_id"]))
-                except:
-                    pass
-
-        if not chat_ids:
-            log.warning("No chat IDs found for startup notification")
-            return
-
-        for cid in chat_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=cid,
-                    text="🟢 Rk Bot v18.5 Active!\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n✅ reminder job checks BOTH stores\n\nAlhamdulillah!"
-                )
-                log.info(f"Startup notification sent to {cid}")
-            except Exception as e:
-                log.error(f"Failed to send startup notification to {cid}: {e}")
-    except Exception as e:
-        log.error(f"Startup notification error: {e}")
-    
-    if app.job_queue:
-        app.job_queue.run_once(send_startup_notification, 5)
-        log.info("📢 Startup notification scheduled (5 sec delay)")
 
     # ── Start Bot ──
     log.info("✅ Bot ready! Starting polling...")
