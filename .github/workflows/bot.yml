@@ -2,22 +2,27 @@ name: Sakibur Bot 24/7
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # Har 5 min pe restart — agar crash ho to
-  workflow_dispatch:          # Manual trigger bhi
+    - cron: '*/5 * * * *'   # Har 5 min pe restart
+  workflow_dispatch:          # Manual trigger
+  push:
+    branches: [ main, master ]
 
-concurrency:
-  group: telegram-bot
-  cancel-in-progress: true    # Naya run aaya to purana band karo
+# Concurrency remove karte hain pehle (ye problem cause kar sakta hai)
+# concurrency:
+#   group: telegram-bot
+#   cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 280      # ~4.6 ghante, phir cron restart karta hai
+    timeout-minutes: 280      # ~4.6 ghante
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -30,11 +35,13 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Debug - Check secrets
         env:
-          GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
           if [ -n "$GOOGLE_CREDS_JSON" ]; then
@@ -50,16 +57,16 @@ jobs:
 
       - name: Start Bot
         env:
-          TELEGRAM_TOKEN:    ${{ secrets.Telegram_TOKEN }}
-          GEMINI_API_KEY:    ${{ secrets.Gemini_API_KEY }}
-          HF_TOKEN:          ${{ secrets.HF_TOKEN }}
-          MONGO_URI:         ${{ secrets.MONGO_URI }}
-          GOOGLE_CREDS_JSON: ${{ secrets.Google_CREDS_JSON }}
-          GROQ_API_KEY:      ${{ secrets.GROQ_API_KEY }}
-          ADMIN_CHAT_ID:     ${{ secrets.ADMIN_CHAT_ID }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           GB_TOKEN: ${{ secrets.GB_TOKEN }}
-          DIARY_PASSWORD:    ${{ secrets.DIARY_PASSWORD }}
-          DELETE_PASSWORD:   ${{ secrets.DELETE_PASSWORD }}
-          PERSONAL_LOG_CHANNEL:   ${{ secrets.PERSONAL_LOG_CHANNEL }}
-          PRIVATE_REPO_URL: "https://github.com/Rehman4175/my-bot-data.git"
+          DIARY_PASSWORD: ${{ secrets.DIARY_PASSWORD }}
+          DELETE_PASSWORD: ${{ secrets.DELETE_PASSWORD }}
+          PERSONAL_LOG_CHANNEL: ${{ secrets.PERSONAL_LOG_CHANNEL }}
+          PRIVATE_REPO_URL: ${{ secrets.PRIVATE_REPO_URL }}
         run: python bot.py
