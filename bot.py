@@ -3529,32 +3529,31 @@ def main():
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
     # Send immediate startup notification
-    async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
-        try:
-            chat_ids = set()
-            for r in reminders.get_all():
-                if r.get("chat_id"):
-                    try:
-                        chat_ids.add(int(r["chat_id"]))
-                    except:
-                        pass
-            
-            if not chat_ids:
-                log.warning("No chat IDs found for startup notification")
-                return
-            
-            for cid in chat_ids:
+async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat_ids = set()
+        for r in reminders.get_all():
+            if r.get("chat_id"):
                 try:
-                    await context.bot.send_message(
-                        chat_id=cid,
-                        text="🟢 *Rk Bot v18.5 Active!*\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n✅ reminder_job checks BOTH stores\n\n_Alhamdulillah!_",
-                        parse_mode="Markdown"
-                    )
-                    log.info(f"Startup notification sent to {cid}")
-                except Exception as e:
-                    log.error(f"Failed to send startup notification to {cid}: {e}")
-        except Exception as e:
-            log.error(f"Startup notification error: {e}")
+                    chat_ids.add(int(r["chat_id"]))
+                except:
+                    pass
+        
+        if not chat_ids:
+            log.warning("No chat IDs found for startup notification")
+            return
+        
+        for cid in chat_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=cid,
+                    text="🟢 Rk Bot v18.5 Active!\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n✅ reminder job checks BOTH stores\n\nAlhamdulillah!"
+                )
+                log.info(f"Startup notification sent to {cid}")
+            except Exception as e:
+                log.error(f"Failed to send startup notification to {cid}: {e}")
+    except Exception as e:
+        log.error(f"Startup notification error: {e}")
     
     if app.job_queue:
         app.job_queue.run_once(send_startup_notification, 5)
