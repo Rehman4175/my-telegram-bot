@@ -1994,7 +1994,7 @@ async def _send_diary_today(update: Update):
             parse_mode="Markdown"
         )
     else:
-            lines = "\n\n".join(f"📌 *#{i+1}* 🕐 {e['time']}\n{e['text']}" for i, e in enumerate(entries))
+        lines = "\n\n".join(f"📌 *#{i+1}* 🕐 {e['time']}\n{e['text']}" for i, e in enumerate(entries))
         await update.message.reply_text(
             f"📖 *Aaj ki Diary ({today_str_val}):*\n\n{lines}\n\n"
             f"📚 _Purani entries: /diary all_",
