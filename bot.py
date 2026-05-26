@@ -575,14 +575,15 @@ def auto_tag_memory(text):
 
 async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
     """
-    Smart daily summary - sends personalized reminders 5 times a day
+    Smart daily summary - sends as SMART REMINDER so it repeats until seen
     Times: 9:00 AM, 1:00 PM, 6:00 PM, 8:00 PM(habits), 9:00 PM IST
     """
     now = now_ist()
     current_time = now.strftime("%H:%M")
     
+    # Get chat IDs from BOTH stores
     chat_ids = set()
-    for r in reminders.get_all():
+    for r in list(reminders.get_all()) + list(smart_reminders.get_all()):
         if r.get("chat_id"):
             try:
                 chat_ids.add(int(r["chat_id"]))
@@ -602,13 +603,17 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
     today_str_val = get_today_str()
     
     msg = None
+    priority = "HIGH"        # Har summary HIGH priority
+    repeat_mins = 5          # Har 5 min repeat
+    max_repeats = 12         # Max 1 ghante tak (12 x 5min)
     
     # ── 9:00 AM - Morning Summary ──
     if current_time == "09:00":
         msg = f"☀️ *Assalamualaikum! Good Morning!* ☀️\n\n"
         msg += f"📋 *Aaj ke Pending Tasks:* {len(pending_tasks)}\n"
         if pending_tasks:
-            task_list = "\n".join([f"   {i+1}. {t['title'][:50]}" for i, t in enumerate(pending_tasks[:5])])
+            task_list = "\n".join([f"   {i+1}. {t['title'][:50]}" 
+                                   for i, t in enumerate(pending_tasks[:5])])
             msg += f"{task_list}\n"
             if len(pending_tasks) > 5:
                 msg += f"   ... aur {len(pending_tasks)-5} tasks\n"
@@ -626,6 +631,9 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
             msg += f"{event_list}\n"
         
         msg += f"\n💡 *InshAllah aaj ka din productive rahega!*"
+        priority = "HIGH"
+        repeat_mins = 5
+        max_repeats = 6   # 30 min tak repeat
     
     # ── 1:00 PM - Afternoon Reminder ──
     elif current_time == "13:00":
@@ -643,10 +651,14 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         
         msg += f"\n🏃 *Habits pending:* {len(habits_pending)}\n"
         msg += f"\n☕ *Lunch break! InshAllah baaki kaam bhi ho jayega!*"
+        priority = "MEDIUM"
+        repeat_mins = 10
+        max_repeats = 4   # 40 min tak repeat
     
     # ── 6:00 PM - Evening Summary ──
     elif current_time == "18:00":
-        completed_tasks = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str_val])
+        completed_tasks = len([t for t in tasks.all_tasks() 
+                               if t.get("done") and t.get("done_date") == today_str_val])
         
         msg = f"🌙 *Shaam ho gayi!* 🌙\n\n"
         msg += f"✅ *Aaj complete kiye:* {completed_tasks} tasks\n"
@@ -660,21 +672,27 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n💸 *Aaj ka kharcha:* Rs.{today_expense}\n"
         msg += f"💧 *Paani:* {today_water}ml/{water_goal}ml\n"
         msg += f"\n🌙 *InshAllah raat tak sab ho jayega!*"
+        priority = "HIGH"
+        repeat_mins = 5
+        max_repeats = 6   # 30 min tak repeat
     
     # ── 8:00 PM - Habit Streak Guard ──
     elif current_time == "20:00":
-        if habits_pending:
-            msg = f"⚠️ *Raat ho rahi hai! Ye habits abhi pending hain:*\n\n"
-            for h in habits_pending[:5]:
-                msg += f"   ⬜ #{h['id']} *{h['name']}*\n"
-            msg += f"\n🏃 *Jaldi kar lo! /hdone id se log karo!*\n"
-            msg += f"\n💪 _InshAllah streak tootne mat do!_"
-        else:
-            return  # Sab habits done, chup chaap
+        if not habits_pending:
+            return  # Sab done, skip
+        msg = f"⚠️ *Raat ho rahi hai! Ye habits abhi pending hain:*\n\n"
+        for h in habits_pending[:5]:
+            msg += f"   ⬜ #{h['id']} *{h['name']}*\n"
+        msg += f"\n🏃 *Jaldi kar lo! /hdone id se log karo!*\n"
+        msg += f"\n💪 _InshAllah streak tootne mat do!_"
+        priority = "HIGH"
+        repeat_mins = 5
+        max_repeats = 8   # 40 min tak repeat
     
     # ── 9:00 PM - Night Summary ──
     elif current_time == "21:00":
-        completed_tasks = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str_val])
+        completed_tasks = len([t for t in tasks.all_tasks() 
+                               if t.get("done") and t.get("done_date") == today_str_val])
         
         msg = f"🌟 *Assalamualaikum! Day Summary* 🌟\n\n"
         msg += f"✅ *Aaj complete kiye:* {completed_tasks} tasks\n"
@@ -696,19 +714,84 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
             msg += f"📅 *Kal koi event nahi hai*\n"
         
         msg += f"\n💤 *Good night! InshAllah kal phir se shuru karenge!*"
+        priority = "MEDIUM"
+        repeat_mins = 10
+        max_repeats = 3   # 30 min tak repeat
+    
     else:
         return
     
-    if msg:
-        msg += f"\n\n_/briefing - Detailed summary_"
+    if not msg:
+        return
+    
+    # Deduplication key - ek time slot mein sirf ek baar bhejo
+    dedup_key = f"daily_summary_{current_time}_{today_str_val}"
+    dedup_file = os.path.join(DATA_DIR, "summary_dedup.json")
+    
+    try:
+        if os.path.exists(dedup_file):
+            with open(dedup_file, 'r') as f:
+                dedup_data = json.load(f)
+        else:
+            dedup_data = {}
         
-        for chat_id in chat_ids:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                log.info(f"Daily summary sent to {chat_id} at {current_time}")
-            except Exception as e:
-                log.error(f"Failed to send daily summary to {chat_id}: {e}")
-
+        if dedup_key in dedup_data:
+            log.info(f"Summary already sent for {current_time} today, skipping")
+            return
+        
+        dedup_data[dedup_key] = now.strftime("%Y-%m-%d %H:%M:%S")
+        # Purane entries clean karo (sirf aaj ke rakho)
+        dedup_data = {k: v for k, v in dedup_data.items() 
+                      if today_str_val in k}
+        
+        with open(dedup_file, 'w') as f:
+            json.dump(dedup_data, f)
+    except Exception as e:
+        log.warning(f"Dedup check failed: {e}")
+    
+    # ── SMART REMINDER KE ROOP MEIN BHEJO ──
+    # Pehle normal message bhejo
+    # Phir smart reminder set karo jo tab tak repeat kare jab tak seen na ho
+    
+    msg += f"\n\n_✅ Seen karne ke liye button dabao_\n_/briefing - Detailed summary_"
+    
+    for chat_id in chat_ids:
+        try:
+            # Smart reminder add karo - ye tab tak fire karega jab tak complete na ho
+            due_now = now.strftime("%Y-%m-%d %H:%M:%S")
+            
+            reminder = smart_reminders.add(
+                chat_id=chat_id,
+                text=msg,
+                due_timestamp=due_now,
+                priority=priority,
+                repeat_until_done=True,        # Tab tak repeat karo jab tak user complete na kare
+                repeat_interval=repeat_mins,
+                max_repeats=max_repeats
+            )
+            
+            # Turant bhi bhejo
+            buttons = [
+                InlineKeyboardButton(
+                    "✅ Dekh Liya - Band Karo", 
+                    callback_data=f"smart_complete_{reminder['id']}"
+                ),
+            ]
+            keyboard = InlineKeyboardMarkup([buttons])
+            
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text=msg,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            
+            log.info(f"Smart daily summary sent to {chat_id} at {current_time}, "
+                    f"reminder #{reminder['id']} will repeat every {repeat_mins}min "
+                    f"max {max_repeats} times")
+                    
+        except Exception as e:
+            log.error(f"Failed to send smart daily summary to {chat_id}: {e}")
 
 # ════════════════════════════════════════════════════
 # PROACTIVE FOLLOW-UP JOB
