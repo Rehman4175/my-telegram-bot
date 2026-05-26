@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SECURE DATA MANAGER — FIXED v6
+SECURE DATA MANAGER — FIXED v7
 - ID columns added to all sheets
 - Fixed reminder store integrated with reminder_bot.py
 - Google Sheets sync working for reminders
 - Added tomorrow_events() method for CalendarStore
 - Channel logger for personal space
+- MemoryStore.add() fixed with category parameter
+- Smart reminder counter separated from normal reminders
 - All features working
 """
 
@@ -583,28 +585,43 @@ class PrivateStore:
 
 
 # ================================================================
-# MEMORY STORE
+# MEMORY STORE (FIXED: added category="general" parameter)
 # ================================================================
 class MemoryStore:
     def __init__(self):
         self.store = PrivateStore("memory", {"facts": []})
 
-    def add(self, text):
+    def add(self, text: str, category: str = "general"):
+        """
+        Add a memory to the store
+        Args:
+            text: The memory text to save
+            category: Category of memory (health, finance, personal, work, general)
+        """
         facts = self.store.data.get("facts", [])
         new_id = len(facts) + 1
-        facts.append({"id": new_id, "f": text, "d": today_str()})
+        facts.append({
+            "id": new_id,
+            "f": text,
+            "d": today_str(),
+            "category": category
+        })
         self.store.data["facts"] = facts[-200:]
         self.store.save()
         try:
             sheets_backup.memory(text)
         except Exception:
             pass
+        return new_id
 
-    def add_fact(self, text):
-        return self.add(text)
+    def add_fact(self, text, category="general"):
+        return self.add(text, category)
 
     def get_all_facts(self):
         return self.store.data.get("facts", [])
+
+    def get_by_category(self, category):
+        return [f for f in self.store.data.get("facts", []) if f.get("category") == category]
 
     def delete(self, fid):
         self.store.data["facts"] = [f for f in self.store.data.get("facts", []) if f.get("id") != fid]
@@ -874,51 +891,53 @@ class GoalStore:
 
 
 # ================================================================
-# REMINDER MANAGER (FROM reminder_bot.py)
+# SMART REMINDER STORE (Separate counter: "smart_counter")
 # ================================================================
-_reminder_manager_instance = None
-
-def get_reminder_manager():
-    global _reminder_manager_instance
-    if _reminder_manager_instance is None:
-        try:
-            from reminder_bot import ReminderManager
-            # Pass sheets_backup for Google Sheets sync
-            _reminder_manager_instance = ReminderManager(PrivateStore, sheets_backup)
-            log.info("✅ ReminderManager loaded from reminder_bot.py with sheets sync")
-        except ImportError as e:
-            log.error(f"Could not import ReminderManager: {e}")
-            # Fallback to simple reminder store
-            _reminder_manager_instance = SimpleReminderStore()
-    return _reminder_manager_instance
-
-
-class SimpleReminderStore:
-    """Fallback reminder store if reminder_bot.py is not available"""
+class SmartReminderStore:
     def __init__(self):
-        self.store = PrivateStore("reminders", {"list": [], "counter": 0})
+        self.store = PrivateStore("smart_reminders", {"list": [], "smart_counter": 0})
 
-    def add(self, chat_id, text, due_timestamp, repeat="once"):
-        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
-        rid = self.store.data["counter"]
-        r = {
-            "id": rid, "chat_id": str(chat_id), "text": text,
-            "due": due_timestamp, "repeat": repeat, "triggered": False,
-            "acknowledged": False, "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S")
+    def _next_id(self) -> int:
+        """Get next unique ID using smart_counter"""
+        self.store.data["smart_counter"] = self.store.data.get("smart_counter", 0) + 1
+        return self.store.data["smart_counter"]
+
+    def add(self, chat_id: int, text: str, due_timestamp: str, priority: str = "MEDIUM", 
+            repeat_until_done: bool = False, repeat_interval: int = 15, max_repeats: int = 6):
+        now = now_ist()
+        rid = self._next_id()
+        
+        reminder = {
+            "id": rid,
+            "chat_id": chat_id,
+            "text": text,
+            "due": due_timestamp,
+            "repeat": "smart",
+            "priority": priority,
+            "repeat_until_done": repeat_until_done,
+            "repeat_interval": repeat_interval,
+            "max_repeats": max_repeats,
+            "current_repeat": 0,
+            "triggered": False,
+            "acknowledged": False,
+            "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "last_fired": "",
+            "is_smart": True
         }
-        self.store.data["list"].append(r)
+        
+        self.store.data["list"].append(reminder)
         self.store.save()
+        
         try:
-            sheets_backup.reminder(r, action="created")
+            sheets_backup.reminder(reminder, action="created")
         except Exception:
             pass
-        return r
+        
+        log.info(f"✅ Smart Reminder #{rid} added: '{text[:50]}' at {due_timestamp}")
+        return reminder
 
     def get_all(self):
         return self.store.data.get("list", [])
-
-    def all_active(self):
-        return [r for r in self.get_all() if not r.get("triggered") and not r.get("acknowledged")]
 
     def get_by_id(self, rid):
         for r in self.get_all():
@@ -926,51 +945,73 @@ class SimpleReminderStore:
                 return r
         return None
 
-    def delete(self, rid):
-        self.store.data["list"] = [r for r in self.get_all() if r["id"] != rid]
-        self.store.save()
+    def get_pending_smart(self):
+        now = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+        return [r for r in self.get_all() 
+                if not r.get("triggered", False) 
+                and not r.get("acknowledged", False)
+                and r.get("due", "") <= now]
+
+    def get_active_smart(self):
+        return [r for r in self.get_all() 
+                if not r.get("triggered", False) 
+                and not r.get("acknowledged", False)]
 
     def mark_triggered(self, rid):
         for r in self.store.data["list"]:
             if r["id"] == rid:
                 r["triggered"] = True
+                r["last_fired"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
                 self.store.save()
+                try:
+                    sheets_backup.reminder(r, action="update")
+                except Exception:
+                    pass
                 break
 
-    def acknowledge(self, rid, reason=""):
+    def acknowledge(self, rid, reason="User pressed OK"):
         for r in self.store.data["list"]:
             if r["id"] == rid:
                 r["acknowledged"] = True
+                r["acknowledged_at"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+                r["acknowledge_reason"] = reason
                 self.store.save()
+                try:
+                    sheets_backup.reminder(r, action="update")
+                except Exception:
+                    pass
+                log.info(f"✅ Smart Reminder #{rid} acknowledged: {reason}")
                 return True
         return False
 
-    def acknowledge_all_by_text(self, text):
+    def acknowledge_chain(self, root_id: int) -> int:
+        """Acknowledge all reminders in a chain"""
         count = 0
         for r in self.store.data["list"]:
-            if not r.get("acknowledged") and r.get("text") == text:
-                r["acknowledged"] = True
-                count += 1
-        if count:
+            if r.get("parent_id") == root_id or r["id"] == root_id:
+                if not r.get("acknowledged", False):
+                    r["acknowledged"] = True
+                    r["acknowledged_at"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+                    count += 1
+        if count > 0:
             self.store.save()
         return count
 
-    def reset_daily(self):
-        pass
-
-    def get_pending(self):
-        now = now_ist().strftime("%Y-%m-%d %H:%M:%S")
-        return [r for r in self.all_active() if r.get("due", "") <= now]
+    def delete(self, rid):
+        self.store.data["list"] = [r for r in self.get_all() if r["id"] != rid]
+        self.store.save()
+        try:
+            sheets_backup.delete_row_by_value("Reminders", 1, str(rid))
+        except Exception:
+            pass
 
     def clear_triggered(self):
         before = len(self.store.data.get("list", []))
-        self.store.data["list"] = [r for r in self.get_all() if not r.get("triggered")]
+        self.store.data["list"] = [r for r in self.get_all() if not r.get("triggered", False)]
+        after = len(self.store.data["list"])
         self.store.save()
-        return before - len(self.store.data["list"])
-
-
-# Create reminders instance with sheets sync
-reminders = get_reminder_manager()
+        log.info(f"🧹 Cleaned {before - after} triggered smart reminders")
+        return before - after
 
 
 # ================================================================
@@ -1135,7 +1176,6 @@ class CalendarStore:
         return [e for e in self.store.data.get("events", []) if e["date"] == today_str()]
 
     def tomorrow_events(self):
-        """Get tomorrow's events - for daily summary"""
         tomorrow = (now_ist().date() + timedelta(days=1)).strftime("%Y-%m-%d")
         return [e for e in self.store.data.get("events", []) if e["date"] == tomorrow]
 
@@ -1285,6 +1325,113 @@ class TelegramChannelLogger:
 
 
 # ================================================================
+# REMINDER MANAGER (FROM reminder_bot.py)
+# ================================================================
+_reminder_manager_instance = None
+_smart_reminder_instance = None
+
+def get_reminder_manager():
+    global _reminder_manager_instance
+    if _reminder_manager_instance is None:
+        try:
+            from reminder_bot import ReminderManager
+            _reminder_manager_instance = ReminderManager(PrivateStore, sheets_backup)
+            log.info("✅ ReminderManager loaded from reminder_bot.py with sheets sync")
+        except ImportError as e:
+            log.error(f"Could not import ReminderManager: {e}")
+            _reminder_manager_instance = SimpleReminderStore()
+    return _reminder_manager_instance
+
+def get_smart_reminder_manager():
+    global _smart_reminder_instance
+    if _smart_reminder_instance is None:
+        _smart_reminder_instance = SmartReminderStore()
+        log.info("✅ SmartReminderStore initialized with separate smart_counter")
+    return _smart_reminder_instance
+
+
+class SimpleReminderStore:
+    """Fallback reminder store if reminder_bot.py is not available"""
+    def __init__(self):
+        self.store = PrivateStore("reminders", {"list": [], "counter": 0})
+
+    def add(self, chat_id, text, due_timestamp, repeat="once"):
+        self.store.data["counter"] = self.store.data.get("counter", 0) + 1
+        rid = self.store.data["counter"]
+        r = {
+            "id": rid, "chat_id": str(chat_id), "text": text,
+            "due": due_timestamp, "repeat": repeat, "triggered": False,
+            "acknowledged": False, "created_at": now_ist().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self.store.data["list"].append(r)
+        self.store.save()
+        try:
+            sheets_backup.reminder(r, action="created")
+        except Exception:
+            pass
+        return r
+
+    def get_all(self):
+        return self.store.data.get("list", [])
+
+    def all_active(self):
+        return [r for r in self.get_all() if not r.get("triggered") and not r.get("acknowledged")]
+
+    def get_by_id(self, rid):
+        for r in self.get_all():
+            if r["id"] == rid:
+                return r
+        return None
+
+    def delete(self, rid):
+        self.store.data["list"] = [r for r in self.get_all() if r["id"] != rid]
+        self.store.save()
+
+    def mark_triggered(self, rid):
+        for r in self.store.data["list"]:
+            if r["id"] == rid:
+                r["triggered"] = True
+                self.store.save()
+                break
+
+    def acknowledge(self, rid, reason=""):
+        for r in self.store.data["list"]:
+            if r["id"] == rid:
+                r["acknowledged"] = True
+                self.store.save()
+                return True
+        return False
+
+    def acknowledge_all_by_text(self, text):
+        count = 0
+        for r in self.store.data["list"]:
+            if not r.get("acknowledged") and r.get("text") == text:
+                r["acknowledged"] = True
+                count += 1
+        if count:
+            self.store.save()
+        return count
+
+    def reset_daily(self):
+        pass
+
+    def get_pending(self):
+        now = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+        return [r for r in self.all_active() if r.get("due", "") <= now]
+
+    def clear_triggered(self):
+        before = len(self.store.data.get("list", []))
+        self.store.data["list"] = [r for r in self.get_all() if not r.get("triggered")]
+        self.store.save()
+        return before - len(self.store.data["list"])
+
+
+# Create instances
+reminders = get_reminder_manager()
+smart_reminders = get_smart_reminder_manager()
+
+
+# ================================================================
 # INITIALIZE ALL STORES
 # ================================================================
 memory    = MemoryStore()
@@ -1324,4 +1471,5 @@ log.info("SECURE DATA MANAGER READY — with Channel Logger")
 log.info(f"  GitHub : {'✅' if repo_manager.is_connected else '⚠️'}")
 log.info(f"  Sheets : {'✅' if sheets_backup.connected else '❌'}")
 log.info(f"  Channel Logger: {'✅ Enabled' if PERSONAL_LOG_CHANNEL else '❌ Disabled'}")
+log.info(f"  Smart Reminders: Separate smart_counter configured")
 log.info("=" * 60)
