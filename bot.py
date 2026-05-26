@@ -3424,7 +3424,7 @@ YOUR HINGLISH REPLY (2-3 lines only, Muslim phrases zaroor use karo):"""
 def main():
     """Main entry point - initialize and start the bot"""
     cleanup_before_start()
-    
+
     log.info("=" * 60)
     log.info("Rk Bot v18.5 COMPLETE | ALL v17 Features + ALL v18.x Improvements + ALL Fixes")
     log.info(f"IST: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -3440,13 +3440,13 @@ def main():
         from secure_data_manager import channel_logger
         channel_logger.set_bot(app.bot)
         log.info("✅ Channel logger connected to bot")
-        
+
         if channel_logger.enabled:
-            async def send_startup_log(context):
+            async def send_channel_startup(context):
                 await channel_logger.log_startup()
-            
+
             if app.job_queue:
-                app.job_queue.run_once(send_startup_log, 3)
+                app.job_queue.run_once(send_channel_startup, 3)
                 log.info("📢 Startup log scheduled (will send in 3 seconds)")
             else:
                 log.warning("JobQueue not available")
@@ -3458,7 +3458,7 @@ def main():
     register_delete_handlers(app)
 
     register_memory_handlers(app)
-    
+
     register_voice_handlers(app)
 
     # Diary conversation handler
@@ -3499,37 +3499,37 @@ def main():
         app.add_handler(CommandHandler(cmd, handler))
 
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^(ok_|smart_complete_|smart_snooze5_|smart_again_)"))
-    
+
     # Natural language message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # ── Job Queue Setup ──
     if app.job_queue:
-        # Main reminder checker - every 60 seconds
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s) - checks BOTH normal AND smart reminders")
-        
-        # Smart Daily Summary checker - runs every 60 seconds
+
         app.job_queue.run_repeating(smart_daily_summary, interval=60, first=30)
         log.info("📊 Smart Daily Summary checker scheduled (every 60s)")
-        
-        # Proactive Follow-up - every 3 hours
+
         app.job_queue.run_repeating(proactive_followup_job, interval=10800, first=300)
         log.info("🔄 Proactive followup scheduled (every 3 hours)")
-        
-        # Weekly Review checker - every hour
+
         app.job_queue.run_repeating(weekly_review_job, interval=3600, first=120)
         log.info("📊 Weekly review checker scheduled (every hour)")
-        
-        # Expense Insight checker - every 6 hours
+
         app.job_queue.run_repeating(expense_insight_job, interval=21600, first=180)
         log.info("💰 Expense insight checker scheduled (every 6 hours)")
-        
+
+        # Startup notification - 5 second delay
+        app.job_queue.run_once(send_startup_notification, 5)
+        log.info("📢 Startup notification scheduled (5 sec delay)")
+
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
     # Send immediate startup notification
 async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
+    """Send startup message to all known chat IDs"""
     try:
         chat_ids = set()
         for r in reminders.get_all():
@@ -3538,11 +3538,11 @@ async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
                     chat_ids.add(int(r["chat_id"]))
                 except:
                     pass
-        
+
         if not chat_ids:
             log.warning("No chat IDs found for startup notification")
             return
-        
+
         for cid in chat_ids:
             try:
                 await context.bot.send_message(
