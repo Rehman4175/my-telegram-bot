@@ -73,6 +73,9 @@ HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY", "")
 WEEKLY_BUDGET_THRESHOLD = int(os.environ.get("WEEKLY_BUDGET_THRESHOLD", "1000"))
 
 DIARY_AWAIT_TEXT = 0
+# ── ADD THESE 2 LINES ──
+AWAITING_CONFIRMATION = 100
+pending_actions = {}
 
 if not TELEGRAM_TOKEN:
     print("TELEGRAM_TOKEN not set!")
@@ -3263,9 +3266,25 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ════════════════════════════════════════════════════
     # STEP 1: NEW PARSER (command_parser.py)
     # ════════════════════════════════════════════════════
-    new_action, new_params = get_action(user_msg, now_ist)
+    new_action, new_params, needs_confirm = get_action(user_msg, now_ist)
     log.info(f"NEW PARSER: '{user_msg[:60]}' → {new_action}")
- 
+    
+    # ── CONFIRMATION CHECK (ADD THIS BEFORE OTHER HANDLERS) ──
+    if needs_confirm and new_action not in ["show_tasks", "show_reminders", "show_habits", "show_diary", "show_all_diary", "show_memory", "show_calendar", "show_bills", "show_expense", "show_water", "complete"]:
+        pending_actions[chat_id] = {"action": new_action, "params": new_params, "msg": user_msg}
+        
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Haan, Karo", callback_data="confirm_add"),
+            InlineKeyboardButton("❌ Nahi", callback_data="confirm_cancel")
+        ]])
+        
+        await update.message.reply_text(
+            f"❓ *Confirm karo?*\n\n{user_msg[:150]}\n\nYe sahi hai?",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        return
+    
     if new_action != "unknown":
         # ── NEW PARSER NE SAMJHA ──────────────────────
         handled = True
@@ -4006,7 +4025,50 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
     chat_hist.add("assistant", "Reply sent", "Rk")
 
-
+async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    global pending_actions  # ← YEH LINE ADD KARO
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    
+    if query.data == "confirm_add":
+        pending = pending_actions.get(chat_id)
+        if pending:
+            action = pending["action"]
+            params = pending["params"]
+            
+            # Execute based on action
+            if action == "remind":
+                r = reminders.add(chat_id, params["text"], params["due"])
+            elif action == "task":
+                t = tasks.add(params["title"])
+            elif action == "diary":
+                diary.add(params["text"])
+            elif action == "expense":
+                expenses.add(params["amount"], params["desc"])
+            elif action == "habit":
+                h = habits.add(params["name"])
+            elif action == "habit_done":
+                keyword = params.get("keyword", "")
+                if keyword.isdigit():
+                    habits.log(int(keyword))
+                else:
+                    habits.log_by_name(keyword)
+            elif action == "calendar":
+                calendar.add(params["title"], params["date"], "", "", "", params["type"])
+            elif action == "bill":
+                bills.add(params["name"], params["amount"], params["due_day"])
+            elif action == "water":
+                water.add(params["ml"])
+            elif action == "memory":
+                memory.add(params["text"])
+            
+            await query.edit_message_text(f"✅ *Done!* {action} add ho gaya! Alhamdulillah!", parse_mode="Markdown")
+            del pending_actions[chat_id]
+    else:
+        await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
+        if chat_id in pending_actions:
+            del pending_actions[chat_id]
 # ════════════════════════════════════════════════════
 # STARTUP NOTIFICATION FUNCTION (main se BAHAR)
 # ════════════════════════════════════════════════════
@@ -4121,7 +4183,7 @@ def main():
         app.add_handler(CommandHandler(cmd, handler))
 
     app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^(ok_|smart_complete_|smart_snooze5_|smart_again_|quick_done_|postpone_|quick_del_|habit_quick_)"))
-
+    app.add_handler(CallbackQueryHandler(confirm_callback, pattern=r"^confirm_"))
     # Natural language message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
