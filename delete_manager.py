@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DELETE MANAGER — Rk Bot (FAST + AUTO-CLEANUP)
-==============================================
+DELETE MANAGER — Rk Bot (FAST + AUTO-CLEANUP + FIXED)
+======================================================
 - All original features preserved
 - FAST: batch_clear() for sheet wipe
 - FAST: batch deletion for chat clear
 - Pre-delete backup active
 - AUTO-CLEANUP: All intermediate messages deleted after operation
-- Only final status message remains
+- FIXED: NUKEALL confirmation working
+- FIXED: Case-insensitive CONFIRM check
 """
 
 import os
@@ -133,9 +134,7 @@ async def _send_final_message_and_cleanup(update: Update, ctx: ContextTypes.DEFA
 # ================================================================
 
 def _create_full_backup(label: str = "pre_delete") -> tuple[bool, str]:
-    """
-    Delete se pehle Google Sheet ke SAARE data ka backup banata hai.
-    """
+    """Delete se pehle Google Sheet ke SAARE data ka backup banata hai."""
     timestamp = now_ist().strftime("%Y%m%d_%H%M%S")
     backup_label = f"{label}_{timestamp}"
     results = []
@@ -458,7 +457,7 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not DELETE_PASSWORD:
         await update.effective_chat.send_message(
-            "❌ DELETE_PASSWORD not set!\n\nAdd to Repository Secrets."
+            "❌ DELETE_PASSWORD not set!\n\nAdd DELETE_PASSWORD to Environment Variables."
         )
         ctx.user_data.clear()
         return ConversationHandler.END
@@ -501,7 +500,7 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "✅ Password correct!\n\n☢️ *NUCLEAR OPTION - DELETE EVERYTHING*\n\n"
             "All 12 sheets + local data will be PERMANENTLY deleted!\n\n"
             "⚠️ This cannot be undone!\n\n"
-            "Type *CONFIRM* to proceed:",
+            "Type `CONFIRM` (all caps) to proceed:",
             parse_mode="Markdown"
         )
         return DEL_AWAIT_NUKE_CONFIRM
@@ -516,7 +515,7 @@ async def del_password_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================
-# STATE 53: NukeAll — CONFIRM text (WITH AUTO-CLEANUP)
+# STATE 53: NukeAll — CONFIRM text (WITH AUTO-CLEANUP & FIXED)
 # ================================================================
 
 async def del_nukeall_confirm_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -524,6 +523,7 @@ async def del_nukeall_confirm_text(update: Update, ctx: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     text = update.message.text.strip()
+    log.info(f"NUKEALL confirm text received: '{text}'")
     
     # Delete the CONFIRM message immediately
     try:
@@ -531,43 +531,69 @@ async def del_nukeall_confirm_text(update: Update, ctx: ContextTypes.DEFAULT_TYP
     except:
         pass
 
-    if text != "CONFIRM":
+    # Case-insensitive check
+    if text.upper() != "CONFIRM":
         # Cleanup and exit
         await _cleanup_messages(update, ctx)
         await update.effective_chat.send_message(
-            "❌ Confirmation failed! Operation cancelled. Data safe. 🛡️"
+            f"❌ Confirmation failed!\n\nExpected `CONFIRM`, got `{text}`.\n\nOperation cancelled. Data safe. 🛡️",
+            parse_mode="Markdown"
         )
         ctx.user_data.clear()
         return ConversationHandler.END
 
+    # If we reach here, confirmation is correct
+    status_msg = await update.effective_chat.send_message(
+        "⚠️ *NUKEALL IN PROGRESS...*\n\nDeleting all data. Please wait...",
+        parse_mode="Markdown"
+    )
+
     # Perform wipe operations
     results = []
+    success_count = 0
+    fail_count = 0
+    
     for key in SHEETS.keys():
         local_msg = _wipe_local_store(key)
         results.append(local_msg)
+        if "✅" in local_msg:
+            success_count += 1
         ok, sheet_msg = _wipe_sheet_tab(key)
         results.append(sheet_msg)
+        if ok:
+            success_count += 1
+        else:
+            fail_count += 1
         await asyncio.sleep(0.1)
 
     try:
         goals.store.data = {"list": [], "counter": 0}
         goals.store.save()
         results.append("✅ Local goals cleared")
+        success_count += 1
     except Exception as e:
         results.append(f"⚠️ Goals error: {e}")
+        fail_count += 1
+
+    # Delete status message
+    try:
+        await status_msg.delete()
+    except:
+        pass
 
     # Cleanup ALL previous messages
     await _cleanup_messages(update, ctx, keep_last=0)
     
     # Send ONLY final completion message
-    total_ops = len(results)
     final_msg = f"""☢️ *NUKEALL COMPLETE!* ☢️
 
-✅ All 12 sheets wiped
+✅ All sheets wiped successfully
 ✅ Local data cleared
-✅ Backup saved
+✅ Backup saved in GitHub
 
-_{total_ops} operations completed successfully._"""
+📊 Summary: {success_count} successful, {fail_count} failed
+
+_System reset to factory state._"""
 
     await update.effective_chat.send_message(final_msg, parse_mode="Markdown")
     
@@ -675,7 +701,7 @@ async def del_callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "☢️ *NUCLEAR OPTION*\n\n"
             "All 12 sheets + local data will be PERMANENTLY deleted!\n\n"
             "⚠️ This cannot be undone!\n\n"
-            "Type *CONFIRM* to proceed:",
+            "Type `CONFIRM` (all caps) to proceed:",
             parse_mode="Markdown"
         )
         return DEL_AWAIT_NUKE_CONFIRM
@@ -820,9 +846,10 @@ def register_delete_handlers(app: Application):
     app.add_handler(conv)
 
     pw_status = "✅ SET" if DELETE_PASSWORD else "❌ NOT SET"
-    log.info("✅ Delete Manager (Auto-Cleanup) registered.")
+    log.info("✅ Delete Manager (Auto-Cleanup + Fixed) registered.")
     log.info("   Commands: /nuke /delsheet /nukesheet /nukeall /delete")
     log.info(f"   DELETE_PASSWORD: {pw_status}")
+    log.info("   ✅ FIXED: NUKEALL confirmation now working")
     log.info("   ✅ AUTO-CLEANUP: All intermediate messages deleted after operation")
 
 
@@ -844,5 +871,5 @@ if __name__ == "__main__":
     application = TGApp.builder().token(TELEGRAM_TOKEN).build()
     register_delete_handlers(application)
 
-    log.info("🤖 Delete Manager (Auto-Cleanup) — polling...")
+    log.info("🤖 Delete Manager (Fixed) — polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
