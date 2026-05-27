@@ -550,14 +550,16 @@ def _build_result(action: str, remaining: str, original: str, now_ist_func=None)
         title = " ".join(title.split()).strip()
         return ("task", {"title": title[:100] or "Task", "raw": original})
     
-    elif action == "remind":
+            elif action == "remind":
         due_dt = parse_relative_time(original, now_ist_func)
         if not due_dt:
             due_dt = parse_specific_date(original, now_ist_func)
             if due_dt:
                 due_dt = due_dt.replace(hour=9, minute=0, second=0, microsecond=0)
-            else:
-                due_dt = (now_ist_func() if now_ist_func else _get_now()) + timedelta(minutes=5)
+        
+        # Final fallback - agar dono None hain to 5 min baad
+        if not due_dt:
+            due_dt = (now_ist_func() if now_ist_func else _get_now()) + timedelta(minutes=5)
         
         text = remaining or original
         for w in ["remind", "reminder", "alarm", "yaad", "dilana", "bata", "do", "dena", "set", "add"]:
@@ -568,7 +570,6 @@ def _build_result(action: str, remaining: str, original: str, now_ist_func=None)
         return ("remind", {"text": text.title() or "Reminder", 
                           "due": due_dt.strftime("%Y-%m-%d %H:%M:%S"), 
                           "raw": original})
-    
     elif action == "habit":
         name = remaining.strip()
         for kw in ["add", "lagao", "bana", "new", "naya", "start", "shuru"]:
