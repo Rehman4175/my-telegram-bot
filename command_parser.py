@@ -550,7 +550,7 @@ def _build_result(action: str, remaining: str, original: str, now_ist_func=None)
         title = " ".join(title.split()).strip()
         return ("task", {"title": title[:100] or "Task", "raw": original})
     
-            elif action == "remind":
+    elif action == "remind":
         due_dt = parse_relative_time(original, now_ist_func)
         if not due_dt:
             due_dt = parse_specific_date(original, now_ist_func)
@@ -570,6 +570,7 @@ def _build_result(action: str, remaining: str, original: str, now_ist_func=None)
         return ("remind", {"text": text.title() or "Reminder", 
                           "due": due_dt.strftime("%Y-%m-%d %H:%M:%S"), 
                           "raw": original})
+    
     elif action == "habit":
         name = remaining.strip()
         for kw in ["add", "lagao", "bana", "new", "naya", "start", "shuru"]:
