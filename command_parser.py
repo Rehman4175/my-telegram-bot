@@ -555,9 +555,13 @@ def _build_result(action: str, remaining: str, original: str, now_ist_func=None)
         if not due_dt:
             due_dt = parse_specific_date(original, now_ist_func)
             if due_dt:
-                due_dt = due_dt.replace(hour=9, minute=0, second=0, microsecond=0)
+                # Agar date object hai to datetime mein convert karo
+                from datetime import datetime as dt
+                if not hasattr(due_dt, 'hour'):
+                    due_dt = dt(due_dt.year, due_dt.month, due_dt.day, 9, 0, 0)
+                else:
+                    due_dt = due_dt.replace(hour=9, minute=0, second=0, microsecond=0)
         
-        # Final fallback - agar dono None hain to 5 min baad
         if not due_dt:
             due_dt = (now_ist_func() if now_ist_func else _get_now()) + timedelta(minutes=5)
         
