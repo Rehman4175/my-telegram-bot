@@ -3608,7 +3608,7 @@ def main():
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
-    app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^(ok_|smart_complete_|smart_snooze5_|smart_again_)"))
+    app.add_handler(CallbackQueryHandler(handle_ok_button, pattern=r"^(ok_|smart_complete_|smart_snooze5_|smart_again_|quick_done_|postpone_|quick_del_|habit_quick_)"))
 
     # Natural language message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
