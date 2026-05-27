@@ -3633,12 +3633,6 @@ def main():
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
 
-        app.job_queue.run_repeating(context_aware_followup_job, interval=1800, first=60)
-        log.info("🎯 Context-aware followup scheduled (every 30 min check)")
-
-        app.job_queue.run_repeating(habit_streak_protection_job, interval=60, first=45)
-        log.info("🔥 Habit streak protection scheduled (every 60s check)")
-
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
 
