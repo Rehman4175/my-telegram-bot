@@ -3242,9 +3242,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
  
-    user_msg  = update.message.text.strip()
+    user_msg = update.message.text.strip()
     user_name = update.effective_user.first_name or "User"
-    chat_id   = update.effective_chat.id
+    chat_id = update.effective_chat.id
  
     if user_msg.startswith("/"):
         return
@@ -3271,7 +3271,28 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     # ── CONFIRMATION CHECK (ADD THIS BEFORE OTHER HANDLERS) ──
     if needs_confirm and new_action not in ["show_tasks", "show_reminders", "show_habits", "show_diary", "show_all_diary", "show_memory", "show_calendar", "show_bills", "show_expense", "show_water", "complete"]:
-        pending_actions[chat_id] = {"action": new_action, "params": new_params, "msg": user_msg}
+        
+        # ── FIND PARENT SMART REMINDER ID (to stop repeats later) ──
+        parent_reminder_id = None
+        try:
+            # Check if there's an active smart reminder that matches this intent
+            for r in smart_reminders.get_active_smart():
+                if str(r.get("chat_id")) == str(chat_id):
+                    # Check if user message relates to this reminder
+                    r_text = r.get("text", "").lower()
+                    if any(word in user_msg.lower() for word in r_text.split()[:3]):
+                        parent_reminder_id = r.get("id")
+                        log.info(f"Found parent smart reminder #{parent_reminder_id} for this action")
+                        break
+        except Exception as e:
+            log.warning(f"Error finding parent reminder: {e}")
+        
+        pending_actions[chat_id] = {
+            "action": new_action, 
+            "params": new_params, 
+            "msg": user_msg,
+            "parent_reminder_id": parent_reminder_id  # Store parent ID to acknowledge later
+        }
         
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Haan, Karo", callback_data="confirm_add"),
@@ -3320,11 +3341,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # ── REMINDER ───────────────────────────────────
         elif new_action == "remind":
             due_timestamp = new_params.get("due", "")
-            text          = new_params.get("text", "Reminder").strip()
+            text = new_params.get("text", "Reminder").strip()
  
             if not due_timestamp:
                 # Default: 5 min baad
-                remind_dt     = now_ist() + timedelta(minutes=5)
+                remind_dt = now_ist() + timedelta(minutes=5)
                 due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
  
             if not text or len(text) < 2:
@@ -3333,19 +3354,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             r = reminders.add(chat_id, text, due_timestamp)
  
             try:
-                remind_dt    = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+                remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
                 date_display = remind_dt.strftime("%d %b %Y")
-                h_val        = remind_dt.hour
-                m_val        = remind_dt.minute
-                ampm         = "AM" if h_val < 12 else "PM"
-                h12          = h_val % 12 or 12
+                h_val = remind_dt.hour
+                m_val = remind_dt.minute
+                ampm = "AM" if h_val < 12 else "PM"
+                h12 = h_val % 12 or 12
                 time_display = f"{h12}:{m_val:02d} {ampm}"
             except Exception:
                 date_display = "Aaj"
                 time_display = due_timestamp
  
-            _log_action(user_name, "reminder_set",
-                        f"#{r['id']} at {due_timestamp}: {text}")
+            _log_action(user_name, "reminder_set", f"#{r['id']} at {due_timestamp}: {text}")
             await update.message.reply_text(
                 f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n"
                 f"🕐 *{time_display}* — 📅 *{date_display}*\n"
@@ -3381,8 +3401,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     habit_name = h["name"] if h else keyword
  
                 if ok:
-                    _log_action(user_name, "habit_done",
-                                f"'{habit_name}' done | streak: {streak}")
+                    _log_action(user_name, "habit_done", f"'{habit_name}' done | streak: {streak}")
                     streak_msg = (
                         f"🔥 *MashAllah! {streak} din ka streak!* SubhanAllah! 💪"
                         if streak >= 7
@@ -3408,7 +3427,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # ── EXPENSE ────────────────────────────────────
         elif new_action == "expense":
             amount = new_params.get("amount", 0)
-            desc   = new_params.get("desc", "Expense").strip()
+            desc = new_params.get("desc", "Expense").strip()
  
             if not amount or amount <= 0:
                 await update.message.reply_text(
@@ -3423,8 +3442,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if not desc or len(desc) < 2:
                     desc = "Expense"
                 expenses.add(amount, desc)
-                _log_action(user_name, "expense_add",
-                            f"Rs.{amount} on {desc} | Total: Rs.{expenses.today_total()}")
+                _log_action(user_name, "expense_add", f"Rs.{amount} on {desc} | Total: Rs.{expenses.today_total()}")
                 await update.message.reply_text(
                     f"💸 *Kharcha Add!* ✅\n\n"
                     f"Rs.{amount} — {desc}\n"
@@ -3434,14 +3452,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
         # ── WATER ──────────────────────────────────────
         elif new_action == "water":
-            ml      = new_params.get("ml", 250)
-            total   = water.add(ml)
+            ml = new_params.get("ml", 250)
+            total = water.add(ml)
             goal_ml = water.goal()
-            pct     = int(total / goal_ml * 100) if goal_ml else 0
-            filled  = min(pct // 20, 5)
-            bar     = "🟦" * filled + "⬜" * (5 - filled)
-            _log_action(user_name, "water_log",
-                        f"Added {ml}ml | Total: {total}ml of {goal_ml}ml")
+            pct = int(total / goal_ml * 100) if goal_ml else 0
+            filled = min(pct // 20, 5)
+            bar = "🟦" * filled + "⬜" * (5 - filled)
+            _log_action(user_name, "water_log", f"Added {ml}ml | Total: {total}ml of {goal_ml}ml")
             await update.message.reply_text(
                 f"💧 *+{ml}ml Paani!* ✅\n\n"
                 f"Total: {total}/{goal_ml}ml\n"
@@ -3452,14 +3469,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
         # ── MEMORY ─────────────────────────────────────
         elif new_action == "memory":
-            text     = new_params.get("text", "").strip()
+            text = new_params.get("text", "").strip()
             if not text or len(text) < 2:
                 text = user_msg
             category = auto_tag_memory(text)
             try:
                 memory.add(text, category=category)
-                _log_action(user_name, "memory_save",
-                            f"Saved [{category}]: {text[:80]}")
+                _log_action(user_name, "memory_save", f"Saved [{category}]: {text[:80]}")
                 await update.message.reply_text(
                     f"🧠 *Memory Mein Save Ho Gaya!* ✅\n\n"
                     f"🏷️ Category: *{category}*\n"
@@ -3470,8 +3486,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 # Fallback to diary
                 diary.add(f"[Memory] [{category}] {text}")
-                _log_action(user_name, "memory_save_fallback",
-                            f"Saved as diary [{category}]: {text[:80]}")
+                _log_action(user_name, "memory_save_fallback", f"Saved as diary [{category}]: {text[:80]}")
                 await update.message.reply_text(
                     f"🧠 *Note Save Ho Gaya!* ✅ [{category}]\n\n"
                     f"_{text[:200]}_",
@@ -3480,9 +3495,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
         # ── CALENDAR ───────────────────────────────────
         elif new_action == "calendar":
-            title    = new_params.get("title", "Event").strip()
-            ev_date  = new_params.get("date",  get_today_str())
-            ev_type  = new_params.get("type",  "event")
+            title = new_params.get("title", "Event").strip()
+            ev_date = new_params.get("date", get_today_str())
+            ev_type = new_params.get("type", "event")
  
             if not title or len(title) < 2:
                 title = "Event"
@@ -3491,20 +3506,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if ev_type == "birthday":
                 try:
                     from datetime import date as date_cls
-                    birth      = date_cls.fromisoformat(ev_date)
-                    today_d    = now_ist().date()
-                    next_bday  = birth.replace(year=today_d.year)
+                    birth = date_cls.fromisoformat(ev_date)
+                    today_d = now_ist().date()
+                    next_bday = birth.replace(year=today_d.year)
                     if next_bday < today_d:
                         next_bday = next_bday.replace(year=today_d.year + 1)
                     ev_date = next_bday.strftime("%Y-%m-%d")
                 except Exception:
                     pass
  
-            e     = calendar.add(title, ev_date, "", "", "", ev_type)
+            e = calendar.add(title, ev_date, "", "", "", ev_type)
             emoji = "🎂" if ev_type == "birthday" else "📅"
-            _log_action(user_name, "calendar_add",
-                        f"{'Birthday' if ev_type == 'birthday' else 'Event'} "
-                        f"#{e['id']}: {title} on {ev_date}")
+            _log_action(user_name, "calendar_add", f"{'Birthday' if ev_type == 'birthday' else 'Event'} #{e['id']}: {title} on {ev_date}")
  
             if ev_type == "birthday":
                 msg = (f"🎂 *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n"
@@ -3522,16 +3535,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
         # ── BILL ───────────────────────────────────────
         elif new_action == "bill":
-            name    = new_params.get("name",    "Bill").strip()
-            amount  = new_params.get("amount",  0)
+            name = new_params.get("name", "Bill").strip()
+            amount = new_params.get("amount", 0)
             due_day = new_params.get("due_day", 0)
  
             if not name or len(name) < 2:
                 name = "Bill"
  
             b = bills.add(name, amount, due_day)
-            _log_action(user_name, "bill_add",
-                        f"#{b['id']}: {name} Rs.{amount} due {due_day} tarikh")
+            _log_action(user_name, "bill_add", f"#{b['id']}: {name} Rs.{amount} due {due_day} tarikh")
             await update.message.reply_text(
                 f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n"
                 f"#{b['id']} *{name}*\n"
@@ -3545,24 +3557,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # ── COMPLETE TASK ──────────────────────────────
         elif new_action == "complete":
             task_id = new_params.get("id")
-            hint    = new_params.get("hint", "")
+            hint = new_params.get("hint", "")
             pending = tasks.pending()
  
             matched = None
             if task_id:
-                matched = next(
-                    (t for t in pending if t["id"] == task_id), None
-                )
+                matched = next((t for t in pending if t["id"] == task_id), None)
             if not matched and hint:
-                matched = next(
-                    (t for t in pending
-                     if hint.lower() in t["title"].lower()), None
-                )
+                matched = next((t for t in pending if hint.lower() in t["title"].lower()), None)
  
             if matched:
                 tasks.complete(matched["id"])
-                _log_action(user_name, "task_done",
-                            f"#{matched['id']}: {matched['title']}")
+                _log_action(user_name, "task_done", f"#{matched['id']}: {matched['title']}")
                 await update.message.reply_text(
                     f"✅ *Alhamdulillah! Task Complete!* 🎉\n\n"
                     f"#{matched['id']} ~~{matched['title']}~~\n\n"
@@ -3571,9 +3577,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 if pending:
-                    lines = "\n".join(
-                        f"  #{t['id']} {t['title']}" for t in pending[:10]
-                    )
+                    lines = "\n".join(f"  #{t['id']} {t['title']}" for t in pending[:10])
                     await update.message.reply_text(
                         f"❓ *Kaunsa task complete karna hai?*\n\n{lines}\n\n"
                         f"/done id — Complete karo",
@@ -3588,9 +3592,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif new_action == "show_tasks":
             pending = tasks.pending()
             if pending:
-                lines = "\n".join(
-                    f"  #{t['id']} {t['title']}" for t in pending[:15]
-                )
+                lines = "\n".join(f"  #{t['id']} {t['title']}" for t in pending[:15])
                 await update.message.reply_text(
                     f"📋 *Pending Tasks ({len(pending)}):*\n\n{lines}\n\n"
                     f"/done id — Complete karo\n"
@@ -3642,12 +3644,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 today_day = now_ist().day
                 lines = []
                 for b in all_bills:
-                    paid   = bills.is_paid_this_month(b["id"])
+                    paid = bills.is_paid_this_month(b["id"])
                     status = "✅ Paid" if paid else "❌ Unpaid"
                     try:
-                        due       = int(b.get("due_day", 0))
+                        due = int(b.get("due_day", 0))
                         days_left = due - today_day
-                        due_str   = f" ({due} tarikh"
+                        due_str = f" ({due} tarikh"
                         if not paid:
                             if days_left < 0:
                                 due_str += f", {abs(days_left)} din late!)"
@@ -3682,10 +3684,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif new_action == "show_expense":
             today_list = expenses.get_by_date(get_today_str())
             if today_list:
-                lines = "\n".join(
-                    f"  💸 Rs.{e['amount']} — {e['desc']}"
-                    for e in today_list[-10:]
-                )
+                lines = "\n".join(f"  💸 Rs.{e['amount']} — {e['desc']}" for e in today_list[-10:])
                 await update.message.reply_text(
                     f"💸 *Aaj ka Kharcha:*\n\n{lines}\n\n"
                     f"💰 *Total: Rs.{expenses.today_total()}*",
@@ -3701,11 +3700,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
         # ── SHOW WATER ─────────────────────────────────
         elif new_action == "show_water":
-            total   = water.today_total()
+            total = water.today_total()
             goal_ml = water.goal()
-            pct     = int(total / goal_ml * 100) if goal_ml else 0
-            filled  = min(pct // 20, 5)
-            bar     = "🟦" * filled + "⬜" * (5 - filled)
+            pct = int(total / goal_ml * 100) if goal_ml else 0
+            filled = min(pct // 20, 5)
+            bar = "🟦" * filled + "⬜" * (5 - filled)
             await update.message.reply_text(
                 f"💧 *Aaj ka Paani:*\n\n"
                 f"{bar} {pct}%\n"
@@ -3760,21 +3759,20 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
     elif action_type == "remind":
         due_timestamp = params.get("time", "")
-        text          = params.get("text", "Reminder")
-        r             = reminders.add(chat_id, text, due_timestamp)
+        text = params.get("text", "Reminder")
+        r = reminders.add(chat_id, text, due_timestamp)
         try:
-            remind_dt    = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
             date_display = remind_dt.strftime("%d %b %Y")
-            h_val        = remind_dt.hour
-            m_val        = remind_dt.minute
-            ampm         = "AM" if h_val < 12 else "PM"
-            h12          = h_val % 12 or 12
+            h_val = remind_dt.hour
+            m_val = remind_dt.minute
+            ampm = "AM" if h_val < 12 else "PM"
+            h12 = h_val % 12 or 12
             time_display = f"{h12}:{m_val:02d} {ampm}"
         except Exception:
             date_display = "Aaj"
             time_display = due_timestamp
-        _log_action(user_name, "reminder_set",
-                    f"#{r['id']} at {due_timestamp}: {text}")
+        _log_action(user_name, "reminder_set", f"#{r['id']} at {due_timestamp}: {text}")
         await update.message.reply_text(
             f"⏰ *Reminder Set! InshAllah yaad dilaaunga!*\n\n"
             f"🕐 *{time_display}* — 📅 *{date_display}*\n"
@@ -3784,11 +3782,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
  
     elif action_type == "smart_remind":
-        priority         = params.get("priority", "MEDIUM")
-        text             = params.get("text", "Reminder")
-        due_timestamp    = params.get("due", "")
+        priority = params.get("priority", "MEDIUM")
+        text = params.get("text", "Reminder")
+        due_timestamp = params.get("due", "")
         repeat_until_done = params.get("repeat_until_done", False)
-        interval         = params.get("interval", 15)
+        interval = params.get("interval", 15)
         r = _add_smart_reminder(
             chat_id=chat_id,
             text=text,
@@ -3798,7 +3796,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         config = SMART_PRIORITY_CONFIG.get(priority, SMART_PRIORITY_CONFIG["MEDIUM"])
         try:
-            remind_dt    = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
             date_display = remind_dt.strftime("%d %b %Y")
             time_display = remind_dt.strftime("%I:%M %p")
         except Exception:
@@ -3809,8 +3807,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if repeat_until_done
             else f" (max {config['max_repeats']} times, every {interval} min)"
         )
-        _log_action(user_name, "smart_reminder_set",
-                    f"#{r['id']} [{priority}]: {text}")
+        _log_action(user_name, "smart_reminder_set", f"#{r['id']} [{priority}]: {text}")
         await update.message.reply_text(
             f"{config['emoji']} *Smart Reminder Set!* {config['emoji']}\n\n"
             f"🕐 *{time_display}* — 📅 *{date_display}*\n"
@@ -3832,7 +3829,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
  
     elif action_type == "complete_task":
-        hint    = params.get("hint", "")
+        hint = params.get("hint", "")
         pending = tasks.pending()
         matched = next(
             (t for t in pending
@@ -3842,8 +3839,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         if matched:
             tasks.complete(matched["id"])
-            _log_action(user_name, "task_done",
-                        f"#{matched['id']}: {matched['title']}")
+            _log_action(user_name, "task_done", f"#{matched['id']}: {matched['title']}")
             await update.message.reply_text(
                 f"✅ *Alhamdulillah! Task Complete!* 🎉\n\n"
                 f"#{matched['id']} ~~{matched['title']}~~\n\n"
@@ -3851,15 +3847,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         else:
-            await update.message.reply_text(
-                "❓ Kaunsa task? ID ya naam batao"
-            )
+            await update.message.reply_text("❓ Kaunsa task? ID ya naam batao")
  
     elif action_type == "expense":
         expenses.add(params.get("amount", 0), params.get("desc", ""))
-        _log_action(user_name, "expense_add",
-                    f"Rs.{params.get('amount')} on {params.get('desc')} "
-                    f"| Total: Rs.{expenses.today_total()}")
+        _log_action(user_name, "expense_add", f"Rs.{params.get('amount')} on {params.get('desc')} | Total: Rs.{expenses.today_total()}")
         await update.message.reply_text(
             f"💸 Rs.{params.get('amount')} — {params.get('desc')}\n"
             f"💰 Aaj total: Rs.{expenses.today_total()}",
@@ -3887,13 +3879,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
  
     elif action_type == "add_calendar":
-        title   = params.get("title", "Event")
+        title = params.get("title", "Event")
         ev_date = params.get("date", get_today_str())
         ev_type = params.get("type", "event")
-        e       = calendar.add(title, ev_date, "", "", "", ev_type)
-        _log_action(user_name, "calendar_add",
-                    f"{'Birthday' if ev_type == 'birthday' else 'Event'} "
-                    f"#{e['id']}: {title} on {ev_date}")
+        e = calendar.add(title, ev_date, "", "", "", ev_type)
+        _log_action(user_name, "calendar_add", f"{'Birthday' if ev_type == 'birthday' else 'Event'} #{e['id']}: {title} on {ev_date}")
         emoji = "🎂" if ev_type == "birthday" else "📅"
         if ev_type == "birthday":
             msg = (f"{emoji} *Birthday Add Ho Gaya! MashAllah!* 🎉\n\n"
@@ -3906,12 +3896,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
  
     elif action_type == "add_bill":
-        name    = params.get("name",    "Bill")
-        amount  = params.get("amount",  0)
+        name = params.get("name", "Bill")
+        amount = params.get("amount", 0)
         due_day = params.get("due_day", 0)
-        b       = bills.add(name, amount, due_day)
-        _log_action(user_name, "bill_add",
-                    f"#{b['id']}: {name} Rs.{amount} due {due_day} tarikh")
+        b = bills.add(name, amount, due_day)
+        _log_action(user_name, "bill_add", f"#{b['id']}: {name} Rs.{amount} due {due_day} tarikh")
         await update.message.reply_text(
             f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n"
             f"#{b['id']} *{name}*\n"
@@ -3923,7 +3912,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
     elif action_type == "habit_done":
         try:
-            keyword    = params.get("keyword", "")
+            keyword = params.get("keyword", "")
             if keyword.isdigit():
                 ok, streak = habits.log(int(keyword))
                 habit_name = f"#{keyword}"
@@ -3931,30 +3920,24 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ok, streak, h = habits.log_by_name(keyword)
                 habit_name = h["name"] if h else keyword
             if ok:
-                _log_action(user_name, "habit_done",
-                            f"'{habit_name}' done | streak: {streak}")
+                _log_action(user_name, "habit_done", f"'{habit_name}' done | streak: {streak}")
                 await update.message.reply_text(
                     f"🔥 *{habit_name} done! MashAllah!* 🎉\n\n"
                     f"{streak} din ka streak! 💪",
                     parse_mode="Markdown"
                 )
             else:
-                await update.message.reply_text(
-                    "❓ Kaunsa habit? /habit se list dekho aur /hdone id se log karo"
-                )
+                await update.message.reply_text("❓ Kaunsa habit? /habit se list dekho aur /hdone id se log karo")
         except Exception as e:
             log.error(f"Habit done error: {e}")
-            await update.message.reply_text(
-                "❌ Kuch galat ho gaya! /hdone id try karo"
-            )
+            await update.message.reply_text("❌ Kuch galat ho gaya! /hdone id try karo")
  
     elif action_type == "water":
-        ml      = params.get("ml", 250)
-        total   = water.add(ml)
+        ml = params.get("ml", 250)
+        total = water.add(ml)
         goal_ml = water.goal()
-        pct     = int(total / goal_ml * 100) if goal_ml else 0
-        _log_action(user_name, "water_log",
-                    f"Added {ml}ml | Total: {total}ml of {goal_ml}ml")
+        pct = int(total / goal_ml * 100) if goal_ml else 0
+        _log_action(user_name, "water_log", f"Added {ml}ml | Total: {total}ml of {goal_ml}ml")
         await update.message.reply_text(
             f"💧 *{ml}ml Paani!*\n\n"
             f"Total: {total}/{goal_ml}ml ({pct}%)\n\n"
@@ -3963,12 +3946,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
  
     elif action_type == "memory_save":
-        text     = params.get("text", "")
+        text = params.get("text", "")
         category = auto_tag_memory(text)
         try:
             memory.add(text, category=category)
-            _log_action(user_name, "memory_save",
-                        f"Saved [{category}]: {text[:80]}")
+            _log_action(user_name, "memory_save", f"Saved [{category}]: {text[:80]}")
             await update.message.reply_text(
                 f"🧠 *Memory Mein Save Ho Gaya!* ✅ [{category}]\n\n"
                 f"_{text[:150]}_\n\n"
@@ -3977,8 +3959,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             diary.add(f"[Memory] [{category}] {text}")
-            _log_action(user_name, "memory_save_fallback",
-                        f"Saved as diary [{category}]: {text[:80]}")
+            _log_action(user_name, "memory_save_fallback", f"Saved as diary [{category}]: {text[:80]}")
             await update.message.reply_text(
                 f"🧠 *Note Save Ho Gaya!* ✅ [{category}]\n\n"
                 f"_{text[:150]}_",
@@ -4018,18 +3999,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ):
             reply = "Assalamualaikum! " + reply
  
-        _log_action(user_name, "ai_chat",
-                    f"Q: {user_msg[:60]} | A: {reply[:60]}")
+        _log_action(user_name, "ai_chat", f"Q: {user_msg[:60]} | A: {reply[:60]}")
         await update.message.reply_text(reply, parse_mode="Markdown")
         add_to_context(chat_id, "assistant", reply[:100])
  
     chat_hist.add("assistant", "Reply sent", "Rk")
 
 async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    global pending_actions  # ← YEH LINE ADD KARO
+    global pending_actions
     query = update.callback_query
     await query.answer()
     chat_id = update.effective_chat.id
+    user_name = update.effective_user.first_name or "User"
     
     if query.data == "confirm_add":
         pending = pending_actions.get(chat_id)
@@ -4040,32 +4021,152 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Execute based on action
             if action == "remind":
                 r = reminders.add(chat_id, params["text"], params["due"])
+                
+                # ── STOP SMART REMINDER REPEATS ──
+                if pending.get("parent_reminder_id"):
+                    _acknowledge_smart_chain(pending["parent_reminder_id"])
+                    log.info(f"Acknowledged smart reminder chain #{pending['parent_reminder_id']}")
+                # ────────────────────────────────
+                
+                # Format the response message properly
+                try:
+                    remind_dt = datetime.strptime(params["due"], "%Y-%m-%d %H:%M:%S")
+                    date_display = remind_dt.strftime("%d %b %Y")
+                    time_display = remind_dt.strftime("%I:%M %p")
+                    await query.edit_message_text(
+                        f"✅ *Reminder Set!* 🎉\n\n"
+                        f"📝 *{params['text']}*\n"
+                        f"🕐 *{time_display}* — 📅 *{date_display}*\n"
+                        f"📌 ID #{r['id']}\n\n"
+                        f"_InshAllah yaad dilaaunga!_",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    await query.edit_message_text(
+                        f"✅ *Reminder Set!* 🎉\n\n"
+                        f"📝 {params['text']}\n"
+                        f"⏰ {params['due']}\n"
+                        f"📌 ID #{r['id']}\n\n"
+                        f"InshAllah yaad dilaaunga!",
+                        parse_mode="Markdown"
+                    )
+                _log_action(user_name, "reminder_set", f"#{r['id']}: {params['text']} at {params['due']}")
+            
             elif action == "task":
                 t = tasks.add(params["title"])
+                await query.edit_message_text(
+                    f"✅ *Task Add Ho Gaya!* 🎉\n\n"
+                    f"📌 #{t['id']} *{t['title']}*\n\n"
+                    f"InshAllah ho jayega! 💪",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "task_add", f"#{t['id']}: {t['title']}")
+            
             elif action == "diary":
                 diary.add(params["text"])
+                await query.edit_message_text(
+                    f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n"
+                    f"_{params['text'][:200]}_\n\n"
+                    f"📊 Sheets mein bhi backup ho gaya!",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "diary_write", "Entry saved")
+            
             elif action == "expense":
                 expenses.add(params["amount"], params["desc"])
+                await query.edit_message_text(
+                    f"💸 *Kharcha Add!* ✅\n\n"
+                    f"Rs.{params['amount']} — {params['desc']}\n"
+                    f"💰 Aaj total: Rs.{expenses.today_total()}",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "expense_add", f"Rs.{params['amount']} on {params['desc']}")
+            
             elif action == "habit":
                 h = habits.add(params["name"])
+                await query.edit_message_text(
+                    f"🏃 *Habit Add Ho Gaya!* 🎉\n\n"
+                    f"#{h['id']} *{h['name']}*\n\n"
+                    f"InshAllah roz karoge! 💪",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "habit_add", f"#{h['id']}: {h['name']}")
+            
             elif action == "habit_done":
                 keyword = params.get("keyword", "")
                 if keyword.isdigit():
-                    habits.log(int(keyword))
+                    ok, streak = habits.log(int(keyword))
+                    habit_name = f"#{keyword}"
                 else:
-                    habits.log_by_name(keyword)
+                    ok, streak, h = habits.log_by_name(keyword)
+                    habit_name = h["name"] if h else keyword
+                if ok:
+                    await query.edit_message_text(
+                        f"🔥 *{habit_name} Done! MashAllah!* 🎉\n\n"
+                        f"{streak} din ka streak! 💪",
+                        parse_mode="Markdown"
+                    )
+                    _log_action(user_name, "habit_done", f"'{habit_name}' done | streak: {streak}")
+                else:
+                    await query.edit_message_text(
+                        f"✅ *{habit_name}* aaj pehle hi log ho chuka hai!",
+                        parse_mode="Markdown"
+                    )
+            
             elif action == "calendar":
-                calendar.add(params["title"], params["date"], "", "", "", params["type"])
+                e = calendar.add(params["title"], params["date"], "", "", "", params["type"])
+                emoji = "🎂" if params["type"] == "birthday" else "📅"
+                await query.edit_message_text(
+                    f"{emoji} *Event Add Ho Gaya!* ✅\n\n"
+                    f"#{e['id']} 📅 *{params['date']}*\n"
+                    f"📌 {params['title']}\n\n"
+                    f"✅ Ek din pehle remind karunga!",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "calendar_add", f"{params['type']} #{e['id']}: {params['title']}")
+            
             elif action == "bill":
-                bills.add(params["name"], params["amount"], params["due_day"])
+                b = bills.add(params["name"], params["amount"], params["due_day"])
+                await query.edit_message_text(
+                    f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n"
+                    f"#{b['id']} *{params['name']}*\n"
+                    f"💰 Rs.{params['amount']}\n"
+                    f"📅 Due: {params['due_day'] if params['due_day'] else 'Not set'} tarikh\n\n"
+                    f"📊 Sheets mein save!",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "bill_add", f"#{b['id']}: {params['name']}")
+            
             elif action == "water":
                 water.add(params["ml"])
-            elif action == "memory":
-                memory.add(params["text"])
+                total = water.today_total()
+                goal = water.goal()
+                pct = int(total / goal * 100) if goal else 0
+                filled = min(pct // 20, 5)
+                bar = "🟦" * filled + "⬜" * (5 - filled)
+                await query.edit_message_text(
+                    f"💧 *+{params['ml']}ml Paani!* ✅\n\n"
+                    f"Total: {total}/{goal}ml\n"
+                    f"{bar} {pct}%",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "water_log", f"Added {params['ml']}ml")
             
-            await query.edit_message_text(f"✅ *Done!* {action} add ho gaya! Alhamdulillah!", parse_mode="Markdown")
+            elif action == "memory":
+                category = auto_tag_memory(params["text"])
+                memory.add(params["text"], category=category)
+                await query.edit_message_text(
+                    f"🧠 *Memory Save Ho Gaya!* ✅\n\n"
+                    f"🏷️ Category: *{category}*\n"
+                    f"_{params['text'][:200]}_\n\n"
+                    f"InshAllah yaad rakhunga! 💡",
+                    parse_mode="Markdown"
+                )
+                _log_action(user_name, "memory_save", f"[{category}]: {params['text'][:80]}")
+            
             del pending_actions[chat_id]
-    else:
+    
+    else:  # cancel
         await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
         if chat_id in pending_actions:
             del pending_actions[chat_id]
