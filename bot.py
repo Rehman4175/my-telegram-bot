@@ -585,6 +585,9 @@ async def smart_daily_summary(context: ContextTypes.DEFAULT_TYPE):
     Smart daily summary - sends as SMART REMINDER so it repeats until seen
     Times: 9:00 AM, 1:00 PM, 6:00 PM, 8:00 PM(habits), 9:00 PM IST
     """
+    # Add small random delay to avoid conflicts
+    import random
+    await asyncio.sleep(random.uniform(0.5, 2.0))
     now = now_ist()
     current_time = now.strftime("%H:%M")
     
@@ -4303,7 +4306,7 @@ def main():
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s) - checks BOTH normal AND smart reminders")
 
-        app.job_queue.run_repeating(smart_daily_summary, interval=60, first=30)
+        app.job_queue.run_repeating(smart_daily_summary, interval=90, first=30)
         log.info("📊 Smart Daily Summary checker scheduled (every 60s)")
 
         app.job_queue.run_repeating(proactive_followup_job, interval=10800, first=300)
