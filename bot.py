@@ -2493,7 +2493,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.error(f"OK button error: {e}")
             await query.edit_message_text("❌ Error stopping alarm!")
-    
+
     elif query.data.startswith("smart_complete_"):
         try:
             rid = int(query.data.split("_")[2])
@@ -2505,7 +2505,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.error(f"Smart complete error: {e}")
             await query.edit_message_text("❌ Error!")
-    
+
     elif query.data.startswith("smart_snooze5_"):
         try:
             rid = int(query.data.split("_")[2])
@@ -2514,9 +2514,9 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 smart_reminders.acknowledge(rid, "Snoozed 5min")
                 new_dt = now_ist() + timedelta(minutes=5)
                 _add_smart_reminder(
-                    target["chat_id"], target["text"], 
-                    new_dt.strftime("%Y-%m-%d %H:%M:%S"), 
-                    target.get("priority", "MEDIUM"), 
+                    target["chat_id"], target["text"],
+                    new_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    target.get("priority", "MEDIUM"),
                     target.get("repeat_until_done", False)
                 )
                 await query.edit_message_text(f"😴 *Snoozed 5 minutes!*", parse_mode="Markdown")
@@ -2525,7 +2525,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.error(f"Smart snooze error: {e}")
             await query.edit_message_text("❌ Error!")
-    
+
     elif query.data.startswith("smart_again_"):
         try:
             rid = int(query.data.split("_")[2])
@@ -2534,9 +2534,9 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 smart_reminders.acknowledge(rid, "Remind again")
                 new_dt = now_ist() + timedelta(minutes=target.get("repeat_interval", 15))
                 _add_smart_reminder(
-                    target["chat_id"], target["text"], 
-                    new_dt.strftime("%Y-%m-%d %H:%M:%S"), 
-                    target.get("priority", "MEDIUM"), 
+                    target["chat_id"], target["text"],
+                    new_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    target.get("priority", "MEDIUM"),
                     target.get("repeat_until_done", False)
                 )
                 await query.edit_message_text(f"🔁 *Will remind again!*", parse_mode="Markdown")
@@ -2544,6 +2544,78 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Reminder not found!")
         except Exception as e:
             log.error(f"Smart again error: {e}")
+            await query.edit_message_text("❌ Error!")
+
+    elif query.data.startswith("quick_done_"):
+        try:
+            tid = int(query.data.split("_")[2])
+            t = tasks.complete(tid)
+            if t:
+                _log_action("User", "quick_task_done", f"#{tid}: {t['title']}")
+                await query.edit_message_text(
+                    f"✅ *Alhamdulillah! Task Complete!* 🎉\n\n"
+                    f"#{tid} {t['title']}\n\nMashAllah! 💪",
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.edit_message_text("❌ Task nahi mila!")
+        except Exception as e:
+            log.error(f"Quick done error: {e}")
+            await query.edit_message_text("❌ Error!")
+
+    elif query.data.startswith("postpone_"):
+        try:
+            tid = int(query.data.split("_")[1])
+            target = next((t for t in tasks.all_tasks() if t["id"] == tid), None)
+            if target:
+                kal = (now_ist() + timedelta(days=1)).strftime("%Y-%m-%d 09:00:00")
+                reminders.add(query.message.chat.id, f"Task: {target['title']}", kal)
+                _log_action("User", "task_postponed", f"#{tid}: {target['title']}")
+                await query.edit_message_text(
+                    f"⏰ *Kal ke liye set ho gaya!*\n\n"
+                    f"#{tid} {target['title']}\n\n"
+                    f"_Kal 9 AM pe yaad dilaaunga! InshAllah_",
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.edit_message_text("❌ Task nahi mila!")
+        except Exception as e:
+            log.error(f"Postpone error: {e}")
+            await query.edit_message_text("❌ Error!")
+
+    elif query.data.startswith("quick_del_"):
+        try:
+            tid = int(query.data.split("_")[2])
+            target = next((t for t in tasks.all_tasks() if t["id"] == tid), None)
+            if target:
+                tasks.delete(tid)
+                _log_action("User", "quick_task_delete", f"#{tid}: {target['title']}")
+                await query.edit_message_text(
+                    f"🗑️ *Task Delete Ho Gaya!*\n\n"
+                    f"#{tid} '{target['title']}'",
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.edit_message_text("❌ Task nahi mila!")
+        except Exception as e:
+            log.error(f"Quick del error: {e}")
+            await query.edit_message_text("❌ Error!")
+
+    elif query.data.startswith("habit_quick_"):
+        try:
+            hid = int(query.data.split("_")[2])
+            ok, streak = habits.log(hid)
+            if ok:
+                _log_action("User", "habit_quick_done", f"#{hid} streak: {streak}")
+                if streak >= 7:
+                    msg = f"🔥 *MashAllah! Streak Bacha Li!* 🎉\n\n{streak} din ka streak! SubhanAllah! 💪"
+                else:
+                    msg = f"✅ *Habit Done! Alhamdulillah!* 🎉\n\n{streak} din ka streak! 💪"
+                await query.edit_message_text(msg, parse_mode="Markdown")
+            else:
+                await query.edit_message_text("✅ Pehle hi log ho chuka hai!")
+        except Exception as e:
+            log.error(f"Habit quick done error: {e}")
             await query.edit_message_text("❌ Error!")
 
 
@@ -2731,27 +2803,32 @@ def parse_user_message(user_msg: str):
             })
     
     # ── REGULAR REMINDER KEYWORDS ──
-    reminder_keywords = ['remind', 'reminder', 'reminder add', 'remind me', 
+# ── REGULAR REMINDER KEYWORDS ──
+    reminder_keywords = ['remind', 'reminder', 'reminder add', 'remind me',
                          'yaad dilana', 'bata dena', 'alarm', 'remindme']
-    
+
     if any(kw in lower for kw in reminder_keywords):
         date_str, remaining = _parse_date_from_text(user_msg)
         time_str = _parse_time_from_text(remaining)
-        
+
         now = now_ist()
-        
+
         if date_str:
             due_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         else:
             due_date = now.date()
-        
+
         if time_str:
             hour, minute = map(int, time_str.split(':'))
             remind_dt = datetime(due_date.year, due_date.month, due_date.day, hour, minute)
             if remind_dt < now and due_date == now.date():
                 remind_dt += timedelta(days=1)
         else:
-            if 'min' in lower or 'minute' in lower or 'baad' in lower:
+            if date_str:
+                remind_dt = datetime(due_date.year, due_date.month, due_date.day, 9, 0)
+                if remind_dt < now and due_date == now.date():
+                    remind_dt += timedelta(days=1)
+            elif 'min' in lower or 'minute' in lower or 'baad' in lower:
                 num_match = _re.search(r'(\d+)', lower)
                 if num_match:
                     mins = int(num_match.group(1))
@@ -2760,26 +2837,25 @@ def parse_user_message(user_msg: str):
                     remind_dt = now + timedelta(minutes=5)
             else:
                 remind_dt = now + timedelta(minutes=5)
-        
-        due_timestamp = remind_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
+
         text = user_msg
-    remove_words = reminder_keywords + ['kal', 'kl', 'aaj', 'parso', 'subha', 'subah',
-                'shaam', 'raat', 'baje', 'bajay', 'am', 'pm', 'mein', 'me', 'ko', 'pe',
-                'add', 'kro', 'karo', 'reminder', 'set']  # ← 'add', 'kro', 'karo' add karo
-    for rw in remove_words:
-        text = _re.sub(r'\b' + _re.escape(rw) + r'\b', '', text, flags=_re.IGNORECASE)
-    # Date bhi text se hatao
-    if date_str:
-        text = _re.sub(r'\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*', '', text, flags=_re.IGNORECASE)
-    text = text.strip()
-    if not text or len(text) < 2:
-        text = "Reminder"
-    
-    return ("remind", {"time": remind_dt.strftime("%Y-%m-%d %H:%M:%S"), "text": text})
-    
+        remove_words = reminder_keywords + ['kal', 'kl', 'aaj', 'parso', 'subha', 'subah',
+                    'shaam', 'raat', 'baje', 'bajay', 'am', 'pm', 'mein', 'me', 'ko', 'pe',
+                    'add', 'kro', 'karo', 'set']
+        for rw in remove_words:
+            text = _re.sub(r'\b' + _re.escape(rw) + r'\b', '', text, flags=_re.IGNORECASE)
+        if date_str:
+            text = _re.sub(r'\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*', '', text, flags=_re.IGNORECASE)
+        text = _re.sub(r'\d{1,2}[:]\d{2}', '', text)
+        text = _re.sub(r'\d{1,2}\s*(?:baje|bajay|am|pm)', '', text)
+        text = text.strip()
+        if not text or len(text) < 2:
+            text = "Reminder"
+
+        return ("remind", {"time": remind_dt.strftime("%Y-%m-%d %H:%M:%S"), "text": text})
+
     # ── MEMORY TRIGGERS ──
-    memory_triggers = ["yaad rakhna", "memory mein save", "memory me save", 
+    memory_triggers = ["yaad rakhna", "memory mein save", "memory me save",
                        "note karlo", "remember", "dimaag mein rakh"]
     if any(t in lower for t in memory_triggers):
         text = user_msg
@@ -3556,6 +3632,12 @@ def main():
 
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
+
+        app.job_queue.run_repeating(context_aware_followup_job, interval=1800, first=60)
+        log.info("🎯 Context-aware followup scheduled (every 30 min check)")
+
+        app.job_queue.run_repeating(habit_streak_protection_job, interval=60, first=45)
+        log.info("🔥 Habit streak protection scheduled (every 60s check)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
