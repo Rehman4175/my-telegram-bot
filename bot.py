@@ -4184,16 +4184,26 @@ async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
                     chat_ids.add(int(r["chat_id"]))
                 except:
                     pass
+        
+        # Voice notes se bhi chat_ids collect karo
+        try:
+            from secure_data_manager import voice_notes
+            for vn in voice_notes.get_all():
+                if vn.get("chat_id"):
+                    chat_ids.add(int(vn["chat_id"]))
+        except:
+            pass
 
         if not chat_ids:
-            log.warning("No chat IDs found for startup notification")
+            # Instead of warning, just log info
+            log.info("No active chats yet - waiting for first user interaction")
             return
 
         for cid in chat_ids:
             try:
                 await context.bot.send_message(
                     chat_id=cid,
-                    text="🟢 Rk Bot v18.5 Active!\n\n✅ All systems running\n⏰ Daily summaries active\n📊 Proactive follow-ups active\n✅ Smart reminders using separate counter\n✅ reminder job checks BOTH stores\n\nAlhamdulillah!"
+                    text="🟢 Rk Bot v19.0 Active!\n\n✅ All systems running\n✅ Confirmation feature active\n✅ Date parsing for reminders\n\nAlhamdulillah!"
                 )
                 log.info(f"Startup notification sent to {cid}")
             except Exception as e:
