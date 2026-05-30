@@ -70,7 +70,10 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY", "")
 
 # Configurable budget threshold for expense insights
-WEEKLY_BUDGET_THRESHOLD = int(os.environ.get("WEEKLY_BUDGET_THRESHOLD", "1000"))
+try:
+    WEEKLY_BUDGET_THRESHOLD = int(os.environ.get("WEEKLY_BUDGET_THRESHOLD", "1000"))
+except (ValueError, TypeError):
+    WEEKLY_BUDGET_THRESHOLD = 1000
 
 DIARY_AWAIT_TEXT = 0
 # ── ADD THESE 2 LINES ──
@@ -109,38 +112,32 @@ _last_gemini_call = 0
 chat_context = {}
 _last_context_cleanup = time.time()
 
-def cleanup_chat_context():
-    """Periodic cleanup - removes chats inactive for > 24 hours"""
+async def cleanup_chat_context():
     global _last_context_cleanup
-    now = time.time()
-    if now - _last_context_cleanup < 3600:
-        return
-    _last_context_cleanup = now
-    
-    cutoff_date = now_ist().date() - timedelta(days=1)
-    to_remove = []
-    
-    for chat_id, msgs in list(chat_context.items()):
-        if not msgs:
-            to_remove.append(chat_id)
-            continue
-        
-        last_msg = msgs[-1]
-        last_ts = last_msg[2]  # Full datetime string "YYYY-MM-DD HH:MM"
-        
-        try:
-            last_dt = datetime.strptime(last_ts[:16], "%Y-%m-%d %H:%M")
-            if last_dt.date() < cutoff_date:
+    async with _chat_context_lock:
+        now = time.time()
+        if now - _last_context_cleanup < 3600:
+            return
+        _last_context_cleanup = now
+        cutoff_date = now_ist().date() - timedelta(days=1)
+        to_remove = []
+        for chat_id, msgs in list(chat_context.items()):
+            if not msgs:
                 to_remove.append(chat_id)
-        except:
-            if len(msgs) >= 20:
-                to_remove.append(chat_id)
-    
-    for cid in to_remove:
-        del chat_context[cid]
-    
-    if to_remove:
-        log.info(f"🧹 Cleaned {len(to_remove)} old chat contexts, {len(chat_context)} remaining")
+                continue
+            last_msg = msgs[-1]
+            last_ts = last_msg[2]
+            try:
+                last_dt = datetime.strptime(last_ts[:16], "%Y-%m-%d %H:%M")
+                if last_dt.date() < cutoff_date:
+                    to_remove.append(chat_id)
+            except:
+                if len(msgs) >= 20:
+                    to_remove.append(chat_id)
+        for cid in to_remove:
+            del chat_context[cid]
+        if to_remove:
+            log.info(f"🧹 Cleaned {len(to_remove)} old chat contexts")
 
 
 # ── GEMINI API CALL ─────────────────────────────────
@@ -209,7 +206,7 @@ Always reply in HINGLISH like a friendly Indian Muslim assistant!"""
 # ── CONTEXT-AWARE PROMPT BUILDER ────────────────────
 def get_chat_context(chat_id, last_n=5):
     """Get last N messages for context-aware replies"""
-    cleanup_chat_context()
+    #cleanup_chat_context()
     if chat_id not in chat_context:
         return ""
     recent = chat_context[chat_id][-last_n:]
@@ -2256,17 +2253,28 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # REMINDER JOB - CHECKS BOTH NORMAL AND SMART REMINDERS
 # ════════════════════════════════════════════════════
 
+# Fired tracker cache
 FIRED_TRACKER_FILE = os.path.join(DATA_DIR, "fired_reminders.json")
+_fired_cache = None
+_fired_cache_time = 0
+_chat_context_lock = asyncio.Lock()
 
 def _load_fired_tracker():
-    """Load persistent fired reminders tracker"""
+    global _fired_cache, _fired_cache_time
+    now = time.time()
+    if _fired_cache is not None and now - _fired_cache_time < 60:
+        return _fired_cache
     try:
         if os.path.exists(FIRED_TRACKER_FILE):
             with open(FIRED_TRACKER_FILE, 'r') as f:
-                return json.load(f)
+                _fired_cache = json.load(f)
+                _fired_cache_time = now
+                return _fired_cache
     except:
         pass
-    return {}
+    _fired_cache = {}
+    _fired_cache_time = now
+    return _fired_cache
 
 def _save_fired_tracker(tracker):
     """Save fired reminders tracker to disk"""
@@ -2278,6 +2286,7 @@ def _save_fired_tracker(tracker):
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     """Main reminder checker - runs every 60 seconds with deduplication"""
+    await cleanup_chat_context()
     now = now_ist()
     now_str_full = now.strftime("%Y-%m-%d %H:%M")
     now_hm = now.strftime("%H:%M")
@@ -4034,7 +4043,6 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if action == "remind":
                 r = reminders.add(chat_id, params["text"], params["due"])
                 
-                # Format the response
                 try:
                     remind_dt = datetime.strptime(params["due"], "%Y-%m-%d %H:%M:%S")
                     date_display = remind_dt.strftime("%d %b %Y")
@@ -4168,8 +4176,10 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
                 _log_action(user_name, "memory_save", f"[{category}]: {params['text'][:80]}")
-            
-        del pending_actions[chat_id]
+              
+            # ── SAFE DELETION ──
+            if chat_id in pending_actions:
+                del pending_actions[chat_id]   # ← YEH LINE SAHI INDENT PE HONI CHAHIYE
     
     else:  # cancel
         await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
@@ -4308,7 +4318,7 @@ def main():
         app.job_queue.run_repeating(reminder_job, interval=60, first=10)
         log.info("⏰ Reminder job scheduled (every 60s) - checks BOTH normal AND smart reminders")
 
-        app.job_queue.run_repeating(smart_daily_summary, interval=90, first=30)
+        app.job_queue.run_repeating(smart_daily_summary, interval=60, first=30)
         log.info("📊 Smart Daily Summary checker scheduled (every 60s)")
 
         app.job_queue.run_repeating(proactive_followup_job, interval=10800, first=300)
