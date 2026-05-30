@@ -2442,10 +2442,20 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 prefix = config["prefix"]
                 current_repeat = r.get("current_repeat", 0)
                 max_repeats = r.get("max_repeats", config["max_repeats"])
+                
+                # ── ROOT TEXT use karo - nested text avoid karne ke liye ──
+                display_text = r.get("root_text") or r.get("text", "")
+                
+                # Max repeats check - agar limit cross ho gayi to acknowledge karo aur skip karo
+                if not r.get("repeat_until_done", False) and current_repeat >= max_repeats:
+                    log.info(f"Smart reminder #{r['id']} reached max repeats ({max_repeats}), auto-acknowledging")
+                    smart_reminders.acknowledge(r["id"], "Max repeats reached")
+                    continue
+                
                 progress = f"\n\n📊 *Progress:* Attempt {current_repeat + 1}/{max_repeats}"
                 
                 alert = (f"{prefix}🚨 *ALARM!*\n{'━' * 20}\n⏰ *{due_time_display} BAJ GAYE!*\n{'━' * 20}\n\n"
-                         f"🔔 *{r['text'].upper()}*{progress}\n\n"
+                         f"🔔 *{display_text.upper()}*{progress}\n\n"
                          f"😴 Snooze: /snooze5 {r['id']} | /snooze10 {r['id']}\n"
                          f"🗑️ Delete: /delremind {r['id']}\n"
                          f"✅ Complete: /smartcomplete {r['id']}")
@@ -2464,14 +2474,13 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     )
                     smart_reminders.mark_triggered(r["id"])
                     
-                    # Schedule follow-up
+                    # Follow-up schedule karo - process_followup ke andar bhi max_repeats check hai
                     if not r.get("acknowledged", False):
                         _process_smart_followup(r)
                     
-                    _log_action("Bot", "alarm_fired", f"Smart Alarm #{r['id']} at {now_hm}: {r['text']}")
+                    _log_action("Bot", "alarm_fired", f"Smart Alarm #{r['id']} at {now_hm}: {display_text[:50]}")
                 except Exception as e:
                     log.error(f"Failed to send smart alarm: {e}")
-
 
 # ════════════════════════════════════════════════════
 # OK BUTTON HANDLER
