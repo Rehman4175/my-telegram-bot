@@ -1031,47 +1031,49 @@ class SmartReminderStore:
         
         return count
 
-    def process_followup(self, reminder: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Create follow-up reminder for smart reminder chain"""
-        if reminder.get("acknowledged", False):
-            return None
-        
-        priority = reminder.get("priority", "MEDIUM")
-        current_repeat = reminder.get("current_repeat", 0)
-        max_repeats = reminder.get("max_repeats", 6)
-        repeat_until_done = reminder.get("repeat_until_done", False)
-        
-        if not repeat_until_done and current_repeat >= max_repeats:
-            log.info(f"Smart reminder #{reminder['id']} reached max repeats")
-            return None
-        
-        next_interval = reminder.get("repeat_interval", 15)
-        next_due = now_ist() + timedelta(minutes=next_interval)
-        next_timestamp = next_due.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Prepare follow-up text with attempt info
-        if current_repeat >= 1:
-            followup_text = f"⚠️ Reminder #{reminder['id']} (Attempt {current_repeat + 1}/{max_repeats}): {reminder['text']}"
-        else:
-            followup_text = f"🔁 {reminder['text']}"
-        
-        followup = self.add(
-            chat_id=reminder["chat_id"],
-            text=followup_text,
-            due_timestamp=next_timestamp,
-            priority=priority,
-            repeat_until_done=repeat_until_done,
-            repeat_interval=next_interval,
-            max_repeats=max_repeats
-        )
-        
-        # Set parent ID for chain tracking
-        followup["parent_id"] = reminder.get("parent_id", reminder["id"])
-        followup["current_repeat"] = current_repeat + 1
-        self.store.save()
-        
-        log.info(f"🔄 Smart follow-up #{followup['id']} scheduled for {next_timestamp}")
-        return followup
+def process_followup(self, reminder: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Create follow-up reminder for smart reminder chain"""
+    if reminder.get("acknowledged", False):
+        return None
+    
+    priority = reminder.get("priority", "MEDIUM")
+    current_repeat = reminder.get("current_repeat", 0)
+    max_repeats = reminder.get("max_repeats", 6)
+    repeat_until_done = reminder.get("repeat_until_done", False)
+    
+    # Max repeats check
+    if not repeat_until_done and current_repeat >= max_repeats:
+        log.info(f"Smart reminder #{reminder['id']} reached max repeats ({max_repeats})")
+        return None
+    
+    next_interval = reminder.get("repeat_interval", 15)
+    next_due = now_ist() + timedelta(minutes=next_interval)
+    next_timestamp = next_due.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # ROOT text nikalo - nested text avoid karne ke liye
+    root_text = reminder.get("root_text") or reminder.get("text", "")
+    # Agar text mein "🔁 " prefix hai to hata do
+    if root_text.startswith("🔁 "):
+        root_text = root_text[2:]
+    
+    followup = self.add(
+        chat_id=reminder["chat_id"],
+        text=root_text,  # Original text, nested nahi
+        due_timestamp=next_timestamp,
+        priority=priority,
+        repeat_until_done=repeat_until_done,
+        repeat_interval=next_interval,
+        max_repeats=max_repeats
+    )
+    
+    # Root text aur parent ID store karo chain tracking ke liye
+    followup["parent_id"] = reminder.get("parent_id") or reminder["id"]
+    followup["root_text"] = root_text
+    followup["current_repeat"] = current_repeat + 1
+    self.store.save()
+    
+    log.info(f"🔄 Smart follow-up #{followup['id']} scheduled for {next_timestamp} (attempt {current_repeat + 1}/{max_repeats})")
+    return followup
 
     def delete(self, rid):
         self.store.data["list"] = [r for r in self.get_all() if r["id"] != rid]
