@@ -4021,17 +4021,20 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action = pending["action"]
             params = pending["params"]
             
+            # ── FIRST: Stop ALL smart reminders for this user ──
+            try:
+                for smart_r in smart_reminders.get_active_smart():
+                    if smart_r.get("chat_id") == chat_id:
+                        _acknowledge_smart_chain(smart_r["id"])
+                        log.info(f"Stopped smart reminder #{smart_r['id']} before adding new one")
+            except Exception as e:
+                log.error(f"Error cleaning smart reminders: {e}")
+            
             # Execute based on action
             if action == "remind":
                 r = reminders.add(chat_id, params["text"], params["due"])
                 
-                # ── STOP SMART REMINDER REPEATS ──
-                if pending.get("parent_reminder_id"):
-                    _acknowledge_smart_chain(pending["parent_reminder_id"])
-                    log.info(f"Acknowledged smart reminder chain #{pending['parent_reminder_id']}")
-                # ────────────────────────────────
-                
-                # Format the response message properly
+                # Format the response
                 try:
                     remind_dt = datetime.strptime(params["due"], "%Y-%m-%d %H:%M:%S")
                     date_display = remind_dt.strftime("%d %b %Y")
@@ -4049,8 +4052,7 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         f"✅ *Reminder Set!* 🎉\n\n"
                         f"📝 {params['text']}\n"
                         f"⏰ {params['due']}\n"
-                        f"📌 ID #{r['id']}\n\n"
-                        f"InshAllah yaad dilaaunga!",
+                        f"📌 ID #{r['id']}",
                         parse_mode="Markdown"
                     )
                 _log_action(user_name, "reminder_set", f"#{r['id']}: {params['text']} at {params['due']}")
@@ -4167,7 +4169,7 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "memory_save", f"[{category}]: {params['text'][:80]}")
             
-            del pending_actions[chat_id]
+        del pending_actions[chat_id]
     
     else:  # cancel
         await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
