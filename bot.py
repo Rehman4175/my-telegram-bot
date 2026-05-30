@@ -275,7 +275,6 @@ def alarm_keyboard(rid):
 
 # ── CLEANUP FUNCTION ────────────────────────────────
 def cleanup_before_start():
-    """Force delete webhook and clear pending updates to prevent conflict"""
     token = TELEGRAM_TOKEN
     if not token:
         return
@@ -286,17 +285,17 @@ def cleanup_before_start():
         with urllib.request.urlopen(req, timeout=10) as resp:
             log.info(f"Webhook deleted: {resp.status}")
         
-        time.sleep(2)  # ← YE ADD HUA
+        time.sleep(5)  # 2 → 5 karo
         
         url2 = f"https://api.telegram.org/bot{token}/getUpdates?offset=-1&timeout=1"
         req2 = urllib.request.Request(url2, method="POST")
         with urllib.request.urlopen(req2, timeout=5):
             pass
         
-        time.sleep(1)  # ← YE ADD HUA
-        log.info("✅ Cleanup completed - old connections cleared")
+        time.sleep(3)  # 1 → 3 karo
+        log.info("✅ Cleanup completed")
     except Exception as e:
-        log.warning(f"Cleanup warning (non-critical): {e}")
+        log.warning(f"Cleanup warning: {e}")
 
 
 # ── MISCELLANEOUS LOGGER ────────────────────────────
@@ -4340,7 +4339,7 @@ def main():
     log.info("✅ Bot ready! Starting polling...")
     log.info("📊 Daily summaries will now trigger automatically every 60 seconds check")
     log.info("📌 reminder_job checks BOTH reminders (normal) AND smart_reminders stores")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, close_loop=False)
 
 
 if __name__ == "__main__":
