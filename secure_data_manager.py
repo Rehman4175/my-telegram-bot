@@ -1420,8 +1420,7 @@ def get_reminder_manager():
 def get_smart_reminder_manager():
     global _smart_reminder_instance
     if _smart_reminder_instance is None:
-        _smart_reminder_instance = SmartReminderStore()
-        log.info("✅ SmartReminderStore initialized with separate smart_counter")
+        _smart_reminder_instance = SmartReminderStore()  # Sirf yahi use karo
     return _smart_reminder_instance
 
 
