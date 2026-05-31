@@ -849,11 +849,34 @@ async def proactive_followup_job(context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════
 
 async def weekly_review_job(context: ContextTypes.DEFAULT_TYPE):
-    """Send comprehensive weekly review every Sunday at 9 PM"""
+    """Send comprehensive weekly review every Sunday at 9 PM - max 5 repeats"""
     now = now_ist()
     if now.weekday() != 6:  # Sunday only
         return
-    
+    if now.strftime("%H:%M") != "21:00":  # Only at 9 PM
+        return
+
+    # ── Deduplication ──
+    dedup_key = f"weekly_review_{now.strftime('%Y-%m-%d')}"
+    dedup_file = os.path.join(DATA_DIR, "summary_dedup.json")
+
+    try:
+        dedup_data = {}
+        if os.path.exists(dedup_file):
+            with open(dedup_file, 'r') as f:
+                dedup_data = json.load(f)
+
+        if dedup_key in dedup_data:
+            log.info("Weekly review already sent today, skipping")
+            return
+
+        dedup_data[dedup_key] = now.strftime("%Y-%m-%d %H:%M:%S")
+        with open(dedup_file, 'w') as f:
+            json.dump(dedup_data, f)
+    except Exception as e:
+        log.warning(f"Weekly dedup check failed: {e}")
+
+    # ── Collect chat IDs ──
     chat_ids = set()
     for r in reminders.get_all():
         if r.get("chat_id"):
@@ -861,19 +884,20 @@ async def weekly_review_job(context: ContextTypes.DEFAULT_TYPE):
                 chat_ids.add(int(r["chat_id"]))
             except:
                 pass
-    
+
     if not chat_ids:
         return
-    
+
+    # ── Build message ──
     week_start = now.date() - timedelta(days=7)
     week_start_str = week_start.strftime("%Y-%m-%d")
-    
+
     completed_this_week = 0
     for t in tasks.all_tasks():
         done_date = t.get("done_date", "")
         if done_date and done_date >= week_start_str:
             completed_this_week += 1
-    
+
     habits_this_week = 0
     for h in habits.all():
         if h.get("last_done"):
@@ -883,7 +907,7 @@ async def weekly_review_job(context: ContextTypes.DEFAULT_TYPE):
                     habits_this_week += 1
             except:
                 pass
-    
+
     weekly_expense = 0
     for e in _get_expenses_list():
         try:
@@ -892,13 +916,13 @@ async def weekly_review_job(context: ContextTypes.DEFAULT_TYPE):
                 weekly_expense += float(e.get("amount", 0))
         except:
             pass
-    
+
     diary_entries = 0
     all_diary = diary.get_all_entries()
     for date_key, entries in all_diary.items():
         if date_key >= week_start_str:
             diary_entries += len(entries)
-    
+
     msg = f"📊 *Assalamualaikum! Weekly Review* 📊\n\n"
     msg += f"📅 *{week_start.strftime('%d %b')} — {now.strftime('%d %b %Y')}*\n\n"
     msg += f"✅ *Tasks Complete:* {completed_this_week}\n"
@@ -906,12 +930,37 @@ async def weekly_review_job(context: ContextTypes.DEFAULT_TYPE):
     msg += f"💸 *Total Kharcha:* Rs.{weekly_expense}\n"
     msg += f"📖 *Diary Entries:* {diary_entries}\n"
     msg += f"📋 *Abhi Pending Tasks:* {len(tasks.pending())}\n\n"
-    msg += f"🌟 *MashAllah! Agla hafte aur acha hoga InshAllah!*"
-    
+    msg += f"🌟 *MashAllah! Agla hafte aur acha hoga InshAllah!*\n\n"
+    msg += f"_✅ Dekh liya? Button dabao band karne ke liye_"
+
+    # ── Send as smart reminder - max 5 repeats ──
     for chat_id in chat_ids:
         try:
-            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-            log.info(f"Weekly review sent to {chat_id}")
+            reminder = smart_reminders.add(
+                chat_id=chat_id,
+                text=msg,
+                due_timestamp=now.strftime("%Y-%m-%d %H:%M:%S"),
+                priority="MEDIUM",
+                repeat_until_done=True,
+                repeat_interval=10,    # Har 10 min repeat
+                max_repeats=5          # Max 5 baar - phir band
+            )
+
+            buttons = [[InlineKeyboardButton(
+                "✅ Dekh Liya - Band Karo",
+                callback_data=f"smart_complete_{reminder['id']}"
+            )]]
+            keyboard = InlineKeyboardMarkup(buttons)
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+
+            log.info(f"Weekly review sent to {chat_id}, reminder #{reminder['id']} "
+                     f"will repeat max 5 times every 10 min")
         except Exception as e:
             log.error(f"Weekly review error for {chat_id}: {e}")
 
