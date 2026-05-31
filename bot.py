@@ -285,14 +285,14 @@ def cleanup_before_start():
         with urllib.request.urlopen(req, timeout=10) as resp:
             log.info(f"Webhook deleted: {resp.status}")
         
-        time.sleep(5)  # 2 → 5 karo
+        time.sleep(10)  # 5 → 10 karo
         
         url2 = f"https://api.telegram.org/bot{token}/getUpdates?offset=-1&timeout=1"
         req2 = urllib.request.Request(url2, method="POST")
         with urllib.request.urlopen(req2, timeout=5):
             pass
         
-        time.sleep(3)  # 1 → 3 karo
+        time.sleep(5)  # 3 → 5 karo
         log.info("✅ Cleanup completed")
     except Exception as e:
         log.warning(f"Cleanup warning: {e}")
