@@ -1,31 +1,26 @@
 name: Sakibur Bot 24/7
-
 on:
   schedule:
-    - cron: '*/5 * * * *'   # Har 5 min pe restart
-  workflow_dispatch:          # Manual trigger
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
   push:
     branches: [ main, master ]
 
-# Concurrency remove karte hain pehle (ye problem cause kar sakta hai)
-# concurrency:
-#   group: telegram-bot
-#   cancel-in-progress: true
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 280      # ~4.6 ghante
-
+    timeout-minutes: 280
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Cache pip packages
         uses: actions/cache@v4
         with:
@@ -33,12 +28,10 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Debug - Check secrets
         env:
           GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
@@ -54,7 +47,6 @@ jobs:
           else
             echo "❌ MONGO_URI NOT found! Data will reset on restart!"
           fi
-
       - name: Start Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
