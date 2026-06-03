@@ -44,6 +44,7 @@ from datetime import datetime, date, timedelta, timezone
 import re as _re
 import re
 import asyncio
+_chat_context_lock = asyncio.Lock()
 
 from secure_data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
@@ -2305,7 +2306,6 @@ async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 FIRED_TRACKER_FILE = os.path.join(DATA_DIR, "fired_reminders.json")
 _fired_cache = None
 _fired_cache_time = 0
-_chat_context_lock = asyncio.Lock()
 
 def _load_fired_tracker():
     global _fired_cache, _fired_cache_time
@@ -3357,10 +3357,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.warning(f"Error finding parent reminder: {e}")
         
         pending_actions[chat_id] = {
-            "action": new_action, 
-            "params": new_params, 
+            "action": new_action,
+            "params": new_params,
             "msg": user_msg,
-            "parent_reminder_id": parent_reminder_id  # Store parent ID to acknowledge later
+            "timestamp": time.time(),  # YE ADD KARO
         }
         
         keyboard = InlineKeyboardMarkup([[
@@ -4242,6 +4242,18 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
         if chat_id in pending_actions:
             del pending_actions[chat_id]
+
+async def cleanup_pending_actions(context: ContextTypes.DEFAULT_TYPE):
+    now = time.time()
+    expired = [
+        cid for cid, data in pending_actions.items()
+        if now - data.get("timestamp", now) > 300
+    ]
+    for cid in expired:
+        del pending_actions[cid]
+    if expired:
+        log.info(f"🧹 Cleaned {len(expired)} expired pending actions")
+      
 # ════════════════════════════════════════════════════
 # STARTUP NOTIFICATION FUNCTION (main se BAHAR)
 # ════════════════════════════════════════════════════
@@ -4389,6 +4401,8 @@ def main():
 
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
+
+        app.job_queue.run_repeating(cleanup_pending_actions, interval=300, first=60)
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
