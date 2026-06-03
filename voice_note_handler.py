@@ -34,10 +34,6 @@ log = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 
-def now_ist() -> datetime:
-    """Return current time in IST (Asia/Kolkata)"""
-    return datetime.now(IST)
-
 def today_str() -> str:
     """Return today's date string in IST"""
     return now_ist().strftime("%Y-%m-%d")
