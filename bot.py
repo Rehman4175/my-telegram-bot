@@ -4087,19 +4087,16 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action = pending["action"]
             params = pending["params"]
             
-            # ── FIRST: Stop ALL smart reminders for this user ──
+            # Stop ALL smart reminders for this user
             try:
                 for smart_r in smart_reminders.get_active_smart():
                     if smart_r.get("chat_id") == chat_id:
                         _acknowledge_smart_chain(smart_r["id"])
-                        log.info(f"Stopped smart reminder #{smart_r['id']} before adding new one")
             except Exception as e:
                 log.error(f"Error cleaning smart reminders: {e}")
             
-            # Execute based on action
             if action == "remind":
                 r = reminders.add(chat_id, params["text"], params["due"])
-                
                 try:
                     remind_dt = datetime.strptime(params["due"], "%Y-%m-%d %H:%M:%S")
                     date_display = remind_dt.strftime("%d %b %Y")
@@ -4233,10 +4230,10 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
                 _log_action(user_name, "memory_save", f"[{category}]: {params['text'][:80]}")
-              
-            # ── SAFE DELETION ──
-            if chat_id in pending_actions:
-                del pending_actions[chat_id]   # ← YEH LINE SAHI INDENT PE HONI CHAHIYE
+        
+        # ── FIXED: Bahar hai — HAR action ke baad delete hoga ──
+        if chat_id in pending_actions:
+            del pending_actions[chat_id]
     
     else:  # cancel
         await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
