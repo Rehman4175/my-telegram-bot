@@ -4256,39 +4256,11 @@ async def cleanup_pending_actions(context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════════════════
 
 async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
-    """Send startup message to all known chat IDs"""
     try:
-        chat_ids = set()
-        for r in reminders.get_all():
-            if r.get("chat_id"):
-                try:
-                    chat_ids.add(int(r["chat_id"]))
-                except:
-                    pass
-        
-        # Voice notes se bhi chat_ids collect karo
-        try:
-            from secure_data_manager import voice_notes
-            for vn in voice_notes.get_all():
-                if vn.get("chat_id"):
-                    chat_ids.add(int(vn["chat_id"]))
-        except:
-            pass
-
-        if not chat_ids:
-            # Instead of warning, just log info
-            log.info("No active chats yet - waiting for first user interaction")
-            return
-
-        for cid in chat_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=cid,
-                    text="🟢 Rk Bot v19.0 Active!\n\n✅ All systems running\n✅ Confirmation feature active\n✅ Date parsing for reminders\n\nAlhamdulillah!"
-                )
-                log.info(f"Startup notification sent to {cid}")
-            except Exception as e:
-                log.error(f"Failed to send startup notification to {cid}: {e}")
+        # Sirf channel logger use karo
+        from secure_data_manager import channel_logger
+        await channel_logger.log_startup()
+        log.info("Startup notification sent to channel only")
     except Exception as e:
         log.error(f"Startup notification error: {e}")
 
