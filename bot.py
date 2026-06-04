@@ -2649,6 +2649,14 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reminders.acknowledge(rid, "User pressed OK")
             reminders.store.save()
             
+            # ── CHANNEL UPDATE: REMINDER DONE ──
+            try:
+                await update_channel_status(update.get_bot(), "reminder", rid, reminder_text)
+                log.info(f"✅ Channel updated: reminder #{rid} marked as COMPLETED")
+            except Exception as e:
+                log.error(f"Channel update error for reminder #{rid}: {e}")
+            # ─────────────────────────────────
+            
             if target.get("is_smart", False):
                 _acknowledge_smart_chain(rid)
             
@@ -2666,7 +2674,7 @@ async def handle_ok_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.error(f"OK button error: {e}")
             await query.edit_message_text("❌ Error stopping alarm!")
-
+    
     elif query.data.startswith("smart_complete_"):
         try:
             rid = int(query.data.split("_")[2])
