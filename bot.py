@@ -270,80 +270,6 @@ async def update_channel_status(bot, data_type: str, item_id: int, title: str):
         log.error(f"❌ Channel update failed: {e}")
         return False
 
-async def send_weekly_channel_summary(bot):
-    """Send weekly summary to channel every Sunday"""
-    try:
-        now = now_ist()
-        if now.weekday() != 6:  # Sunday only
-            return
-            
-        week_start = now.date() - timedelta(days=7)
-        week_start_str = week_start.strftime("%Y-%m-%d")
-        
-        # Calculate weekly stats
-        completed_week = 0
-        for t in tasks.all_tasks():
-            done_date = t.get("done_date", "")
-            if done_date and done_date >= week_start_str:
-                completed_week += 1
-        
-        weekly_expense = 0
-        for e in _get_expenses_list():
-            try:
-                exp_date = str(e.get("date", ""))[:10]
-                if exp_date >= week_start_str:
-                    weekly_expense += float(e.get("amount", 0))
-            except:
-                pass
-        
-        border = "🟣" * 15
-        message = f"""{border}
-📊 *WEEKLY CHANNEL SUMMARY* 📊
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 *Week:* {week_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✅ *Tasks Completed:* {completed_week}
-💸 *Total Expenses:* Rs.{weekly_expense}
-🏃 *Active Habits:* {len(habits.all())}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 *Pending Items:* Check pinned message above
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌟 *Keep up the great work! InshAllah!*
-{border}"""
-
-        await bot.send_message(
-            chat_id=PRIVATE_CHANNEL_ID,
-            text=message,
-            parse_mode="Markdown"
-        )
-        log.info("📊 Weekly channel summary sent")
-    except Exception as e:
-        log.error(f"Weekly channel summary failed: {e}")
-
-# ── SCHEDULED PIN UPDATE JOB ──
-async def scheduled_pin_update(context: ContextTypes.DEFAULT_TYPE):
-    """Update pinned status every 5 minutes"""
-    try:
-        await update_pinned_status(context.bot)
-    except Exception as e:
-        log.error(f"Scheduled pin update error: {e}")
-      
-from secure_data_manager import (
-    memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
-    water, bills, calendar, chat_hist, now_ist, today_str, now_str,
-    sheets_backup, DATA_DIR, repo_manager
-)
-
-ssl._create_default_https_context = ssl._create_unverified_context
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes, ConversationHandler
-)
-
 # ── NEW ADDON IMPORTS ──────────────────────────────
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
@@ -4672,6 +4598,79 @@ async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Startup notification error: {e}")
 
+async def send_weekly_channel_summary(bot):
+    """Send weekly summary to channel every Sunday"""
+    try:
+        now = now_ist()
+        if now.weekday() != 6:  # Sunday only
+            return
+            
+        week_start = now.date() - timedelta(days=7)
+        week_start_str = week_start.strftime("%Y-%m-%d")
+        
+        # Calculate weekly stats
+        completed_week = 0
+        for t in tasks.all_tasks():
+            done_date = t.get("done_date", "")
+            if done_date and done_date >= week_start_str:
+                completed_week += 1
+        
+        weekly_expense = 0
+        for e in _get_expenses_list():
+            try:
+                exp_date = str(e.get("date", ""))[:10]
+                if exp_date >= week_start_str:
+                    weekly_expense += float(e.get("amount", 0))
+            except:
+                pass
+        
+        border = "🟣" * 15
+        message = f"""{border}
+📊 *WEEKLY CHANNEL SUMMARY* 📊
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 *Week:* {week_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ *Tasks Completed:* {completed_week}
+💸 *Total Expenses:* Rs.{weekly_expense}
+🏃 *Active Habits:* {len(habits.all())}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 *Pending Items:* Check pinned message above
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 *Keep up the great work! InshAllah!*
+{border}"""
+
+        await bot.send_message(
+            chat_id=PRIVATE_CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        log.info("📊 Weekly channel summary sent")
+    except Exception as e:
+        log.error(f"Weekly channel summary failed: {e}")
+
+# ── SCHEDULED PIN UPDATE JOB ──
+async def scheduled_pin_update(context: ContextTypes.DEFAULT_TYPE):
+    """Update pinned status every 5 minutes"""
+    try:
+        await update_pinned_status(context.bot)
+    except Exception as e:
+        log.error(f"Scheduled pin update error: {e}")
+      
+from secure_data_manager import (
+    memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
+    water, bills, calendar, chat_hist, now_ist, today_str, now_str,
+    sheets_backup, DATA_DIR, repo_manager
+)
+
+ssl._create_default_https_context = ssl._create_unverified_context
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    filters, ContextTypes, ConversationHandler
+)
 
 # ════════════════════════════════════════════════════
 # MAIN
