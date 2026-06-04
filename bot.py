@@ -280,6 +280,21 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY", "")
 
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    filters, ContextTypes, ConversationHandler
+)
+
+from secure_data_manager import (
+    memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
+    water, bills, calendar, chat_hist, now_ist, today_str, now_str,
+    sheets_backup, DATA_DIR, repo_manager
+)
+
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 # Configurable budget threshold for expense insights
 try:
     WEEKLY_BUDGET_THRESHOLD = int(os.environ.get("WEEKLY_BUDGET_THRESHOLD", "1000"))
@@ -4657,20 +4672,6 @@ async def scheduled_pin_update(context: ContextTypes.DEFAULT_TYPE):
         await update_pinned_status(context.bot)
     except Exception as e:
         log.error(f"Scheduled pin update error: {e}")
-      
-from secure_data_manager import (
-    memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
-    water, bills, calendar, chat_hist, now_ist, today_str, now_str,
-    sheets_backup, DATA_DIR, repo_manager
-)
-
-ssl._create_default_https_context = ssl._create_unverified_context
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes, ConversationHandler
-)
 
 # ════════════════════════════════════════════════════
 # MAIN
