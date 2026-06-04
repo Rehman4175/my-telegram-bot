@@ -46,6 +46,104 @@ import re
 import asyncio
 _chat_context_lock = asyncio.Lock()
 
+# ═══════════════════════════════════════════════════════════════════
+# PRIVATE CHANNEL DATABASE FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════
+
+# ⚠️ APNA CHANNEL ID YAHAN DALO (Repository secrets se auto le lega)
+PRIVATE_CHANNEL_ID = int(os.environ.get("RK_BOT_DATA", "-1003916756922"))
+
+CHANNEL_TYPES = {
+    "task": "📋",
+    "reminder": "⏰", 
+    "diary": "📖",
+    "habit": "🏃",
+    "expense": "💸",
+    "memory": "🧠",
+    "calendar": "📅",
+    "bill": "💳",
+    "water": "💧",
+    "complete": "✅"
+}
+
+async def save_to_channel(bot, data_type: str, title: str, details: str = "", item_id: int = None, status: str = "active"):
+    """Save any data to private Telegram channel with proper formatting"""
+    try:
+        now = now_ist()
+        date_display = now.strftime("%d %b %Y")
+        time_display = now.strftime("%I:%M %p")
+        
+        emoji = CHANNEL_TYPES.get(data_type, "📌")
+        
+        if status == "completed":
+            status_icon = "✅ DONE"
+            status_line = f"\n📌 *Status:* {status_icon}"
+        else:
+            status_icon = "⏳ PENDING"
+            status_line = f"\n📌 *Status:* {status_icon}"
+        
+        id_line = f"\n🆔 *ID:* `#{item_id}`" if item_id else ""
+        
+        message = f"""{emoji} *{data_type.upper()}*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 *Date:* {date_display}
+⏰ *Time:* {time_display}
+{id_line}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 *{title}*
+{details if details else ''}
+{status_line}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *Created by Rk Bot*"""
+
+        await bot.send_message(
+            chat_id=PRIVATE_CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        log.info(f"✅ Channel saved: {data_type} - {title[:50]}")
+        return True
+    except Exception as e:
+        log.error(f"❌ Channel save failed: {e}")
+        return False
+
+async def update_channel_status(bot, data_type: str, item_id: int, title: str):
+    """Update channel to show completed status"""
+    try:
+        now = now_ist()
+        date_display = now.strftime("%d %b %Y")
+        time_display = now.strftime("%I:%M %p")
+        
+        emoji = CHANNEL_TYPES.get(data_type, "📋")
+        
+        message = f"""{emoji} *{data_type.upper()}*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 *Date:* {date_display}
+⏰ *Time:* {time_display}
+🆔 *ID:* `#{item_id}`
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 *{title}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ *STATUS: COMPLETED!*
+⏱️ *Completed at:* {time_display} on {date_display}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎉 *Alhamdulillah! Done!*"""
+
+        await bot.send_message(
+            chat_id=PRIVATE_CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        log.info(f"✅ Channel updated: {data_type} #{item_id} completed")
+        return True
+    except Exception as e:
+        log.error(f"❌ Channel update failed: {e}")
+        return False
+      
 from secure_data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
     water, bills, calendar, chat_hist, now_ist, today_str, now_str,
@@ -571,7 +669,6 @@ def auto_tag_memory(text):
     elif any(kw in text_lower for kw in work_keywords):
         return "work"
     return "general"
-
 
 # ════════════════════════════════════════════════════
 # SMART DAILY SUMMARY (with 8 PM Habit Guard)
@@ -4092,11 +4189,24 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 for smart_r in smart_reminders.get_active_smart():
                     if smart_r.get("chat_id") == chat_id:
                         _acknowledge_smart_chain(smart_r["id"])
+                        log.info(f"Stopped smart reminder #{smart_r['id']} before adding new one")
             except Exception as e:
                 log.error(f"Error cleaning smart reminders: {e}")
             
+            # ──────────────────────────────────────────────────────────
+            # REMINDER
+            # ──────────────────────────────────────────────────────────
             if action == "remind":
                 r = reminders.add(chat_id, params["text"], params["due"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    due_display = params["due"][:16] if params["due"] else "No due"
+                    await save_to_channel(update.get_bot(), "reminder", params["text"], f"⏰ *Due:* {due_display}", r['id'], "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 try:
                     remind_dt = datetime.strptime(params["due"], "%Y-%m-%d %H:%M:%S")
                     date_display = remind_dt.strftime("%d %b %Y")
@@ -4119,8 +4229,19 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                 _log_action(user_name, "reminder_set", f"#{r['id']}: {params['text']} at {params['due']}")
             
+            # ──────────────────────────────────────────────────────────
+            # TASK
+            # ──────────────────────────────────────────────────────────
             elif action == "task":
                 t = tasks.add(params["title"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    await save_to_channel(update.get_bot(), "task", t['title'], f"📝 *Task:* {t['title']}", t['id'], "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 await query.edit_message_text(
                     f"✅ *Task Add Ho Gaya!* 🎉\n\n"
                     f"📌 #{t['id']} *{t['title']}*\n\n"
@@ -4129,8 +4250,19 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "task_add", f"#{t['id']}: {t['title']}")
             
+            # ──────────────────────────────────────────────────────────
+            # DIARY
+            # ──────────────────────────────────────────────────────────
             elif action == "diary":
                 diary.add(params["text"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    await save_to_channel(update.get_bot(), "diary", "Diary Entry", params["text"][:200], None, "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 await query.edit_message_text(
                     f"📖 *Diary Save Ho Gayi! Alhamdulillah!* ✅\n\n"
                     f"_{params['text'][:200]}_\n\n"
@@ -4139,8 +4271,19 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "diary_write", "Entry saved")
             
+            # ──────────────────────────────────────────────────────────
+            # EXPENSE
+            # ──────────────────────────────────────────────────────────
             elif action == "expense":
                 expenses.add(params["amount"], params["desc"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    await save_to_channel(update.get_bot(), "expense", params['desc'], f"💰 Amount: Rs.{params['amount']}", None, "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 await query.edit_message_text(
                     f"💸 *Kharcha Add!* ✅\n\n"
                     f"Rs.{params['amount']} — {params['desc']}\n"
@@ -4149,8 +4292,19 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "expense_add", f"Rs.{params['amount']} on {params['desc']}")
             
+            # ──────────────────────────────────────────────────────────
+            # HABIT
+            # ──────────────────────────────────────────────────────────
             elif action == "habit":
                 h = habits.add(params["name"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    await save_to_channel(update.get_bot(), "habit", h['name'], f"🔥 Streak: {h.get('streak', 0)} days", h['id'], "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 await query.edit_message_text(
                     f"🏃 *Habit Add Ho Gaya!* 🎉\n\n"
                     f"#{h['id']} *{h['name']}*\n\n"
@@ -4159,6 +4313,9 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "habit_add", f"#{h['id']}: {h['name']}")
             
+            # ──────────────────────────────────────────────────────────
+            # HABIT DONE
+            # ──────────────────────────────────────────────────────────
             elif action == "habit_done":
                 keyword = params.get("keyword", "")
                 if keyword.isdigit():
@@ -4168,6 +4325,13 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     ok, streak, h = habits.log_by_name(keyword)
                     habit_name = h["name"] if h else keyword
                 if ok:
+                    # ── UPDATE CHANNEL FOR HABIT COMPLETE ──
+                    try:
+                        await update_channel_status(update.get_bot(), "habit", keyword, habit_name)
+                    except Exception as e:
+                        log.error(f"Channel update error: {e}")
+                    # ──────────────────────────────────────
+                    
                     await query.edit_message_text(
                         f"🔥 *{habit_name} Done! MashAllah!* 🎉\n\n"
                         f"{streak} din ka streak! 💪",
@@ -4180,8 +4344,20 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown"
                     )
             
+            # ──────────────────────────────────────────────────────────
+            # CALENDAR
+            # ──────────────────────────────────────────────────────────
             elif action == "calendar":
                 e = calendar.add(params["title"], params["date"], "", "", "", params["type"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    event_type = "birthday" if params["type"] == "birthday" else "event"
+                    await save_to_channel(update.get_bot(), "calendar", params['title'], f"📅 Date: {params['date']}\n🎯 Type: {event_type}", e['id'], "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 emoji = "🎂" if params["type"] == "birthday" else "📅"
                 await query.edit_message_text(
                     f"{emoji} *Event Add Ho Gaya!* ✅\n\n"
@@ -4192,8 +4368,19 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "calendar_add", f"{params['type']} #{e['id']}: {params['title']}")
             
+            # ──────────────────────────────────────────────────────────
+            # BILL
+            # ──────────────────────────────────────────────────────────
             elif action == "bill":
                 b = bills.add(params["name"], params["amount"], params["due_day"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    await save_to_channel(update.get_bot(), "bill", params['name'], f"💰 Amount: Rs.{params['amount']}\n📅 Due Day: {params['due_day']}", b['id'], "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 await query.edit_message_text(
                     f"💳 *Bill Add Ho Gaya! Alhamdulillah!* ✅\n\n"
                     f"#{b['id']} *{params['name']}*\n"
@@ -4204,8 +4391,21 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "bill_add", f"#{b['id']}: {params['name']}")
             
+            # ──────────────────────────────────────────────────────────
+            # WATER
+            # ──────────────────────────────────────────────────────────
             elif action == "water":
                 water.add(params["ml"])
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    total = water.today_total()
+                    goal = water.goal()
+                    await save_to_channel(update.get_bot(), "water", f"{params['ml']}ml Water", f"💧 Total today: {total}/{goal}ml", None, "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 total = water.today_total()
                 goal = water.goal()
                 pct = int(total / goal * 100) if goal else 0
@@ -4219,9 +4419,20 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 _log_action(user_name, "water_log", f"Added {params['ml']}ml")
             
+            # ──────────────────────────────────────────────────────────
+            # MEMORY
+            # ──────────────────────────────────────────────────────────
             elif action == "memory":
                 category = auto_tag_memory(params["text"])
                 memory.add(params["text"], category=category)
+                
+                # ── SAVE TO PRIVATE CHANNEL ──
+                try:
+                    await save_to_channel(update.get_bot(), "memory", f"Note ({category})", params["text"][:200], None, "active")
+                except Exception as e:
+                    log.error(f"Channel save error: {e}")
+                # ────────────────────────────
+                
                 await query.edit_message_text(
                     f"🧠 *Memory Save Ho Gaya!* ✅\n\n"
                     f"🏷️ Category: *{category}*\n"
@@ -4230,17 +4441,20 @@ async def confirm_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
                 _log_action(user_name, "memory_save", f"[{category}]: {params['text'][:80]}")
-        
-        # ── FIXED: Bahar hai — HAR action ke baad delete hoga ──
-        if chat_id in pending_actions:
-            del pending_actions[chat_id]
+            
+            # ──────────────────────────────────────────────────────────
+            # DELETE PENDING ACTION (SAFE)
+            # ──────────────────────────────────────────────────────────
+            if chat_id in pending_actions:
+                del pending_actions[chat_id]
     
     else:  # cancel
         await query.edit_message_text("❌ *Cancelled!*", parse_mode="Markdown")
         if chat_id in pending_actions:
             del pending_actions[chat_id]
-
+          
 async def cleanup_pending_actions(context: ContextTypes.DEFAULT_TYPE):
+    """Clean up expired pending actions after 5 minutes"""
     now = time.time()
     expired = [
         cid for cid, data in pending_actions.items()
