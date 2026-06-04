@@ -1551,6 +1551,15 @@ async def cmd_deltask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not target:
             await update.message.reply_text(f"❌ Task #{tid} nahi mila!")
             return
+        
+        # ── CHANNEL UPDATE: TASK DELETED ──
+        try:
+            await update_deleted_status(update.get_bot(), "task", tid, target['title'])
+            log.info(f"✅ Channel updated: task #{tid} marked as DELETED")
+        except Exception as e:
+            log.error(f"Channel update error for task #{tid}: {e}")
+        # ─────────────────────────────────
+        
         tasks.delete(tid)
         _log_action(update.effective_user.first_name or "User", "task_delete", f"#{tid}: {target['title']}")
         await update.message.reply_text(
@@ -1759,6 +1768,15 @@ async def cmd_delremind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not target:
             await update.message.reply_text(f"❌ Reminder #{rid} nahi mila!")
             return
+        
+        # ── CHANNEL UPDATE: REMINDER DELETED ──
+        try:
+            await update_deleted_status(update.get_bot(), "reminder", rid, target['text'])
+            log.info(f"✅ Channel updated: reminder #{rid} marked as DELETED")
+        except Exception as e:
+            log.error(f"Channel update error for reminder #{rid}: {e}")
+        # ─────────────────────────────────
+        
         reminders.delete(rid)
         _log_action(update.effective_user.first_name or "User", "reminder_delete", f"#{rid}: {target['text']}")
         await update.message.reply_text(
@@ -1767,6 +1785,57 @@ async def cmd_delremind(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         await update.message.reply_text("❌ Invalid ID!")
+
+async def update_deleted_status(bot, data_type: str, item_id: int, title: str):
+    """Update channel to show DELETED status"""
+    try:
+        now = now_ist()
+        date_display = now.strftime("%d %b %Y")
+        time_display = now.strftime("%I:%M %p")
+        
+        emoji = CHANNEL_TYPES.get(data_type, "📋")
+        
+        # DELETED format - Red theme
+        message = f"""{emoji} *{data_type.upper()}* — ❌ DELETED
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 {date_display} | ⏰ {time_display}
+🆔 `#{item_id}`
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 {title}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ *Status: DELETED!*
+🗑️ Deleted at: {time_display} on {date_display}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ This item has been removed."""
+
+        # Try to edit existing message
+        if item_id in _pending_messages:
+            try:
+                await bot.edit_message_text(
+                    chat_id=PRIVATE_CHANNEL_ID,
+                    message_id=_pending_messages[item_id],
+                    text=message,
+                    parse_mode="Markdown"
+                )
+                log.info(f"✅ Edited message #{_pending_messages[item_id]} to DELETED")
+                # Remove from pending tracking
+                del _pending_messages[item_id]
+                return True
+            except Exception as e:
+                log.error(f"Failed to edit message: {e}")
+        
+        # Fallback: Send new message if edit fails
+        await bot.send_message(
+            chat_id=PRIVATE_CHANNEL_ID,
+            text=message,
+            parse_mode="Markdown"
+        )
+        log.info(f"✅ Sent new DELETED message for #{item_id} (edit failed)")
+        return True
+        
+    except Exception as e:
+        log.error(f"❌ Channel update failed: {e}")
+        return False
 
 async def cmd_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Snooze a reminder"""
