@@ -25,6 +25,10 @@ from zoneinfo import ZoneInfo  # Python 3.9+
 
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, CommandHandler, filters
+from quick_notes import (
+    add_note, get_all_notes, delete_note,
+    pin_note, search_notes, clear_all_notes, get_note_by_id
+)
 
 log = logging.getLogger(__name__)
 
