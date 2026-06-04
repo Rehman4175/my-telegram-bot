@@ -280,6 +280,11 @@ async def update_channel_status(bot, data_type: str, item_id: int, title: str):
 # ── NEW ADDON IMPORTS ──────────────────────────────
 from voice_note_handler import register_voice_handlers
 from smart_memory_handler import register_memory_handlers, check_smart_memory_intent
+
+from quick_notes import (
+    add_note, get_all_notes, delete_note,
+    pin_note, search_notes, clear_all_notes, get_note_by_id
+)
 # ──────────────────────────────────────────────────
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -771,6 +776,113 @@ def _parse_reminder_time(lwr):
         return remind_dt.strftime("%Y-%m-%d %H:%M:%S"), False
     
     return None, False
+
+async def cmd_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show all quick notes"""
+    notes = get_all_notes()
+    if not notes:
+        await update.message.reply_text(
+            "📋 *Koi note save nahi hai.*\n\n"
+            "Save karne ke liye:\n"
+            "• `note Ahmed ka number 9876543210`\n"
+            "• `clip https://example.com`\n"
+            "• `/note Koi bhi text`",
+            parse_mode="Markdown"
+        )
+        return
+    lines = []
+    for n in notes[:20]:
+        pin = "📌" if n.get("pinned") else "📋"
+        lines.append(
+            f"{pin} *#{n['id']}* — {n['created']}\n"
+            f"   {n['text'][:100]}"
+        )
+    await update.message.reply_text(
+        f"📋 *Quick Notes ({len(notes)}):*\n\n"
+        + "\n\n".join(lines)
+        + "\n\n`/notedel id` — delete\n"
+          "`/notepin id` — pin/unpin\n"
+          "`/notesearch word` — search",
+        parse_mode="Markdown"
+    )
+
+async def cmd_note_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Quick note add karo"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "/note Ahmed ka number 9876543210\n"
+            "/note https://example.com link\n"
+            "/note Grocery list: doodh bread anda"
+        )
+        return
+    text = " ".join(ctx.args)
+    n = add_note(text)
+    _log_action(update.effective_user.first_name or "User",
+                "note_add", f"#{n['id']}: {text[:60]}")
+    await update.message.reply_text(
+        f"📋 *Note Save Ho Gaya!* ✅\n\n"
+        f"#{n['id']} — {n['text'][:200]}\n\n"
+        f"_/notes se dekho | /notedel {n['id']} se hatao_",
+        parse_mode="Markdown"
+    )
+
+async def cmd_note_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Note delete karo"""
+    if not ctx.args:
+        await update.message.reply_text("/notedel id")
+        return
+    try:
+        nid = int(ctx.args[0])
+        target = get_note_by_id(nid)
+        if not target:
+            await update.message.reply_text(f"❌ Note #{nid} nahi mila!")
+            return
+        delete_note(nid)
+        await update.message.reply_text(
+            f"🗑️ *Note Delete Ho Gaya!*\n\n#{nid} '{target['text'][:80]}'",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await update.message.reply_text("❌ Invalid ID!")
+
+async def cmd_note_pin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Note pin/unpin karo"""
+    if not ctx.args:
+        await update.message.reply_text("/notepin id")
+        return
+    try:
+        nid = int(ctx.args[0])
+        is_pinned = pin_note(nid)
+        status = "📌 Pin" if is_pinned else "📋 Unpin"
+        await update.message.reply_text(
+            f"{status} *Ho Gaya!* ✅\n\nNote #{nid}",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await update.message.reply_text("❌ Invalid ID!")
+
+async def cmd_note_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Notes mein search karo"""
+    if not ctx.args:
+        await update.message.reply_text("/notesearch word")
+        return
+    query = " ".join(ctx.args)
+    results = search_notes(query)
+    if not results:
+        await update.message.reply_text(
+            f"🔍 *'{query}' se koi note nahi mila.*",
+            parse_mode="Markdown"
+        )
+        return
+    lines = [
+        f"📋 *#{n['id']}* — {n['created']}\n   {n['text'][:100]}"
+        for n in results[:10]
+    ]
+    await update.message.reply_text(
+        f"🔍 *Search: '{query}' — {len(results)} results:*\n\n"
+        + "\n\n".join(lines),
+        parse_mode="Markdown"
+    )
 
 
 # ════════════════════════════════════════════════════
@@ -4005,8 +4117,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
             _log_action(user_name, "show_expense", user_msg[:60])
- 
-        # ── SHOW WATER ─────────────────────────────────
+
         elif new_action == "show_water":
             total = water.today_total()
             goal_ml = water.goal()
@@ -4014,21 +4125,66 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             filled = min(pct // 20, 5)
             bar = "🟦" * filled + "⬜" * (5 - filled)
             await update.message.reply_text(
-                f"💧 *Aaj ka Paani:*\n\n"
-                f"{bar} {pct}%\n"
-                f"Total: {total}/{goal_ml}ml\n\n"
-                f"{'✅ Goal complete! Alhamdulillah!' if total >= goal_ml else f'⚠️ {goal_ml - total}ml aur piyo!'}",
+                f"💧 *Paani Status:*\n\nTotal: {total}/{goal_ml}ml\n{bar} {pct}%",
                 parse_mode="Markdown"
             )
             _log_action(user_name, "show_water", user_msg[:60])
- 
+
+        elif new_action == "quick_note":
+            text = new_params.get("text", "").strip()
+            if not text or len(text) < 2:
+                text = user_msg
+            n = add_note(text)
+            _log_action(user_name, "note_add", f"#{n['id']}: {text[:60]}")
+            await update.message.reply_text(
+                f"📋 *Note Save Ho Gaya!* ✅\n\n"
+                f"#{n['id']} — _{n['text'][:200]}_\n\n"
+                f"_/notes se dekho_",
+                parse_mode="Markdown"
+            )
+
+        elif new_action == "show_notes":
+            notes = get_all_notes()
+            if not notes:
+                await update.message.reply_text("📋 Koi note nahi hai. `note kuch bhi` se save karo.")
+            else:
+                lines = [
+                    f"{'📌' if n.get('pinned') else '📋'} *#{n['id']}* {n['text'][:80]}"
+                    for n in notes[:15]
+                ]
+                await update.message.reply_text(
+                    f"📋 *Notes ({len(notes)}):*\n\n" + "\n".join(lines),
+                    parse_mode="Markdown"
+                )
+
+        elif new_action == "show_notes":
+            notes = get_all_notes()
+            if not notes:
+                await update.message.reply_text("📋 Koi note nahi hai. `note kuch bhi` se save karo.")
+            else:
+                lines = [
+                    f"{'📌' if n.get('pinned') else '📋'} *#{n['id']}* {n['text'][:80]}"
+                    for n in notes[:15]
+                ]
+                await update.message.reply_text(
+                    f"📋 *Notes ({len(notes)}):*\n\n" + "\n".join(lines),
+                    parse_mode="Markdown"
+                )
+
+        elif new_action == "search_notes":   # ✅ Ab sahi hai - elif pehle spaces hain
+            query = new_params.get("query", "")
+            results = search_notes(query)
+            if results:
+                lines = [f"📋 *#{n['id']}* {n['text'][:80]}" for n in results[:10]]
+                await update.message.reply_text(
+                    f"🔍 *{len(results)} results:*\n\n" + "\n".join(lines),
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(f"🔍 '{query}' se koi note nahi mila.")
+
         else:
-            # New parser ne kuch return kiya jo handle nahi hua
             handled = False
- 
-        if handled:
-            chat_hist.add("assistant", "Reply sent", "Rk")
-            return
  
     # ════════════════════════════════════════════════════
     # STEP 2: OLD PARSER FALLBACK
@@ -4758,6 +4914,11 @@ def main():
         ("smartcomplete", cmd_smart_complete),
         ("diaryall", cmd_diaryall),
         ("today", cmd_today), ("weekly", cmd_weekly),
+        ("notes", cmd_notes),
+        ("note", cmd_note_add),
+        ("notedel", cmd_note_del),
+        ("notepin", cmd_note_pin),
+        ("notesearch", cmd_note_search),
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
