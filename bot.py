@@ -126,7 +126,7 @@ async def update_pinned_status(bot):
 🕐 Last updated: {now.strftime('%I:%M:%S %p')}
 {status_color * 15}"""
 
-        # Send new pinned message or update existing
+        # ── SIRF EDIT KARO, NAYA MAT BHEJO ──
         if _pin_message_id:
             try:
                 await bot.edit_message_text(
@@ -135,23 +135,30 @@ async def update_pinned_status(bot):
                     text=pin_message,
                     parse_mode="Markdown"
                 )
-            except:
-                # Message ID expired, send new one
-                sent = await bot.send_message(
-                    chat_id=PRIVATE_CHANNEL_ID,
-                    text=pin_message,
-                    parse_mode="Markdown"
-                )
-                _pin_message_id = sent.message_id
+                log.info(f"📌 Pinned status updated (edited)")
+            except Exception as e:
+                log.error(f"Failed to edit pinned message: {e}")
+                # Agar edit fail ho (message deleted etc.), toh naya bhejo
+                try:
+                    sent = await bot.send_message(
+                        chat_id=PRIVATE_CHANNEL_ID,
+                        text=pin_message,
+                        parse_mode="Markdown"
+                    )
+                    _pin_message_id = sent.message_id
+                    log.info(f"📌 New pinned message sent (old was lost)")
+                except Exception as e2:
+                    log.error(f"Failed to send new pinned message: {e2}")
         else:
+            # Pehli baar - PIN karke bhejo
             sent = await bot.send_message(
                 chat_id=PRIVATE_CHANNEL_ID,
                 text=pin_message,
                 parse_mode="Markdown"
             )
             _pin_message_id = sent.message_id
+            log.info(f"📌 Pinned message created (first time)")
             
-        log.info(f"📌 Pinned status updated")
         return True
     except Exception as e:
         log.error(f"Pinned status update failed: {e}")
@@ -4779,7 +4786,8 @@ def main():
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
 
-        app.job_queue.run_repeating(cleanup_pending_actions, interval=300, first=60)
+        app.job_queue.run_repeating(scheduled_pin_update, interval=3600, first=10)
+        log.info("📌 Pinned status update scheduled (every 1 hour)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
