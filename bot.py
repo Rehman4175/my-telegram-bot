@@ -50,7 +50,11 @@ _chat_context_lock = asyncio.Lock()
 # PRIVATE CHANNEL DATABASE FUNCTIONS (with Color Coding + Pinned Status)
 # ═══════════════════════════════════════════════════════════════════
 
-# ⚠️ APNA CHANNEL ID YAHAN DALO (Repository secrets se auto le lega)
+# ═══════════════════════════════════════════════════════════════════
+# PRIVATE CHANNEL DATABASE FUNCTIONS (No Dashboard + Edit System)
+# ═══════════════════════════════════════════════════════════════════
+
+# ⚠️ APNA CHANNEL ID YAHAN DALO
 PRIVATE_CHANNEL_ID = int(os.environ.get("RK_BOT_DATA", "-1003916756922"))
 
 CHANNEL_TYPES = {
@@ -66,106 +70,11 @@ CHANNEL_TYPES = {
     "complete": "✅"
 }
 
-# ── PINNED MESSAGE TRACKING ──
-_last_pin_update = None
-_pin_message_id = None
-
-async def update_pinned_status(bot):
-    """Update pinned message in channel with real-time pending counts"""
-    global _pin_message_id
-    try:
-        now = now_ist()
-        
-        # Get pending counts
-        pending_tasks = len(tasks.pending())
-        pending_reminders = len([r for r in reminders.all_active() if not r.get("acknowledged")])
-        pending_smart = len([r for r in smart_reminders.get_active_smart() if not r.get("acknowledged")])
-        habits_done, habits_pending = habits.today_status()
-        
-        # Get today's completed counts
-        today_str_val = get_today_str()
-        completed_today = len([t for t in tasks.all_tasks() if t.get("done") and t.get("done_date") == today_str_val])
-        
-        # Color coding based on pending counts
-        if pending_tasks == 0 and pending_reminders == 0 and len(habits_pending) == 0:
-            status_emoji = "✅✅✅ ALL CLEAR! ✅✅✅"
-            status_color = "🟢"
-        elif pending_tasks > 5 or pending_reminders > 3:
-            status_emoji = "🔴🔴🔴 HIGH PENDING! 🔴🔴🔴"
-            status_color = "🔴"
-        else:
-            status_emoji = "🟡⚠️ SOME PENDING 🟡⚠️"
-            status_color = "🟡"
-        
-        pin_message = f"""{status_color * 15}
-📌 *RK BOT - LIVE DASHBOARD* 📌
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-{status_emoji}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⏳ *PENDING ITEMS:*
-{'━' * 25}
-📋 *Tasks:* {pending_tasks} pending
-⏰ *Normal Reminders:* {pending_reminders} active
-🧠 *Smart Reminders:* {pending_smart} active
-🏃 *Habits:* {len(habits_pending)} remaining today
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ *TODAY'S PROGRESS:*
-{'━' * 25}
-✓ Tasks completed: {completed_today}
-✓ Habits done: {len(habits_done)}/{len(habits_done)+len(habits_pending)}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *QUICK ACTIONS:*
-• /done id - Complete task
-• /hdone id - Log habit
-• /smartcomplete id - Stop smart reminder
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-🕐 Last updated: {now.strftime('%I:%M:%S %p')}
-{status_color * 15}"""
-
-        # ── SIRF EDIT KARO, NAYA MAT BHEJO ──
-        if _pin_message_id:
-            try:
-                await bot.edit_message_text(
-                    chat_id=PRIVATE_CHANNEL_ID,
-                    message_id=_pin_message_id,
-                    text=pin_message,
-                    parse_mode="Markdown"
-                )
-                log.info(f"📌 Pinned status updated (edited)")
-            except Exception as e:
-                log.error(f"Failed to edit pinned message: {e}")
-                # Agar edit fail ho (message deleted etc.), toh naya bhejo
-                try:
-                    sent = await bot.send_message(
-                        chat_id=PRIVATE_CHANNEL_ID,
-                        text=pin_message,
-                        parse_mode="Markdown"
-                    )
-                    _pin_message_id = sent.message_id
-                    log.info(f"📌 New pinned message sent (old was lost)")
-                except Exception as e2:
-                    log.error(f"Failed to send new pinned message: {e2}")
-        else:
-            # Pehli baar - PIN karke bhejo
-            sent = await bot.send_message(
-                chat_id=PRIVATE_CHANNEL_ID,
-                text=pin_message,
-                parse_mode="Markdown"
-            )
-            _pin_message_id = sent.message_id
-            log.info(f"📌 Pinned message created (first time)")
-            
-        return True
-    except Exception as e:
-        log.error(f"Pinned status update failed: {e}")
-        return False
+# ── MESSAGE TRACKING (to edit later) ──
+_pending_messages = {}  # {item_id: message_id}
 
 async def save_to_channel(bot, data_type: str, title: str, details: str = "", item_id: int = None, status: str = "active"):
-    """Save any data to private Telegram channel with COLOR-CODED formatting"""
+    """Save pending item to channel - ONLY PENDING, NO DASHBOARD"""
     try:
         now = now_ist()
         date_display = now.strftime("%d %b %Y")
@@ -173,106 +82,82 @@ async def save_to_channel(bot, data_type: str, title: str, details: str = "", it
         
         emoji = CHANNEL_TYPES.get(data_type, "📌")
         
-        if status == "completed":
-            # ✅ DONE - GREEN THEME
-            border = "🟢" * 15
-            status_icon = "✅✅ DONE ✅✅"
-            header_emoji = "🎉"
-            status_line = f"""
+        # PENDING format - Simple and clear
+        message = f"""{emoji} *{data_type.upper()}* — ⏳ PENDING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎉 *STATUS: COMPLETED!* 🎉
-✅ Marked as done at {time_display}
-━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-        else:
-            # ⏳ PENDING - YELLOW THEME
-            border = "🟡" * 15
-            status_icon = "⏳⏳ PENDING ⏳⏳"
-            header_emoji = "⚠️"
-            status_line = f"""
+📅 {date_display} | ⏰ {time_display}
+🆔 `#{item_id}`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ *STATUS: PENDING* ⚠️
-⏳ Waiting for completion
-━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-        
-        id_line = f"\n🆔 *ID:* `#{item_id}`" if item_id else ""
-        
-        # Format details properly
-        details_text = ""
-        if details:
-            # Remove markdown symbols from details if present
-            clean_details = details.replace("*", "").replace("_", "").replace("`", "")
-            details_text = f"\n📝 *Details:*\n{clean_details}"
-        
-        message = f"""{border}
-{emoji} *{data_type.upper()}* {header_emoji}
+📌 {title}
+{details if details else ''}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 *Date:* {date_display}
-⏰ *Time:* {time_display}
-{id_line}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏳ *Status: PENDING* — Waiting
+💡 Created by Rk Bot"""
 
-📌 *{title}*
-{details_text}
-{status_line}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *Created by Rk Bot*
-{border}"""
-
-        await bot.send_message(
+        sent = await bot.send_message(
             chat_id=PRIVATE_CHANNEL_ID,
             text=message,
             parse_mode="Markdown"
         )
-        log.info(f"✅ Channel saved: {data_type} - {title[:50]} [{status}]")
         
-        # Update pinned status after each save
-        await update_pinned_status(bot)
+        # Store message_id for later editing
+        if item_id:
+            _pending_messages[item_id] = sent.message_id
+            log.info(f"✅ Saved pending #{item_id} as message {sent.message_id}")
         
+        log.info(f"✅ Channel saved: {data_type} - {title[:50]} [PENDING]")
         return True
     except Exception as e:
         log.error(f"❌ Channel save failed: {e}")
         return False
 
 async def update_channel_status(bot, data_type: str, item_id: int, title: str):
-    """Update channel to show completed status - SENDS NEW GREEN MESSAGE"""
+    """EDIT existing message to show COMPLETED status"""
     try:
         now = now_ist()
         date_display = now.strftime("%d %b %Y")
         time_display = now.strftime("%I:%M %p")
         
         emoji = CHANNEL_TYPES.get(data_type, "📋")
-        border = "🟢" * 15
         
-        message = f"""{border}
-{emoji} *{data_type.upper()} COMPLETED* ✅
+        # COMPLETED format - Same message but edited
+        message = f"""{emoji} *{data_type.upper()}* — ✅ COMPLETED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 *Date:* {date_display}
-⏰ *Time:* {time_display}
-🆔 *ID:* `#{item_id}`
+📅 {date_display} | ⏰ {time_display}
+🆔 `#{item_id}`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✅ *TASK/HABIT/REMINDER DONE!* ✅
-
-📌 *{title}*
-
+📌 {title}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎉 *ALHAMDULILLAH! COMPLETED!* 🎉
-⏱️ *Completed at:* {time_display} on {date_display}
+✅ *Status: COMPLETED!*
+🎉 Completed at: {time_display} on {date_display}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-💪 *MashAllah! Keep going!*
-{border}"""
+💪 Alhamdulillah! Done!"""
 
+        # Try to edit existing message
+        if item_id in _pending_messages:
+            try:
+                await bot.edit_message_text(
+                    chat_id=PRIVATE_CHANNEL_ID,
+                    message_id=_pending_messages[item_id],
+                    text=message,
+                    parse_mode="Markdown"
+                )
+                log.info(f"✅ Edited message #{_pending_messages[item_id]} to COMPLETED")
+                # Remove from pending tracking
+                del _pending_messages[item_id]
+                return True
+            except Exception as e:
+                log.error(f"Failed to edit message: {e}")
+        
+        # Fallback: Send new message if edit fails
         await bot.send_message(
             chat_id=PRIVATE_CHANNEL_ID,
             text=message,
             parse_mode="Markdown"
         )
-        log.info(f"✅ Channel updated: {data_type} #{item_id} completed")
-        
-        # Update pinned status after completion
-        await update_pinned_status(bot)
-        
+        log.info(f"✅ Sent new COMPLETED message for #{item_id} (edit failed)")
         return True
+        
     except Exception as e:
         log.error(f"❌ Channel update failed: {e}")
         return False
@@ -4776,66 +4661,6 @@ async def send_startup_notification(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Startup notification error: {e}")
 
-async def send_weekly_channel_summary(bot):
-    """Send weekly summary to channel every Sunday"""
-    try:
-        now = now_ist()
-        if now.weekday() != 6:  # Sunday only
-            return
-            
-        week_start = now.date() - timedelta(days=7)
-        week_start_str = week_start.strftime("%Y-%m-%d")
-        
-        # Calculate weekly stats
-        completed_week = 0
-        for t in tasks.all_tasks():
-            done_date = t.get("done_date", "")
-            if done_date and done_date >= week_start_str:
-                completed_week += 1
-        
-        weekly_expense = 0
-        for e in _get_expenses_list():
-            try:
-                exp_date = str(e.get("date", ""))[:10]
-                if exp_date >= week_start_str:
-                    weekly_expense += float(e.get("amount", 0))
-            except:
-                pass
-        
-        border = "🟣" * 15
-        message = f"""{border}
-📊 *WEEKLY CHANNEL SUMMARY* 📊
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 *Week:* {week_start.strftime('%d %b')} - {now.strftime('%d %b %Y')}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✅ *Tasks Completed:* {completed_week}
-💸 *Total Expenses:* Rs.{weekly_expense}
-🏃 *Active Habits:* {len(habits.all())}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 *Pending Items:* Check pinned message above
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌟 *Keep up the great work! InshAllah!*
-{border}"""
-
-        await bot.send_message(
-            chat_id=PRIVATE_CHANNEL_ID,
-            text=message,
-            parse_mode="Markdown"
-        )
-        log.info("📊 Weekly channel summary sent")
-    except Exception as e:
-        log.error(f"Weekly channel summary failed: {e}")
-
-# ── SCHEDULED PIN UPDATE JOB ──
-async def scheduled_pin_update(context: ContextTypes.DEFAULT_TYPE):
-    """Update pinned status every 5 minutes"""
-    try:
-        await update_pinned_status(context.bot)
-    except Exception as e:
-        log.error(f"Scheduled pin update error: {e}")
-
 # ════════════════════════════════════════════════════
 # MAIN
 # ════════════════════════════════════════════════════
@@ -4946,9 +4771,6 @@ def main():
 
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
-
-        app.job_queue.run_repeating(scheduled_pin_update, interval=3600, first=10)
-        log.info("📌 Pinned status update scheduled (every 1 hour)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
