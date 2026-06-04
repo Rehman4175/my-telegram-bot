@@ -170,6 +170,193 @@ from quick_notes import (
     add_note, get_all_notes, delete_note,
     pin_note, search_notes, clear_all_notes, get_note_by_id
 )
+
+# ═══════════════════════════════════════════════════════════════════
+# UNIVERSAL SEARCH - Sab jagah search karega
+# ═══════════════════════════════════════════════════════════════════
+
+def universal_search(query: str):
+    """Search across ALL data stores - Diary, Notes, Memory, Tasks, Reminders, Calendar, Bills"""
+    query_lower = query.lower().strip()
+    if len(query_lower) < 2:
+        return None
+    
+    results = {}
+    
+    # ── SEARCH IN DIARY ──
+    diary_results = []
+    all_diary = diary.get_all_entries()
+    for date_key, entries in all_diary.items():
+        for entry in entries:
+            text = entry.get("text", "")
+            if query_lower in text.lower():
+                diary_results.append({
+                    "date": date_key,
+                    "time": entry.get("time", ""),
+                    "text": text[:200]
+                })
+    if diary_results:
+        results["diary"] = diary_results[-5:]
+    
+    # ── SEARCH IN QUICK NOTES ──
+    notes_results = []
+    all_notes = get_all_notes()
+    for note in all_notes:
+        if query_lower in note.get("text", "").lower():
+            notes_results.append({
+                "id": note["id"],
+                "created": note.get("created", ""),
+                "text": note.get("text", "")[:150],
+                "pinned": note.get("pinned", False)
+            })
+    if notes_results:
+        results["notes"] = notes_results[-5:]
+    
+    # ── SEARCH IN MEMORY ──
+    memory_results = []
+    all_memories = memory.get_all_facts()
+    for mem in all_memories:
+        text = mem.get("f", "")
+        if query_lower in text.lower():
+            memory_results.append({
+                "date": mem.get("d", "unknown"),
+                "category": mem.get("c", "general"),
+                "text": text[:150]
+            })
+    if memory_results:
+        results["memory"] = memory_results[-5:]
+    
+    # ── SEARCH IN TASKS ──
+    task_results = []
+    all_tasks = tasks.all_tasks()
+    for t in all_tasks:
+        title = t.get("title", "")
+        if query_lower in title.lower():
+            task_results.append({
+                "id": t["id"],
+                "title": title[:100],
+                "status": "✅ Done" if t.get("done") else "⏳ Pending",
+                "done_date": t.get("done_date", "")
+            })
+    if task_results:
+        results["tasks"] = task_results[-5:]
+    
+    # ── SEARCH IN REMINDERS ──
+    reminder_results = []
+    all_reminders = reminders.get_all()
+    for r in all_reminders:
+        text = r.get("text", "")
+        if query_lower in text.lower() and not r.get("acknowledged", False):
+            reminder_results.append({
+                "id": r["id"],
+                "text": text[:100],
+                "due": r.get("due", "")[:16],
+                "priority": r.get("priority", "Normal")
+            })
+    if reminder_results:
+        results["reminders"] = reminder_results[-5:]
+    
+    # ── SEARCH IN CALENDAR ──
+    calendar_results = []
+    all_events = calendar.all_events()
+    for e in all_events:
+        title = e.get("title", "")
+        if query_lower in title.lower():
+            calendar_results.append({
+                "id": e["id"],
+                "title": title[:100],
+                "date": e.get("date", ""),
+                "type": e.get("type", "event")
+            })
+    if calendar_results:
+        results["calendar"] = calendar_results[-5:]
+    
+    # ── SEARCH IN BILLS ──
+    bill_results = []
+    all_bills = bills.all_active()
+    for b in all_bills:
+        name = b.get("name", "")
+        if query_lower in name.lower():
+            bill_results.append({
+                "id": b["id"],
+                "name": name[:100],
+                "amount": b.get("amount", 0),
+                "due_day": b.get("due_day", 0),
+                "paid": bills.is_paid_this_month(b["id"])
+            })
+    if bill_results:
+        results["bills"] = bill_results[-5:]
+    
+    return results
+
+def format_search_results(results: dict, query: str) -> str:
+    """Format search results into beautiful message"""
+    if not results:
+        return f"🔍 *No results found for:* \"{query}\"\n\nTry different keywords or check spelling."
+    
+    total = sum(len(v) for v in results.values())
+    
+    msg = f"🔍 *Universal Search Results*\n📝 Query: \"{query}\"\n📊 Found: {total} item(s)\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Diary
+    if "diary" in results:
+        msg += f"📖 *DIARY* ({len(results['diary'])})\n"
+        for r in results["diary"]:
+            msg += f"• 📅 *{r['date']}* {r['time']}\n  _{r['text'][:80]}..._\n"
+        msg += "\n"
+    
+    # Notes
+    if "notes" in results:
+        msg += f"📋 *QUICK NOTES* ({len(results['notes'])})\n"
+        for r in results["notes"]:
+            pin = "📌" if r.get("pinned") else "📋"
+            msg += f"• {pin} #{r['id']} — {r['created']}\n  _{r['text'][:80]}..._\n"
+        msg += "\n"
+    
+    # Memory
+    if "memory" in results:
+        msg += f"🧠 *MEMORY* ({len(results['memory'])})\n"
+        for r in results["memory"]:
+            category_emoji = "🏥" if r['category'] == "health" else "💰" if r['category'] == "finance" else "👤" if r['category'] == "personal" else "💼" if r['category'] == "work" else "📌"
+            msg += f"• {category_emoji} *{r['date']}* [{r['category']}]\n  _{r['text'][:80]}..._\n"
+        msg += "\n"
+    
+    # Tasks
+    if "tasks" in results:
+        msg += f"✅ *TASKS* ({len(results['tasks'])})\n"
+        for r in results["tasks"]:
+            status_emoji = "✅" if "Done" in r['status'] else "⏳"
+            msg += f"• {status_emoji} #{r['id']} *{r['title'][:60]}*\n  {r['status']}\n"
+        msg += "\n"
+    
+    # Reminders
+    if "reminders" in results:
+        msg += f"⏰ *REMINDERS* ({len(results['reminders'])})\n"
+        for r in results["reminders"]:
+            priority_emoji = "🔴" if r.get('priority') == "HIGH" else "🟠" if r.get('priority') == "MEDIUM" else "🔵"
+            msg += f"• {priority_emoji} #{r['id']} — {r['due']}\n  _{r['text'][:60]}..._\n"
+        msg += "\n"
+    
+    # Calendar
+    if "calendar" in results:
+        msg += f"📅 *CALENDAR* ({len(results['calendar'])})\n"
+        for r in results["calendar"]:
+            type_emoji = "🎂" if r['type'] == "birthday" else "📅"
+            msg += f"• {type_emoji} *{r['date']}* — #{r['id']}\n  {r['title'][:60]}\n"
+        msg += "\n"
+    
+    # Bills
+    if "bills" in results:
+        msg += f"💳 *BILLS* ({len(results['bills'])})\n"
+        for r in results["bills"]:
+            paid_emoji = "✅" if r['paid'] else "❌"
+            due_str = f" (Due: {r['due_day']}th)" if r['due_day'] else ""
+            msg += f"• {paid_emoji} #{r['id']} *{r['name'][:40]}* — ₹{r['amount']}{due_str}\n"
+        msg += "\n"
+    
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 *Tip:* /find keyword - Search everywhere"
+    
+    return msg[:4000]  # Telegram limit
 # ──────────────────────────────────────────────────
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -768,6 +955,30 @@ async def cmd_note_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         + "\n\n".join(lines),
         parse_mode="Markdown"
     )
+
+async def cmd_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Universal search across all data stores"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "🔍 *Universal Search*\n\n"
+            "Search across Diary, Notes, Memory, Tasks, Reminders, Calendar, Bills\n\n"
+            "Usage:\n"
+            "• `/find simran`\n"
+            "• `/find \"doctor appointment\"`\n"
+            "• `find passport` (natural language)\n\n"
+            "_I'll search everywhere and show results!_",
+            parse_mode="Markdown"
+        )
+        return
+    
+    query = " ".join(ctx.args).strip()
+    await update.message.reply_text(f"🔍 Searching for: *{query}*...", parse_mode="Markdown")
+    
+    results = universal_search(query)
+    response = format_search_results(results, query)
+    
+    _log_action(update.effective_user.first_name or "User", "universal_search", query)
+    await update.message.reply_text(response, parse_mode="Markdown")
 
 
 # ════════════════════════════════════════════════════
@@ -3605,13 +3816,7 @@ async def _send_memory_list(update: Update):
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    Main message handler — New Command Parser + Old Parser fallback.
-    
-    Flow:
-    1. New parser (command_parser.py) pehle try karta hai
-    2. Agar new parser samjhe → action lo
-    3. Agar new parser "unknown" return kare → old parser try karo
-    4. Agar dono fail → Gemini AI se reply lo
+    Main message handler...
     """
     if not update.message or not update.message.text:
         return
@@ -3638,12 +3843,27 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_hist.add("user", user_msg, user_name)
  
     # ════════════════════════════════════════════════════
+    # STEP 0: UNIVERSAL SEARCH (Natural language) - HIGHEST PRIORITY
+    # ════════════════════════════════════════════════════
+    search_triggers = ["find ", "search ", "dhundho", "dhoondo", "kahan hai", "kidhar hai", "search for", "look for", "find me", "search me"]
+    if any(user_msg.lower().startswith(trigger) or f" {trigger}" in user_msg.lower() for trigger in search_triggers):
+        query = user_msg
+        for kw in search_triggers:
+            query = query.lower().replace(kw, "").strip()
+        if len(query) > 1:
+            results = universal_search(query)
+            response = format_search_results(results, query)
+            await update.message.reply_text(response, parse_mode="Markdown")
+            _log_action(user_name, "universal_search_natural", query)
+            return
+ 
+    # ════════════════════════════════════════════════════
     # STEP 1: NEW PARSER (command_parser.py)
     # ════════════════════════════════════════════════════
     new_action, new_params, needs_confirm = get_action(user_msg, now_ist)
     log.info(f"NEW PARSER: '{user_msg[:60]}' → {new_action}")
     
-    # ── CONFIRMATION CHECK (ADD THIS BEFORE OTHER HANDLERS) ──
+    # ── CONFIRMATION CHECK ──
     if needs_confirm and new_action not in ["show_tasks", "show_reminders", "show_habits", "show_diary", "show_all_diary", "show_memory", "show_calendar", "show_bills", "show_expense", "show_water", "complete"]:
         
         # ── FIND PARENT SMART REMINDER ID (to stop repeats later) ──
@@ -4813,6 +5033,7 @@ def main():
         ("notedel", cmd_note_del),
         ("notepin", cmd_note_pin),
         ("notesearch", cmd_note_search),
+        ("find", cmd_find),
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
