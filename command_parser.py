@@ -82,6 +82,11 @@ FIRST_WORD_MAP = {
     "dikhao": "show", "dikha": "show", "dekho": "show", "dekh": "show",
     "show": "show", "list": "show", "batao": "show", "check": "show",
     "status": "show",
+
+    # ── QUICK NOTE ──
+    "qnote": "quick_note", "quicknote": "quick_note",
+    "clip": "quick_note", "clipboard": "quick_note",
+    "jot": "quick_note", "jotdown": "quick_note",
 }
 
 # ══════════════════════════════════════════════════════
@@ -145,6 +150,15 @@ FIRST_PHRASE_MAP = {
     "memory save": "memory", "yaad rakhna": "memory", "yaad rakh": "memory",
     "remember karo": "memory", "remember kar": "memory",
     "note down": "memory", "dimaag mein": "memory", "dimag mein": "memory",
+
+    # Quick note first-phrases
+    "quick note": "quick_note", "note save": "quick_note",
+    "clip karo": "quick_note", "save karo": "quick_note",
+    "jot down": "quick_note", "note kar": "quick_note",
+    "note rakho": "quick_note", "note lo": "quick_note",
+    "notes dikhao": "quick_note_list", "notes dekho": "quick_note_list",
+    "notes list": "quick_note_list", "meri notes": "quick_note_list",
+    "note search": "quick_note_search", "note dhundo": "quick_note_search",
 
     # Calendar first-phrases
     "birthday add": "calendar", "birthday hai": "calendar",
@@ -733,6 +747,22 @@ def _build_result(action: str, remaining: str, original: str, now_ist_func=None)
         task_id = int(m.group(1)) if m else None
         return ("complete", {"id": task_id, "hint": original, "raw": original})
 
+    elif action == "quick_note":
+        text = remaining.strip() or original
+        for kw in ["note", "save", "karo", "kar", "lo", "rakho",
+                   "quick", "clip", "jot", "down"]:
+            text = re.sub(r'\b' + re.escape(kw) + r'\b', '', text,
+                          flags=re.IGNORECASE)
+        text = ' '.join(text.split()).strip()
+        return ("quick_note", {"text": text or original, "raw": original})
+
+    elif action == "quick_note_list":
+        return ("show_notes", {"raw": original})
+
+    elif action == "quick_note_search":
+        query = remaining.strip()
+        return ("search_notes", {"query": query, "raw": original})
+
     elif action == "show":
         lower_orig = original.lower()
         if any(x in lower_orig for x in ["purani diary", "poorani diary", "saari diary",
@@ -775,7 +805,8 @@ def get_action(user_msg: str, now_ist_func=None):
 
     confirm_actions = [
         "remind", "task", "diary", "expense", "habit",
-        "habit_done", "calendar", "bill", "water", "memory"
+        "habit_done", "calendar", "bill", "water", "memory",
+        "quick_note"
     ]
     needs_confirmation = action in confirm_actions
     return action, params, needs_confirmation
