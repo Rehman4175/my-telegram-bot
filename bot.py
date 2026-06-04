@@ -4363,6 +4363,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ════════════════════════════════════════════════════
     # STEP 2: OLD PARSER FALLBACK
     # ════════════════════════════════════════════════════
+    if new_action != "unknown" and handled:
+        chat_hist.add("assistant", "Reply sent", "Rk")
+        return
+
     log.info(f"OLD PARSER FALLBACK: '{user_msg[:60]}'")
     action_type, params = parse_user_message(user_msg)
     log.info(f"OLD PARSER: '{user_msg[:60]}' → {action_type}")
