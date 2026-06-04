@@ -1765,8 +1765,13 @@ async def cmd_deltask(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         # ── CHANNEL UPDATE: TASK DELETED ──
         try:
-            await update_deleted_status(update.get_bot(), "task", tid, target['title'])
-            log.info(f"✅ Channel updated: task #{tid} marked as DELETED")
+            # Make sure bot object is available
+            bot = update.get_bot() if hasattr(update, 'get_bot') else None
+            if bot:
+                await update_deleted_status(bot, "task", tid, target['title'])
+                log.info(f"✅ Channel updated: task #{tid} marked as DELETED")
+            else:
+                log.warning(f"⚠️ Cannot update channel: bot not available")
         except Exception as e:
             log.error(f"Channel update error for task #{tid}: {e}")
         # ─────────────────────────────────
@@ -4331,20 +4336,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
 
-        elif new_action == "show_notes":
-            notes = get_all_notes()
-            if not notes:
-                await update.message.reply_text("📋 Koi note nahi hai. `note kuch bhi` se save karo.")
-            else:
-                lines = [
-                    f"{'📌' if n.get('pinned') else '📋'} *#{n['id']}* {n['text'][:80]}"
-                    for n in notes[:15]
-                ]
-                await update.message.reply_text(
-                    f"📋 *Notes ({len(notes)}):*\n\n" + "\n".join(lines),
-                    parse_mode="Markdown"
-                )
-
         elif new_action == "search_notes":   # ✅ Ab sahi hai - elif pehle spaces hain
             query = new_params.get("query", "")
             results = search_notes(query)
@@ -4363,9 +4354,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ════════════════════════════════════════════════════
     # STEP 2: OLD PARSER FALLBACK
     # ════════════════════════════════════════════════════
-    if new_action != "unknown" and handled:
-        chat_hist.add("assistant", "Reply sent", "Rk")
-        return
 
     log.info(f"OLD PARSER FALLBACK: '{user_msg[:60]}'")
     action_type, params = parse_user_message(user_msg)
@@ -5065,6 +5053,9 @@ def main():
 
         app.job_queue.run_once(send_startup_notification, 5)
         log.info("📢 Startup notification scheduled (5 sec delay)")
+
+        app.job_queue.run_repeating(cleanup_pending_actions, interval=300, first=60)
+        log.info("🧹 Pending actions cleanup scheduled (every 5 minutes)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
