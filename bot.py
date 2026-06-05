@@ -44,6 +44,7 @@ from datetime import datetime, date, timedelta, timezone
 import re as _re
 import re
 import asyncio
+from secure_data_manager import is_online, get_network_status
 _chat_context_lock = asyncio.Lock()
 
 # ═══════════════════════════════════════════════════════════════════
@@ -3044,6 +3045,49 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     log.error(f"Failed to send smart alarm: {e}")
 
+# ═══════════════════════════════════════════════════════════════════
+# NETWORK SYNC JOB (ADD THIS AFTER reminder_job)
+# ═══════════════════════════════════════════════════════════════════
+
+_last_online_status = False
+
+async def network_sync_job(context: ContextTypes.DEFAULT_TYPE):
+    """Check network every minute and sync if online"""
+    global _last_online_status
+    
+    current_online = is_online()
+    
+    # Network just came back online
+    if current_online and not _last_online_status:
+        log.info("🌐 Network back online! Syncing all data...")
+        
+        # Force sync all stores
+        stores_to_sync = [tasks, habits, expenses, diary, reminders, smart_reminders, bills, calendar]
+        for store in stores_to_sync:
+            try:
+                if hasattr(store, 'store') and hasattr(store.store, 'save'):
+                    store.store.save()
+                    log.info(f"✅ Synced {store.__class__.__name__}")
+            except Exception as e:
+                log.error(f"Sync error for {store}: {e}")
+        
+        # Notify user if possible
+        try:
+            chat_ids = set()
+            for r in reminders.get_all():
+                if r.get("chat_id"):
+                    chat_ids.add(int(r["chat_id"]))
+            for cid in chat_ids:
+                await context.bot.send_message(
+                    chat_id=cid,
+                    text="🌐 *Network is back!* All your data has been synced to cloud. Alhamdulillah! ✅",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            log.error(f"Failed to send network recovery notification: {e}")
+    
+    _last_online_status = current_online
+
 # ════════════════════════════════════════════════════
 # OK BUTTON HANDLER
 # ════════════════════════════════════════════════════
@@ -5056,6 +5100,9 @@ def main():
 
         app.job_queue.run_repeating(cleanup_pending_actions, interval=300, first=60)
         log.info("🧹 Pending actions cleanup scheduled (every 5 minutes)")
+      
+        app.job_queue.run_repeating(network_sync_job, interval=60, first=10)
+        log.info("🌐 Network sync checker scheduled (every 60s)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
