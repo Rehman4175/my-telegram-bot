@@ -630,22 +630,39 @@ class PrivateRepoManager:
             log.warning(f"Git setup: {e}")
 
     def _push_changes(self, commit_msg="Auto-save"):
+        """Push to GitHub - silently ignore errors"""
         if not self.is_connected or not self._is_git_repo():
-            log.debug(f"Git not connected or not a repo, skipping push")
             return
+        
         auth_url = self._get_auth_url()
         if not auth_url:
             return
+        
         try:
-            subprocess.run(["git","-C",self.data_dir,"add","."], check=True, capture_output=True)
-            r = subprocess.run(["git","-C",self.data_dir,"commit","-m",commit_msg],
-                               capture_output=True, text=True)
+            # Add files
+            subprocess.run(
+                ["git", "-C", self.data_dir, "add", "."],
+                capture_output=True,
+                check=False
+            )
+            # Commit
+            r = subprocess.run(
+                ["git", "-C", self.data_dir, "commit", "-m", commit_msg],
+                capture_output=True,
+                text=True,
+                check=False
+            )
             if "nothing to commit" in (r.stdout + r.stderr):
                 return
-            subprocess.run(["git","-C",self.data_dir,"push",auth_url,"main"],
-                           capture_output=True, text=True)
-        except Exception as e:
-            log.warning(f"Push error: {e}")
+            # Push
+            subprocess.run(
+                ["git", "-C", self.data_dir, "push", auth_url, "main"],
+                capture_output=True,
+                check=False
+            )
+        except Exception:
+            # Silently ignore all git errors
+            pass
 
     def save_file(self, filename, data):
         filepath = Path(self.data_dir) / filename
