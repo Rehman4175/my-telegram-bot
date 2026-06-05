@@ -631,6 +631,7 @@ class PrivateRepoManager:
 
     def _push_changes(self, commit_msg="Auto-save"):
         if not self.is_connected or not self._is_git_repo():
+            log.debug(f"Git not connected or not a repo, skipping push")
             return
         auth_url = self._get_auth_url()
         if not auth_url:
