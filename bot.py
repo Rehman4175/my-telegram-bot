@@ -423,6 +423,115 @@ _last_gemini_call = 0
 chat_context = {}
 _last_context_cleanup = time.time()
 
+async def cmd_alldata(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show ALL data with IDs from all stores"""
+    
+    msg = "📊 *COMPLETE DATABASE DUMP* 📊\n\n"
+    msg += f"🕐 {now_ist().strftime('%d %b %Y, %I:%M %p')}\n"
+    msg += "━" * 30 + "\n\n"
+    
+    # ── TASKS ──
+    all_tasks = tasks.all_tasks()
+    msg += f"✅ *TASKS* ({len(all_tasks)} total)\n"
+    for t in all_tasks[-20:]:  # Last 20
+        status = "✅" if t.get("done") else "⏳"
+        msg += f"  {status} #{t['id']} | {t['title'][:40]}\n"
+        if t.get("done"):
+            msg += f"     Done: {t.get('done_date', 'N/A')}\n"
+    msg += "\n"
+    
+    # ── REMINDERS (Normal) ──
+    all_reminders = reminders.get_all()
+    active_rem = [r for r in all_reminders if not r.get("acknowledged")]
+    msg += f"⏰ *REMINDERS* ({len(active_rem)} active / {len(all_reminders)} total)\n"
+    for r in active_rem[-10:]:
+        due = r.get("due", "")[:16]
+        msg += f"  ⏰ #{r['id']} | {due} | {r['text'][:30]}\n"
+    msg += "\n"
+    
+    # ── SMART REMINDERS ──
+    smart_rem = smart_reminders.get_active_smart()
+    msg += f"🧠 *SMART REMINDERS* ({len(smart_rem)} active)\n"
+    for r in smart_rem[-10:]:
+        due = r.get("due", "")[:16]
+        pri = r.get("priority", "MED")[0]
+        msg += f"  {pri} #{r['id']} | {due} | {r['text'][:30]}\n"
+    msg += "\n"
+    
+    # ── HABITS ──
+    all_habits = habits.all()
+    msg += f"🏃 *HABITS* ({len(all_habits)} total)\n"
+    for h in all_habits:
+        streak = h.get("streak", 0)
+        msg += f"  #{h['id']} | {h['name'][:25]} | 🔥{streak}\n"
+    msg += "\n"
+    
+    # ── EXPENSES ──
+    expenses_list = _get_expenses_list()
+    msg += f"💸 *EXPENSES* ({len(expenses_list)} total)\n"
+    for e in expenses_list[-15:]:
+        msg += f"  #{e.get('id', '?')} | Rs.{e.get('amount',0)} | {e.get('desc','')[:25]}\n"
+    msg += "\n"
+    
+    # ── BILLS ──
+    all_bills = bills.all_active()
+    msg += f"💳 *BILLS* ({len(all_bills)} active)\n"
+    for b in all_bills:
+        paid = "✅" if bills.is_paid_this_month(b["id"]) else "❌"
+        msg += f"  {paid} #{b['id']} | {b['name'][:20]} | ₹{b['amount']}\n"
+    msg += "\n"
+    
+    # ── CALENDAR EVENTS ──
+    all_events = calendar.all_events()
+    msg += f"📅 *CALENDAR* ({len(all_events)} total)\n"
+    for e in all_events[-10:]:
+        emoji = "🎂" if e.get("type") == "birthday" else "📌"
+        msg += f"  {emoji} #{e['id']} | {e['date']} | {e['title'][:25]}\n"
+    msg += "\n"
+    
+    # ── DIARY ──
+    all_diary = diary.get_all_entries()
+    total_diary = sum(len(v) for v in all_diary.values())
+    msg += f"📖 *DIARY* ({total_diary} entries total)\n"
+    # Show last 5 diary entries
+    count = 0
+    for date_key in sorted(all_diary.keys(), reverse=True):
+        for entry in all_diary[date_key][-2:]:
+            msg += f"  📖 {date_key} | #{entry.get('id', '?')} | {entry['text'][:40]}\n"
+            count += 1
+            if count >= 5:
+                break
+        if count >= 5:
+            break
+    msg += "\n"
+    
+    # ── MEMORY ──
+    all_memories = memory.get_all_facts()
+    msg += f"🧠 *MEMORY* ({len(all_memories)} facts)\n"
+    for m in all_memories[-8:]:
+        cat = m.get("category", "gen")
+        cat_emoji = "🏥" if cat == "health" else "💰" if cat == "finance" else "👤" if cat == "personal" else "💼" if cat == "work" else "📌"
+        msg += f"  {cat_emoji} #{m.get('id', '?')} | {m.get('f', '')[:35]}\n"
+    msg += "\n"
+    
+    # ── WATER ──
+    today_water = water.today_total()
+    goal = water.goal()
+    msg += f"💧 *WATER* | Today: {today_water}/{goal}ml\n"
+    
+    msg += "\n" + "━" * 30 + "\n"
+    msg += f"📊 *TOTAL ITEMS:* {len(all_tasks) + len(all_reminders) + len(all_habits) + len(expenses_list) + len(all_events) + total_diary + len(all_memories)}"
+    
+    # Split if message too long
+    if len(msg) > 4000:
+        # Send in parts
+        for i in range(0, len(msg), 3900):
+            await update.message.reply_text(msg[i:i+3900], parse_mode="Markdown")
+    else:
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    
+    _log_action(update.effective_user.first_name or "User", "alldata_view", f"Total items displayed")
+
 async def cleanup_chat_context():
     global _last_context_cleanup
     async with _chat_context_lock:
@@ -5070,6 +5179,7 @@ def main():
         ("notepin", cmd_note_pin),
         ("notesearch", cmd_note_search),
         ("find", cmd_find),
+        ("alldata", cmd_alldata),
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
