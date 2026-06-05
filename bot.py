@@ -1816,7 +1816,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🕐 {date_time_str}\n\n"
         f"Main hoon aapka Personal AI Assistant — *Rk* 🌟\n\n"
         f"Alhamdulillah, main aapki har baat sunne ke liye haazir hoon!\n\n"
-        f"📋 Sab commands dekhne ke liye: /help",
+        f"📋 Sab commands dekhne ke liye: /commands",
         parse_mode="Markdown"
     )
 
