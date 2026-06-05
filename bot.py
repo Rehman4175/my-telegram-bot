@@ -532,6 +532,247 @@ async def cmd_alldata(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     _log_action(update.effective_user.first_name or "User", "alldata_view", f"Total items displayed")
 
+# ═══════════════════════════════════════════════════════════════════
+# BULK OPERATIONS - Multiple Tasks/Reminders
+# ═══════════════════════════════════════════════════════════════════
+
+async def cmd_done_multiple(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Complete multiple tasks at once - /done 1,2,3 or /done 1-5"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "📋 *Bulk Complete Tasks*\n\n"
+            "Usage:\n"
+            "• `/done 1,2,3,4` - Complete specific IDs\n"
+            "• `/done 1-5` - Complete range (1 to 5)\n"
+            "• `/done all` - Complete ALL pending tasks\n\n"
+            "Examples:\n"
+            "`/done 3,7,9`\n"
+            "`/done 1-10`\n"
+            "`/done all`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    arg = ctx.args[0].lower()
+    pending_tasks = tasks.pending()
+    pending_ids = [t["id"] for t in pending_tasks]
+    
+    completed_ids = []
+    not_found_ids = []
+    
+    # ── ALL PENDING TASKS ──
+    if arg == "all":
+        for t in pending_tasks:
+            tasks.complete(t["id"])
+            completed_ids.append(t["id"])
+        msg = f"✅ *{len(completed_ids)} tasks complete!* Alhamdulillah! 🎉"
+    
+    # ── RANGE (e.g., 1-5) ──
+    elif "-" in arg:
+        try:
+            start, end = map(int, arg.split("-"))
+            for tid in range(start, end + 1):
+                if tid in pending_ids:
+                    tasks.complete(tid)
+                    completed_ids.append(tid)
+                else:
+                    not_found_ids.append(tid)
+            msg = f"✅ Completed: {len(completed_ids)} tasks"
+            if not_found_ids:
+                msg += f"\n⚠️ Not found/pending: {not_found_ids}"
+        except:
+            msg = "❌ Invalid range! Use: `/done 1-5`"
+    
+    # ── COMMA SEPARATED (e.g., 1,2,3) ──
+    else:
+        try:
+            ids = [int(x.strip()) for x in arg.split(",")]
+            for tid in ids:
+                if tid in pending_ids:
+                    tasks.complete(tid)
+                    completed_ids.append(tid)
+                else:
+                    not_found_ids.append(tid)
+            msg = f"✅ Completed: {len(completed_ids)} tasks"
+            if not_found_ids:
+                msg += f"\n⚠️ Not found/pending: {not_found_ids}"
+        except:
+            msg = "❌ Invalid format! Use: `/done 1,2,3` or `/done 1-5`"
+    
+    _log_action(update.effective_user.first_name or "User", "bulk_task_done", f"IDs: {completed_ids}")
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_deltask_multiple(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Delete multiple tasks at once - /deltask 1,2,3 or /deltask 1-5"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "🗑️ *Bulk Delete Tasks*\n\n"
+            "Usage:\n"
+            "• `/deltask 1,2,3,4` - Delete specific IDs\n"
+            "• `/deltask 1-5` - Delete range\n"
+            "• `/deltask all` - Delete ALL tasks\n\n"
+            "⚠️ *Warning:* Deleted tasks cannot be recovered!",
+            parse_mode="Markdown"
+        )
+        return
+    
+    arg = ctx.args[0].lower()
+    all_tasks_list = tasks.all_tasks()
+    
+    deleted_ids = []
+    not_found_ids = []
+    
+    # ── ALL TASKS ──
+    if arg == "all":
+        for t in all_tasks_list:
+            tasks.delete(t["id"])
+            deleted_ids.append(t["id"])
+        msg = f"🗑️ *{len(deleted_ids)} tasks deleted!*"
+    
+    # ── RANGE ──
+    elif "-" in arg:
+        try:
+            start, end = map(int, arg.split("-"))
+            for tid in range(start, end + 1):
+                target = next((t for t in all_tasks_list if t["id"] == tid), None)
+                if target:
+                    tasks.delete(tid)
+                    deleted_ids.append(tid)
+                else:
+                    not_found_ids.append(tid)
+            msg = f"🗑️ Deleted: {len(deleted_ids)} tasks"
+            if not_found_ids:
+                msg += f"\n⚠️ Not found: {not_found_ids}"
+        except:
+            msg = "❌ Invalid range!"
+    
+    # ── COMMA SEPARATED ──
+    else:
+        try:
+            ids = [int(x.strip()) for x in arg.split(",")]
+            for tid in ids:
+                target = next((t for t in all_tasks_list if t["id"] == tid), None)
+                if target:
+                    tasks.delete(tid)
+                    deleted_ids.append(tid)
+                else:
+                    not_found_ids.append(tid)
+            msg = f"🗑️ Deleted: {len(deleted_ids)} tasks"
+            if not_found_ids:
+                msg += f"\n⚠️ Not found: {not_found_ids}"
+        except:
+            msg = "❌ Invalid format!"
+    
+    _log_action(update.effective_user.first_name or "User", "bulk_task_delete", f"IDs: {deleted_ids}")
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_delremind_multiple(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Delete multiple reminders at once"""
+    if not ctx.args:
+        await update.message.reply_text(
+            "🗑️ *Bulk Delete Reminders*\n\n"
+            "Usage:\n"
+            "• `/delremind 1,2,3,4` - Delete specific IDs\n"
+            "• `/delremind 1-5` - Delete range\n"
+            "• `/delremind all` - Delete ALL reminders\n"
+            "• `/delremind done` - Delete only completed/acknowledged\n\n"
+            "⚠️ *Warning:* Deleted reminders cannot be recovered!",
+            parse_mode="Markdown"
+        )
+        return
+    
+    arg = ctx.args[0].lower()
+    all_reminders = reminders.get_all()
+    
+    deleted_ids = []
+    not_found_ids = []
+    
+    # ── ALL REMINDERS ──
+    if arg == "all":
+        for r in all_reminders:
+            reminders.delete(r["id"])
+            deleted_ids.append(r["id"])
+        msg = f"🗑️ *{len(deleted_ids)} reminders deleted!*"
+    
+    # ── ONLY DONE/ACKNOWLEDGED REMINDERS ──
+    elif arg == "done":
+        for r in all_reminders:
+            if r.get("acknowledged", False):
+                reminders.delete(r["id"])
+                deleted_ids.append(r["id"])
+        msg = f"🗑️ *{len(deleted_ids)} completed reminders deleted!*"
+    
+    # ── RANGE ──
+    elif "-" in arg:
+        try:
+            start, end = map(int, arg.split("-"))
+            for rid in range(start, end + 1):
+                target = reminders.get_by_id(rid)
+                if target:
+                    reminders.delete(rid)
+                    deleted_ids.append(rid)
+                else:
+                    not_found_ids.append(rid)
+            msg = f"🗑️ Deleted: {len(deleted_ids)} reminders"
+            if not_found_ids:
+                msg += f"\n⚠️ Not found: {not_found_ids}"
+        except:
+            msg = "❌ Invalid range!"
+    
+    # ── COMMA SEPARATED ──
+    else:
+        try:
+            ids = [int(x.strip()) for x in arg.split(",")]
+            for rid in ids:
+                target = reminders.get_by_id(rid)
+                if target:
+                    reminders.delete(rid)
+                    deleted_ids.append(rid)
+                else:
+                    not_found_ids.append(rid)
+            msg = f"🗑️ Deleted: {len(deleted_ids)} reminders"
+            if not_found_ids:
+                msg += f"\n⚠️ Not found: {not_found_ids}"
+        except:
+            msg = "❌ Invalid format!"
+    
+    _log_action(update.effective_user.first_name or "User", "bulk_reminder_delete", f"IDs: {deleted_ids}")
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_clear_completed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Delete all completed tasks and acknowledged reminders"""
+    
+    # Delete completed tasks
+    all_tasks = tasks.all_tasks()
+    completed_tasks = [t for t in all_tasks if t.get("done")]
+    for t in completed_tasks:
+        tasks.delete(t["id"])
+    
+    # Delete acknowledged reminders
+    all_reminders = reminders.get_all()
+    acknowledged_reminders = [r for r in all_reminders if r.get("acknowledged")]
+    for r in acknowledged_reminders:
+        reminders.delete(r["id"])
+    
+    # Delete acknowledged smart reminders
+    all_smart = smart_reminders.get_all()
+    acknowledged_smart = [r for r in all_smart if r.get("acknowledged")]
+    for r in acknowledged_smart:
+        smart_reminders.delete(r["id"])
+    
+    msg = f"🧹 *Cleanup Complete!*\n\n"
+    msg += f"🗑️ Deleted {len(completed_tasks)} completed tasks\n"
+    msg += f"🗑️ Deleted {len(acknowledged_reminders)} acknowledged reminders\n"
+    msg += f"🗑️ Deleted {len(acknowledged_smart)} smart reminders\n\n"
+    msg += f"✨ Database is now clean! Alhamdulillah!"
+    
+    _log_action(update.effective_user.first_name or "User", "clear_completed", 
+                f"Tasks:{len(completed_tasks)} Reminders:{len(acknowledged_reminders)} Smart:{len(acknowledged_smart)}")
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 async def cleanup_chat_context():
     global _last_context_cleanup
     async with _chat_context_lock:
@@ -5158,9 +5399,12 @@ def main():
         ("start", cmd_start), ("help", cmd_help),
         ("status", cmd_status), ("checksync", cmd_checksync),
         ("task", cmd_task), ("done", cmd_done), ("deltask", cmd_deltask),
+        ("donemulti", cmd_done_multiple), ("deltaskmulti", cmd_deltask_multiple),
         ("habit", cmd_habit), ("hdone", cmd_hdone),
         ("kharcha", cmd_kharcha), ("remind", cmd_remind),
-        ("delremind", cmd_delremind), ("water", cmd_water),
+        ("delremind", cmd_delremind), ("delremindmulti", cmd_delremind_multiple),
+        ("clearcompleted", cmd_clear_completed),
+        ("water", cmd_water),
         ("briefing", cmd_briefing),
         ("snooze5", cmd_snooze), ("snooze10", cmd_snooze),
         ("snooze30", cmd_snooze), ("snooze60", cmd_snooze),
