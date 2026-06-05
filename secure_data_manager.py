@@ -19,6 +19,10 @@ import logging
 import subprocess
 import time
 import asyncio
+import sqlite3
+import threading
+from queue import Queue
+import socket
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -473,6 +477,110 @@ class GoogleSheetsBackup:
         log.info("Sheets test PASSED" if ok else "Sheets test FAILED")
         return ok
 
+# ================================================================
+# SQLiteStore - OFFLINE-FIRSTORST STORAGE (ADD THIS NEW CLASS)
+# ================================================================
+class SQLiteStore:
+    """Offline-first storage with auto-sync to cloud"""
+    
+    def __init__(self, name: str):
+        self.name = name
+        self.db_path = os.path.join(DATA_DIR, f"{name}.db")
+        self.sync_queue = Queue()
+        self.sync_thread = None
+        self._init_db()
+        self._start_sync_thread()
+    
+    def _init_db(self):
+        """Create table for this store"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS data (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at REAL
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    
+    def _start_sync_thread(self):
+        """Start background thread for cloud sync"""
+        def sync_worker():
+            while True:
+                try:
+                    task = self.sync_queue.get(timeout=10)
+                    if task is None:
+                        break
+                    
+                    for attempt in range(5):
+                        try:
+                            self._sync_to_cloud(task)
+                            break
+                        except Exception as e:
+                            wait = 2 ** attempt
+                            log.warning(f"Sync failed (attempt {attempt+1}): {e}, retry in {wait}s")
+                            time.sleep(wait)
+                except:
+                    pass
+        
+        self.sync_thread = threading.Thread(target=sync_worker, daemon=True)
+        self.sync_thread.start()
+    
+    def _sync_to_cloud(self, task):
+        """Sync to cloud"""
+        op_type = task.get('type')
+        data = task.get('data')
+        
+        try:
+            if op_type == 'full_sync':
+                repo_manager.save_file(self.name, data)
+            # Try to log to sheets (ignore if fails)
+            try:
+                sheets_backup.log_event("sync", "system", f"Synced {self.name}")
+            except:
+                pass
+            log.info(f"✅ Synced {self.name} to cloud")
+        except Exception as e:
+            raise e
+    
+    def save(self, data: dict):
+        """Save to SQLite FIRST"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO data (key, value, updated_at)
+            VALUES (?, ?, ?)
+        ''', ('full_data', json.dumps(data), time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        self.sync_queue.put({
+            'type': 'full_sync',
+            'data': data,
+            'timestamp': time.time()
+        })
+    
+    def load(self) -> dict:
+        """Load from SQLite"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT value FROM data WHERE key = ?', ('full_data',))
+        row = cursor.fetchone()
+        
+        conn.close()
+        
+        if row:
+            return json.loads(row[0])
+        return {}
+    
+    def get_all(self):
+        return self.load()
 
 # ================================================================
 # GITHUB PRIVATE REPO MANAGER
@@ -577,12 +685,30 @@ sheets_backup = GoogleSheetsBackup()
 
 class PrivateStore:
     def __init__(self, name, default=None):
-        self.name    = name
+        self.name = name
         self.default = default if default is not None else {}
-        self.data    = repo_manager.load_file(name, self.default)
-
+        
+        # ✅ OFFLINE-FIRST STORAGE
+        self.sqlite = SQLiteStore(name)
+        
+        # Load from SQLite first (offline mode)
+        sqlite_data = self.sqlite.load()
+        if sqlite_data:
+            self.data = sqlite_data
+            log.info(f"📀 Loaded {name} from SQLite (offline mode)")
+        else:
+            self.data = repo_manager.load_file(name, self.default)
+            self.sqlite.save(self.data)  # Cache to SQLite
+    
     def save(self):
-        repo_manager.save_file(self.name, self.data)
+        # ✅ SAVE TO SQLITE FIRST (always works)
+        self.sqlite.save(self.data)
+        
+        # Then try cloud (will retry if offline)
+        try:
+            repo_manager.save_file(self.name, self.data)
+        except Exception as e:
+            log.warning(f"⚠️ Cloud sync queued for {self.name}: {e}")
 
 
 # ================================================================
@@ -1503,6 +1629,25 @@ class SimpleReminderStore:
 # Create instances
 reminders = get_reminder_manager()
 smart_reminders = get_smart_reminder_manager()
+
+# ================================================================
+# NETWORK DETECTION (ADD AT THE END OF FILE, BEFORE FINAL log.info)
+# ================================================================
+
+_last_online_status = False
+
+def is_online(host="8.8.8.8", port=53, timeout=3):
+    """Check if internet is available"""
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except Exception:
+        return False
+
+def get_network_status():
+    """Return current network status"""
+    return is_online()
 
 
 # ================================================================
