@@ -44,6 +44,7 @@ from datetime import datetime, date, timedelta, timezone
 import re as _re
 import re
 import asyncio
+from human_touch import register_human_touch
 from secure_data_manager import is_online, get_network_status
 _chat_context_lock = asyncio.Lock()
 
@@ -5380,6 +5381,7 @@ def main():
     register_memory_handlers(app)
 
     register_voice_handlers(app)
+    register_human_touch(app, water, tasks, habits, reminders)
 
     # Diary conversation handler
     diary_handler = ConversationHandler(
