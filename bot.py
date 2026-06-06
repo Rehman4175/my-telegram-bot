@@ -4228,15 +4228,28 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
  
     if user_msg.startswith("/"):
         return
- 
+
     # Context mein add karo
     add_to_context(chat_id, "user", user_msg)
- 
+
     # Smart memory check
-    if await check_smart_memory_intent(update, ctx):
+    _first_word_lower = user_msg.strip().lower().split()[0] if user_msg.strip() else ""
+    _skip_smart_memory = _first_word_lower in {
+        "reminder", "remind", "remindme", "alarm", "alert", "yaad", "yad",
+        "bata", "batao", "remider", "remaind", "alram", "remainders", "reminders",
+        "diary", "dairy", "daiari", "dairi", "diari", "likh", "likho",
+        "task", "tasks", "todo", "kaam", "kam", "karna", "krna", "work",
+        "habit", "habits", "gym", "exercise", "walk", "yoga", "namaz", "workout",
+        "kharcha", "karcha", "paisa", "paise", "rs", "rupees", "spent", "expense",
+        "paani", "pani", "water",
+        "bill", "bills", "birthday", "bday", "calendar", "event", "meeting",
+        "done", "complete", "dikhao", "dekho", "show", "note", "save",
+    }
+
+    if not _skip_smart_memory and await check_smart_memory_intent(update, ctx):
         chat_hist.add("user", user_msg, user_name)
         return
- 
+
     await ctx.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
     )
