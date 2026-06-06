@@ -3411,7 +3411,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
 _last_online_status = False
 
 async def network_sync_job(context: ContextTypes.DEFAULT_TYPE):
-    """Check network every minute and sync if online"""
+    """Check network every minute and sync if online - silent mode"""
     global _last_online_status
     
     current_online = is_online()
@@ -3430,20 +3430,12 @@ async def network_sync_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 log.error(f"Sync error for {store}: {e}")
         
-        # Notify user if possible
+        # ONLY channel logger - no user message
         try:
-            chat_ids = set()
-            for r in reminders.get_all():
-                if r.get("chat_id"):
-                    chat_ids.add(int(r["chat_id"]))
-            for cid in chat_ids:
-                await context.bot.send_message(
-                    chat_id=cid,
-                    text="🌐 *Network is back!* All your data has been synced to cloud. Alhamdulillah! ✅",
-                    parse_mode="Markdown"
-                )
+            from secure_data_manager import channel_logger
+            await channel_logger.log("🌐 Network back online! Data synced to cloud", "info")
         except Exception as e:
-            log.error(f"Failed to send network recovery notification: {e}")
+            log.error(f"Channel log error: {e}")
     
     _last_online_status = current_online
 
