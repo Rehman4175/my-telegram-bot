@@ -774,6 +774,178 @@ async def cmd_clear_completed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Tasks:{len(completed_tasks)} Reminders:{len(acknowledged_reminders)} Smart:{len(acknowledged_smart)}")
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+# ═══════════════════════════════════════════════════════════════════
+# EDIT COMMANDS - Modify existing reminders and tasks (ADD THIS SECTION)
+# ═══════════════════════════════════════════════════════════════════
+
+async def cmd_edit_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Edit an existing task - /edittask id new title"""
+    if len(ctx.args) < 2:
+        await update.message.reply_text(
+            "✏️ *Edit Task*\n\n"
+            "Usage: `/edittask 5 Buy groceries`\n\n"
+            "First show task list: `/tasks`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        tid = int(ctx.args[0])
+        new_title = " ".join(ctx.args[1:])
+        
+        # Find the task
+        all_tasks = tasks.all_tasks()
+        target = None
+        for t in all_tasks:
+            if t["id"] == tid:
+                target = t
+                break
+        
+        if not target:
+            await update.message.reply_text(f"❌ Task #{tid} nahi mila!")
+            return
+        
+        old_title = target["title"]
+        target["title"] = new_title
+        tasks.store.save()  # Save to storage
+        
+        # Update Google Sheets
+        try:
+            sheets_backup.task_update(target)
+        except:
+            pass
+        
+        _log_action(update.effective_user.first_name or "User", "task_edit", f"#{tid}: '{old_title}' → '{new_title}'")
+        await update.message.reply_text(
+            f"✏️ *Task Updated!* ✅\n\n"
+            f"#{tid} ~~{old_title}~~ → *{new_title}*",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Invalid ID! Use: `/edittask 5 New title`")
+
+
+async def cmd_edit_reminder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Edit an existing reminder - /editremind id new text or /editremind id time new text"""
+    if len(ctx.args) < 2:
+        await update.message.reply_text(
+            "✏️ *Edit Reminder*\n\n"
+            "Usage:\n"
+            "• Edit text only: `/editremind 5 New reminder text`\n"
+            "• Edit time & text: `/editremind 5 15:30 New meeting`\n"
+            "• Edit time only: `/editremind 5 15:30`\n\n"
+            "Time formats: `15:30`, `30m`, `1h`, `tomorrow 9am`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        rid = int(ctx.args[0])
+        
+        # Find the reminder
+        target = reminders.get_by_id(rid)
+        if not target:
+            await update.message.reply_text(f"❌ Reminder #{rid} nahi mila!")
+            return
+        
+        old_text = target.get("text", "")
+        old_due = target.get("due", "")
+        
+        # Parse new time if provided
+        remaining = ctx.args[1:]
+        new_time = None
+        new_text = None
+        
+        # Check if first arg looks like a time
+        time_arg = remaining[0].lower()
+        time_formats = [':', 'm', 'h', 'am', 'pm', 'tomorrow', 'kal', 'aaj']
+        if any(f in time_arg for f in time_formats):
+            # Parse time
+            parsed_time = _parse_reminder_time(time_arg)
+            new_time = parsed_time[0] if parsed_time and parsed_time[0] else None
+            if len(remaining) > 1:
+                new_text = " ".join(remaining[1:])
+            else:
+                new_text = old_text
+        else:
+            new_text = " ".join(remaining)
+        
+        if not new_text:
+            new_text = old_text
+        
+        # Delete old reminder
+        reminders.delete(rid)
+        
+        # Create new reminder with updated info
+        due_timestamp = new_time if new_time else old_due
+        new_rem = reminders.add(target["chat_id"], new_text, due_timestamp)
+        
+        _log_action(update.effective_user.first_name or "User", "reminder_edit", f"#{rid} → #{new_rem['id']}: {new_text}")
+        
+        # Format response
+        try:
+            remind_dt = datetime.strptime(due_timestamp, "%Y-%m-%d %H:%M:%S")
+            date_display = remind_dt.strftime("%d %b %Y")
+            time_display = remind_dt.strftime("%I:%M %p")
+            time_str = f"🕐 *{time_display}* — 📅 *{date_display}*"
+        except:
+            time_str = f"⏰ {due_timestamp}"
+        
+        await update.message.reply_text(
+            f"✏️ *Reminder Updated!* ✅\n\n"
+            f"~~#{rid}: {old_text}~~\n\n"
+            f"➡️ *#{new_rem['id']}: {new_text}*\n"
+            f"{time_str}",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Invalid ID!")
+
+
+async def cmd_edit_habit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Edit an existing habit - /edithabit id New Name"""
+    if len(ctx.args) < 2:
+        await update.message.reply_text(
+            "✏️ *Edit Habit*\n\n"
+            "Usage: `/edithabit 5 New habit name`\n\n"
+            "First show habit list: `/habits`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        hid = int(ctx.args[0])
+        new_name = " ".join(ctx.args[1:])
+        
+        all_habits = habits.all()
+        target = None
+        for h in all_habits:
+            if h["id"] == hid:
+                target = h
+                break
+        
+        if not target:
+            await update.message.reply_text(f"❌ Habit #{hid} nahi mila!")
+            return
+        
+        old_name = target["name"]
+        target["name"] = new_name
+        habits.store.save()
+        
+        try:
+            sheets_backup.habit_update(target)
+        except:
+            pass
+        
+        _log_action(update.effective_user.first_name or "User", "habit_edit", f"#{hid}: '{old_name}' → '{new_name}'")
+        await update.message.reply_text(
+            f"✏️ *Habit Updated!* ✅\n\n"
+            f"#{hid} ~~{old_name}~~ → *{new_name}*",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Invalid ID!")
+
 async def cleanup_chat_context():
     global _last_context_cleanup
     async with _chat_context_lock:
@@ -1842,10 +2014,17 @@ async def cmd_commands(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/done` id — Complete task\n"
         "`/deltask` id — Delete task\n"
         "`/donemulti` 1,2,3 — Complete multiple\n"
-        "`/deltaskmulti` 1-10 — Delete multiple\n\n"
+        "`/deltaskmulti` 1-10 — Delete multiple\n"
+        "`/edittask` id New Title — Edit task\n\n"
+        "✏️ *EDIT COMMANDS:*\n"
+        "`/edittask` id New Title — Edit task title\n"
+        "`/editremind` id New text — Edit reminder text\n"
+        "`/editremind` id 15:30 New text — Edit reminder time & text\n"
+        "`/edithabit` id New Name — Edit habit name\n\n"
         "🏃 *HABITS:*\n"
         "`/habit` Naam — Add habit\n"
-        "`/hdone` id — Log habit\n\n"
+        "`/hdone` id — Log habit\n"
+        "`/edithabit` id New Name — Edit habit name\n\n"
         "⏰ *REMINDERS:*\n"
         "`/remind` 30m Chai — Set reminder\n"
         "`/delremind` id — Delete\n"
@@ -1853,7 +2032,8 @@ async def cmd_commands(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/snooze5` id | `/snooze10` id | `/snooze30` id | `/snooze60` id\n"
         "`/smartremind` HIGH 5m Doctor — Smart reminder\n"
         "`/smartlist` — List smart reminders\n"
-        "`/smartcomplete` id — Complete smart\n\n"
+        "`/smartcomplete` id — Complete smart\n"
+        "`/editremind` id New text — Edit reminder\n\n"
         "📖 *DIARY:*\n"
         "`/diary` — Today's entries\n"
         "`/diary write` — New entry\n"
@@ -3404,6 +3584,58 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     _log_action("Bot", "alarm_fired", f"Smart Alarm #{r['id']} at {now_hm}: {display_text[:50]}")
                 except Exception as e:
                     log.error(f"Failed to send smart alarm: {e}")
+
+# ═══════════════════════════════════════════════════════════════════
+# AUTO-SNOOZE - Reminders aur Tasks ke liye
+# ═══════════════════════════════════════════════════════════════════
+
+async def auto_snooze_job(context: ContextTypes.DEFAULT_TYPE):
+    """Auto snooze reminders that have been ringing for too long"""
+    now = now_ist()
+    
+    # Check all active reminders
+    active_reminders = reminders.all_active()
+    
+    for r in active_reminders:
+        if r.get("acknowledged", False):
+            continue
+            
+        # Check if reminder has been triggered multiple times
+        fire_count = r.get("fire_count", 0)
+        
+        # Auto-snooze after 3 rings (about 3 minutes)
+        if fire_count >= 3:
+            # Auto snooze for 5 minutes
+            new_dt = now + timedelta(minutes=5)
+            new_timestamp = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Create auto-snoozed reminder
+            new_rem = reminders.add(
+                r["chat_id"], 
+                f"🔄 {r['text']}", 
+                new_timestamp, 
+                "once"
+            )
+            
+            # Acknowledge the old one
+            reminders.acknowledge(r["id"], "Auto-snoozed after 3 rings")
+            
+            log.info(f"Auto-snoozed reminder #{r['id']} → #{new_rem['id']}")
+            
+            # Notify user
+            try:
+                await context.bot.send_message(
+                    chat_id=int(r["chat_id"]),
+                    text=f"⏰ *Auto-Snooze!*\n\nReminder #{r['id']} abhi acknowledge nahi hua, isliye 5 min baad fir yaad dilaaunga.\n\n_ID: #{new_rem['id']}_",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+
+async def auto_complete_overdue_tasks(context: ContextTypes.DEFAULT_TYPE):
+    """Auto-complete tasks that are too old (optional)"""
+    # This is optional - comment out if not needed
+    pass
 
 # ═══════════════════════════════════════════════════════════════════
 # NETWORK SYNC JOB (ADD THIS AFTER reminder_job)
@@ -5440,6 +5672,9 @@ def main():
         ("notesearch", cmd_note_search),
         ("find", cmd_find),
         ("alldata", cmd_alldata),
+        ("edittask", cmd_edit_task),
+        ("editremind", cmd_edit_reminder),
+        ("edithabit", cmd_edit_habit),
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
@@ -5473,6 +5708,9 @@ def main():
       
         app.job_queue.run_repeating(network_sync_job, interval=60, first=10)
         log.info("🌐 Network sync checker scheduled (every 60s)")
+
+        app.job_queue.run_repeating(auto_snooze_job, interval=60, first=45)
+        log.info("⏰ Auto-snooze checker scheduled (every 60s)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
