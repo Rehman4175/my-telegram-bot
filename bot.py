@@ -3586,11 +3586,11 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     log.error(f"Failed to send smart alarm: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
-# AUTO-SNOOZE - Reminders aur Tasks ke liye
+# AUTO-SNOOZE - Same reminder update karega, nayi ID nahi banayega
 # ═══════════════════════════════════════════════════════════════════
 
 async def auto_snooze_job(context: ContextTypes.DEFAULT_TYPE):
-    """Auto snooze reminders that have been ringing for too long"""
+    """Auto snooze reminders by UPDATING existing reminder (same ID)"""
     now = now_ist()
     
     # Check all active reminders
@@ -3605,28 +3605,32 @@ async def auto_snooze_job(context: ContextTypes.DEFAULT_TYPE):
         
         # Auto-snooze after 3 rings (about 3 minutes)
         if fire_count >= 3:
-            # Auto snooze for 5 minutes
+            # Update due time to 5 minutes from now
             new_dt = now + timedelta(minutes=5)
             new_timestamp = new_dt.strftime("%Y-%m-%d %H:%M:%S")
             
-            # Create auto-snoozed reminder
-            new_rem = reminders.add(
-                r["chat_id"], 
-                f"🔄 {r['text']}", 
-                new_timestamp, 
-                "once"
-            )
+            # Get original text (remove any existing 🔁 or count)
+            original_text = r.get("original_text") or r.get("text", "")
+            if original_text.startswith("🔄 "):
+                original_text = original_text[2:]
             
-            # Acknowledge the old one
-            reminders.acknowledge(r["id"], "Auto-snoozed after 3 rings")
+            # Update the SAME reminder (no new ID created)
+            r["due"] = new_timestamp
+            r["fire_count"] = 0
+            r["triggered"] = False
+            r["original_text"] = original_text
+            r["text"] = original_text  # Keep same text, no extra prefix
+            r["last_auto_snooze"] = now.strftime("%Y-%m-%d %H:%M:%S")
             
-            log.info(f"Auto-snoozed reminder #{r['id']} → #{new_rem['id']}")
+            reminders.store.save()
             
-            # Notify user
+            log.info(f"✅ Auto-snoozed reminder #{r['id']} to {new_timestamp} (same ID)")
+            
+            # Optional: Send silent notification to user (can remove if you want)
             try:
                 await context.bot.send_message(
                     chat_id=int(r["chat_id"]),
-                    text=f"⏰ *Auto-Snooze!*\n\nReminder #{r['id']} abhi acknowledge nahi hua, isliye 5 min baad fir yaad dilaaunga.\n\n_ID: #{new_rem['id']}_",
+                    text=f"⏰ *Auto-Snooze!*\n\nReminder #{r['id']} abhi acknowledge nahi hua, isliye 5 min baad fir yaad dilaaunga.\n\n📝 {original_text}",
                     parse_mode="Markdown"
                 )
             except:
