@@ -80,6 +80,7 @@ class GoogleSheetsBackup:
         "Diary":     "Diary",
         "VoiceNotes": "Voice Notes",
         "SmartMemory": "Smart Memory",
+        "QuickNotes": "Quick Notes",
     }
 
     HEADERS = {
@@ -105,6 +106,16 @@ class GoogleSheetsBackup:
     _logs_counter = 0
     _voicenotes_counter = 0
     _smartmemory_counter = 0
+
+    def quick_note(self, note: dict):
+    """Save quick note to Google Sheets"""
+    return self._append("QuickNotes", [
+        note.get("id", ""),
+        note.get("date", today_str()),
+        note.get("time", now_str()),
+        note.get("text", ""),
+        "📌" if note.get("pinned") else "📋"
+    ])
 
     def __init__(self):
         self._client   = None
