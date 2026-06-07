@@ -94,6 +94,7 @@ class GoogleSheetsBackup:
         "Habits":    ["ID", "Habit Name", "Emoji", "Streak", "Best Streak", "Created Date", "Target (per day)"],
         "Water":     ["ID", "Date", "Time", "ML Added", "Day Total"],
         "Logs":      ["ID", "Timestamp", "Date", "Role", "User", "Message"],
+        "QuickNotes": ["ID", "Date", "Time", "Text", "Status"],
         "Diary":     ["ID", "Date", "Time", "Text", "Mood"],
         "VoiceNotes": ["ID", "Date", "Time", "Transcript", "Saved To", "Duration", "Status", "Category"],
         "SmartMemory": ["ID", "Date", "Time", "Question", "Answer", "Keywords", "User"],
@@ -108,14 +109,14 @@ class GoogleSheetsBackup:
     _smartmemory_counter = 0
 
     def quick_note(self, note: dict):
-    """Save quick note to Google Sheets"""
-    return self._append("QuickNotes", [
-        note.get("id", ""),
-        note.get("date", today_str()),
-        note.get("time", now_str()),
-        note.get("text", ""),
-        "📌" if note.get("pinned") else "📋"
-    ])
+        """Save quick note to Google Sheets"""
+        return self._append("QuickNotes", [
+            note.get("id", ""),
+            note.get("date", today_str()),
+            note.get("time", now_str()),
+            note.get("text", ""),
+            "📌" if note.get("pinned") else "📋"
+        ])
 
     def __init__(self):
         self._client   = None
