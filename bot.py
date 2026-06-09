@@ -40,11 +40,12 @@ ALL v17 FEATURES RESTORED + ALL v18.x FIXES:
 import os, json, logging, time
 from command_parser import get_action
 import urllib.request, urllib.error, ssl
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone, time
 import re as _re
 import re
 import asyncio
 from human_touch import register_human_touch
+from datetime import time as dt_time
 from secure_data_manager import is_online, get_network_status
 _chat_context_lock = asyncio.Lock()
 
@@ -862,7 +863,9 @@ async def cmd_edit_reminder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if any(f in time_arg for f in time_formats):
             # Parse time
             parsed_time = _parse_reminder_time(time_arg)
-            new_time = parsed_time[0] if parsed_time and parsed_time[0] else None
+            # ✅ FIX: Safely check parsed_time
+            if parsed_time and parsed_time[0]:
+                new_time = parsed_time[0]
             if len(remaining) > 1:
                 new_text = " ".join(remaining[1:])
             else:
@@ -5903,7 +5906,7 @@ def main():
         app.job_queue.run_repeating(auto_snooze_job, interval=60, first=45)
         log.info("⏰ Auto-snooze checker scheduled (every 60s)")
 
-        app.job_queue.run_daily(recurring_checker_job, time=datetime.time(hour=0, minute=5), first=10)
+        app.job_queue.run_daily(recurring_checker_job, time=dt_time(hour=0, minute=5), first=10)
         log.info("🔄 Recurring reminder checker scheduled (daily at 00:05 AM)")
 
     else:
