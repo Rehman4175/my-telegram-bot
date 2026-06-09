@@ -1484,6 +1484,34 @@ class VoiceNoteStore:
     def get_recent(self, n=10):
         return self.store.data.get("list", [])[-n:]
 
+# ================================================================
+# RECURRING REMINDERS STORE (YEH ADD KARO - NAYA)
+# ================================================================
+class RecurringReminderStore:
+    def __init__(self):
+        self.store = PrivateStore("recurring_reminders", {"list": [], "counter": 0})
+    
+    def get_all(self):
+        return self.store.data.get("list", [])
+    
+    def add(self, reminder: dict):
+        self.store.data["list"].append(reminder)
+        self.store.save()
+        return reminder
+    
+    def delete(self, rid: int):
+        self.store.data["list"] = [r for r in self.get_all() if r.get("id") != rid]
+        self.store.save()
+    
+    def clear_all(self):
+        count = len(self.get_all())
+        self.store.data["list"] = []
+        self.store.save()
+        return count
+    
+    def get_active(self):
+        return [r for r in self.get_all() if r.get("active")]
+
 
 # ================================================================
 # TELEGRAM CHANNEL LOGGER - Personal Space
@@ -1694,6 +1722,7 @@ bills     = BillStore()
 calendar  = CalendarStore()
 chat_hist = ChatHistoryStore()
 voice_note_store = VoiceNoteStore()
+recurring_reminders = RecurringReminderStore()
 
 # Create channel logger instance
 channel_logger = TelegramChannelLogger()
