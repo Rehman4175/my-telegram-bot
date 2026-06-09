@@ -375,7 +375,7 @@ from telegram.ext import (
 from secure_data_manager import (
     memory, tasks, diary, habits, expenses, goals, reminders, smart_reminders,
     water, bills, calendar, chat_hist, now_ist, today_str, now_str,
-    sheets_backup, DATA_DIR, repo_manager
+    sheets_backup, DATA_DIR, repo_manager, recurring_reminders
 )
 
 import ssl
@@ -1996,7 +1996,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_commands(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Complete commands list for Rk Bot"""
     await update.message.reply_text(
-        "📖 *ALL COMMANDS — Rk Bot v18.5*\n\n"
+        "📖 *ALL COMMANDS — Rk Bot v18.6*\n\n"
         "💬 *Quick Commands (One-line):*\n"
         "• `done 3` — Task #3 complete\n"
         "• `add chai 20` — Expense add\n"
@@ -2034,6 +2034,13 @@ async def cmd_commands(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/smartlist` — List smart reminders\n"
         "`/smartcomplete` id — Complete smart\n"
         "`/editremind` id New text — Edit reminder\n\n"
+        "🔄 *RECURRING REMINDERS:*\n"
+        "`/recurring` 5 Mobile Bill — Monthly reminder (remind on 5th)\n"
+        "`/recurring` 1 House Rent — Monthly reminder (remind on 1st)\n"
+        "`/recurring` 15 Credit Card 10 — Remind on 10th (due on 15th)\n"
+        "`/recurring_list` — Show all recurring reminders\n"
+        "`/recurring_del` id — Delete a recurring reminder\n"
+        "`/recurring_clear` — Delete all recurring reminders\n\n"
         "📖 *DIARY:*\n"
         "`/diary` — Today's entries\n"
         "`/diary write` — New entry\n"
@@ -3586,56 +3593,232 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     log.error(f"Failed to send smart alarm: {e}")
 
 # ═══════════════════════════════════════════════════════════════════
+# RECURRING REMINDERS COMMANDS (YEH ADD KARO)
+# ═══════════════════════════════════════════════════════════════════
+
+async def cmd_recurring_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Add a recurring monthly reminder"""
+    if len(ctx.args) < 2:
+        await update.message.reply_text(
+            "🔄 *Recurring Reminder*\n\n"
+            "Add monthly reminder:\n"
+            "`/recurring 5 Mobile Bill` - 5th ko remind\n"
+            "`/recurring 1 House Maintenance` - 1st ko remind\n"
+            "`/recurring 15 Credit Card 10` - 10th ko remind (due 15th)\n\n"
+            "Commands:\n"
+            "/recurring_list - Show all\n"
+            "/recurring_del id - Delete\n"
+            "/recurring_clear - Delete all",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        remind_day = int(ctx.args[0])
+        name = " ".join(ctx.args[1:])
+        
+        due_day = remind_day
+        if len(ctx.args) > 2 and ctx.args[-1].isdigit() and int(ctx.args[-1]) > 28:
+            due_day = int(ctx.args[-1])
+            name = " ".join(ctx.args[1:-1])
+        
+        recurring = {
+            "id": len(recurring_reminders.get_all()) + 1,
+            "name": name,
+            "remind_day": remind_day,
+            "due_day": due_day,
+            "active": True,
+            "chat_id": update.effective_chat.id,
+            "created": today_str()
+        }
+        
+        recurring_reminders.add(recurring)
+        await _schedule_next_recurring(recurring, context)
+        
+        _log_action(update.effective_user.first_name or "User", "recurring_add", 
+                   f"#{recurring['id']}: {name} (remind {remind_day}th, due {due_day}th)")
+        
+        await update.message.reply_text(
+            f"🔄 *Recurring Reminder Set!*\n\n"
+            f"📌 *{name}*\n"
+            f"📅 Remind: {remind_day}th of every month\n"
+            f"⚠️ Due: {due_day}th of every month\n\n"
+            f"✅ I'll remind you on {remind_day}th!\n"
+            f"_InshAllah har mahine yaad dilaaunga!_",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_recurring_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """List all active recurring reminders"""
+    reminders_list = recurring_reminders.get_all()
+    active = [r for r in reminders_list if r.get("active")]
+    
+    if not active:
+        await update.message.reply_text("📭 *No active recurring reminders*\n\nAdd one: `/recurring 5 Mobile Bill`", parse_mode="Markdown")
+        return
+    
+    msg = "🔄 *Active Recurring Reminders*\n\n"
+    for r in active:
+        msg += f"📌 #{r['id']} *{r['name']}*\n"
+        msg += f"   Remind: {r['remind_day']}th | Due: {r['due_day']}th\n"
+        msg += f"   Next: {_get_next_reminder_date(r['remind_day'])}\n\n"
+    
+    msg += "\n`/recurring_del id` - Delete\n`/recurring_clear` - Delete all"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_recurring_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Delete a recurring reminder"""
+    if not ctx.args:
+        await update.message.reply_text("/recurring_del id")
+        return
+    
+    try:
+        rid = int(ctx.args[0])
+        recurring_reminders.delete(rid)
+        await update.message.reply_text(f"🗑️ *Recurring reminder #{rid} deleted!*", parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text("❌ Invalid ID!")
+
+
+async def cmd_recurring_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Delete all recurring reminders"""
+    count = recurring_reminders.clear_all()
+    await update.message.reply_text(f"🗑️ *{count} recurring reminders cleared!*", parse_mode="Markdown")
+
+
+def _get_next_reminder_date(remind_day: int) -> str:
+    """Get next reminder date as string"""
+    now = now_ist()
+    target_day = remind_day
+    current_month_day = now.day
+    
+    if target_day >= current_month_day:
+        next_date = date(now.year, now.month, target_day)
+    else:
+        if now.month == 12:
+            next_date = date(now.year + 1, 1, target_day)
+        else:
+            next_date = date(now.year, now.month + 1, target_day)
+    
+    return next_date.strftime("%d %b %Y")
+
+
+async def _schedule_next_recurring(recurring: dict, context: ContextTypes.DEFAULT_TYPE):
+    """Schedule next occurrence of a recurring reminder"""
+    remind_day = recurring["remind_day"]
+    name = recurring["name"]
+    chat_id = recurring["chat_id"]
+    rid = recurring["id"]
+    
+    next_date = _get_next_reminder_date(remind_day)
+    next_datetime = datetime.strptime(next_date, "%d %b %Y")
+    remind_dt = datetime.combine(next_datetime, datetime.min.time())
+    remind_dt = remind_dt.replace(hour=9, minute=0)
+    
+    reminder_text = f"🔄 {name} due on {recurring['due_day']}th! Please pay."
+    new_rem = reminders.add(chat_id, reminder_text, remind_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    new_rem["recurring_id"] = rid
+    reminders.store.save()
+    
+    log.info(f"📅 Scheduled recurring #{rid}: '{name}' on {remind_dt.strftime('%d %b')}")
+
+
+async def recurring_checker_job(context: ContextTypes.DEFAULT_TYPE):
+    """Check daily for recurring reminders that need to be scheduled"""
+    now = now_ist()
+    today_day = now.day
+    
+    for r in recurring_reminders.get_active():
+        remind_day = r.get("remind_day")
+        
+        if today_day == remind_day:
+            last_scheduled = r.get("last_scheduled", "")
+            current_month = now.strftime("%Y-%m")
+            
+            if last_scheduled != current_month:
+                await _schedule_next_recurring(r, context)
+                r["last_scheduled"] = current_month
+                recurring_reminders.store.save()
+
+# ═══════════════════════════════════════════════════════════════════
 # AUTO-SNOOZE - Same reminder update karega, nayi ID nahi banayega
 # ═══════════════════════════════════════════════════════════════════
 
 async def auto_snooze_job(context: ContextTypes.DEFAULT_TYPE):
-    """Auto snooze reminders by UPDATING existing reminder (same ID)"""
+    """Auto snooze reminders - MAX 3 TIMES, then hold until user cancels"""
     now = now_ist()
     
-    # Check all active reminders
     active_reminders = reminders.all_active()
     
     for r in active_reminders:
         if r.get("acknowledged", False):
             continue
-            
-        # Check if reminder has been triggered multiple times
-        fire_count = r.get("fire_count", 0)
         
-        # Auto-snooze after 3 rings (about 3 minutes)
+        # Skip recurring reminders from auto-snooze
+        if r.get("recurring_id"):
+            continue
+            
+        fire_count = r.get("fire_count", 0)
+        snooze_count = r.get("snooze_count", 0)
+        
         if fire_count >= 3:
-            # Update due time to 5 minutes from now
+            
+            # ✅ LIMIT: Only 3 auto-snoozes allowed
+            if snooze_count >= 3:
+                r["auto_snooze_blocked"] = True
+                r["blocked_reason"] = "Max auto-snooze limit reached (3 times)"
+                reminders.store.save()
+                
+                log.info(f"⏸️ Reminder #{r['id']} blocked after {snooze_count} auto-snoozes")
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(r["chat_id"]),
+                        text=f"⏸️ *Reminder on Hold* ⏸️\n\n"
+                             f"Reminder #{r['id']} has been auto-snoozed {snooze_count} times.\n"
+                             f"Please acknowledge manually when done:\n\n"
+                             f"📝 {r.get('text', '')}\n\n"
+                             f"✅ Type `/done {r['id']}` to complete",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                continue
+            
             new_dt = now + timedelta(minutes=5)
             new_timestamp = new_dt.strftime("%Y-%m-%d %H:%M:%S")
             
-            # Get original text (remove any existing 🔁 or count)
             original_text = r.get("original_text") or r.get("text", "")
             if original_text.startswith("🔄 "):
                 original_text = original_text[2:]
             
-            # Update the SAME reminder (no new ID created)
             r["due"] = new_timestamp
             r["fire_count"] = 0
             r["triggered"] = False
             r["original_text"] = original_text
-            r["text"] = original_text  # Keep same text, no extra prefix
+            r["text"] = original_text
             r["last_auto_snooze"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            r["snooze_count"] = snooze_count + 1
             
             reminders.store.save()
             
-            log.info(f"✅ Auto-snoozed reminder #{r['id']} to {new_timestamp} (same ID)")
+            log.info(f"✅ Auto-snoozed reminder #{r['id']} (attempt {snooze_count + 1}/3)")
             
-            # Optional: Send silent notification to user (can remove if you want)
             try:
                 await context.bot.send_message(
                     chat_id=int(r["chat_id"]),
-                    text=f"⏰ *Auto-Snooze!*\n\nReminder #{r['id']} abhi acknowledge nahi hua, isliye 5 min baad fir yaad dilaaunga.\n\n📝 {original_text}",
+                    text=f"⏰ *Auto-Snooze #{snooze_count + 1}/3*\n\n"
+                         f"Reminder #{r['id']} will ring again in 5 minutes.\n\n"
+                         f"📝 {original_text}\n\n"
+                         f"⚠️ After 3 snoozes, it will be put on hold.",
                     parse_mode="Markdown"
                 )
             except:
                 pass
-
 async def auto_complete_overdue_tasks(context: ContextTypes.DEFAULT_TYPE):
     """Auto-complete tasks that are too old (optional)"""
     # This is optional - comment out if not needed
@@ -5679,6 +5862,10 @@ def main():
         ("edittask", cmd_edit_task),
         ("editremind", cmd_edit_reminder),
         ("edithabit", cmd_edit_habit),
+        ("recurring", cmd_recurring_add),
+        ("recurring_list", cmd_recurring_list),
+        ("recurring_del", cmd_recurring_del),
+        ("recurring_clear", cmd_recurring_clear),
     ]:
         app.add_handler(CommandHandler(cmd, handler))
 
@@ -5715,6 +5902,9 @@ def main():
 
         app.job_queue.run_repeating(auto_snooze_job, interval=60, first=45)
         log.info("⏰ Auto-snooze checker scheduled (every 60s)")
+
+        app.job_queue.run_daily(recurring_checker_job, time=datetime.time(hour=0, minute=5), first=10)
+        log.info("🔄 Recurring reminder checker scheduled (daily at 00:05 AM)")
 
     else:
         log.warning("⚠️ JobQueue not available - reminders and daily summaries disabled!")
