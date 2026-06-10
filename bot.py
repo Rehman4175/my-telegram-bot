@@ -5906,7 +5906,7 @@ def main():
         app.job_queue.run_repeating(auto_snooze_job, interval=60, first=45)
         log.info("⏰ Auto-snooze checker scheduled (every 60s)")
 
-        app.job_queue.run_daily(recurring_checker_job, time=dt_time(hour=0, minute=5), first=10)
+        app.job_queue.run_daily(recurring_checker_job, time=dt_time(hour=0, minute=5), days=tuple(range(7)))
         log.info("🔄 Recurring reminder checker scheduled (daily at 00:05 AM)")
 
     else:
